@@ -6,7 +6,8 @@
 #   - KHONG tu tai source: ban tu copy folder InternetIncome vao VPS
 #     (toi uu cho chay NHIEU folder InternetIncome tren 1 VPS).
 #   - Swap 50% RAM, toi uu kernel/Docker cho hang tram container proxy.
-#   - (Tuy chon) cron restart hang ngay cho TAT CA folder trong 1 thu muc cha.
+#   - (Tuy chon) cron restart hang ngay cho TAT CA folder trong 1 thu muc cha,
+#     quet toi 3 tang (dc/f1, res/f2, direct/f1...) + cong cu ii-status.sh.
 #
 #  CACH DUNG:
 #   sudo bash setup_vps.sh                         # se hoi thu muc cha de cai cron
@@ -101,8 +102,20 @@ log "apt update + upgrade..."
 apt-get update -y -qq
 apt-get upgrade -y -qq || true
 apt-get install -y -qq --no-install-recommends \
-  curl wget git unzip jq bc ca-certificates uuid-runtime cron logrotate net-tools
-log "Da cai goi co ban (curl/wget/git/jq/bc/cron/logrotate...)"
+  curl wget git unzip jq bc ca-certificates uuid-runtime cron logrotate net-tools earlyoom
+log "Da cai goi co ban (curl/wget/git/jq/bc/cron/logrotate/earlyoom...)"
+
+# Chong OOM lam treo may (earlyoom tu giet bot tre an RAM, cuu SSH)
+if has_systemd; then systemctl enable --now earlyoom >/dev/null 2>&1 || true; fi
+# Gio he thong phai dung (TLS/DoH loi neu gio sai)
+timedatectl set-ntp true 2>/dev/null || true
+# Khong tu reboot vi ban cap nhat (treo may 24/7 phai on dinh)
+mkdir -p /etc/apt/apt.conf.d
+cat > /etc/apt/apt.conf.d/99ii-noreboot <<'EOF'
+// InternetIncome VPS - khong tu khoi dong lai vi unattended-upgrades
+Unattended-Upgrade::Automatic-Reboot "false";
+Unattended-Upgrade::Automatic-Reboot-WithUsers "false";
+EOF
 
 #--------------------------------- 3. DNS SACH -------------------------------
 if has_systemd && systemctl list-unit-files 2>/dev/null | grep -q '^systemd-resolved'; then
@@ -195,6 +208,7 @@ cat > /etc/docker/daemon.json <<EOF
 }
 EOF
 
+RUNNING_BEFORE=$(docker ps -q 2>/dev/null | wc -l)
 if has_systemd; then
   systemctl enable --now docker >/dev/null 2>&1 || true
   systemctl restart docker
@@ -202,7 +216,15 @@ else
   service docker start >/dev/null 2>&1 || service docker restart || true
 fi
 docker info >/dev/null 2>&1 || die "Docker khong chay duoc - kiem tra ao hoa/kernel"
+RUNNING_AFTER=$(docker ps -q 2>/dev/null | wc -l)
 log "Docker OK (log 10MBx3 | DNS 8.8.8.8+1.1.1.1 | live-restore on)"
+if (( RUNNING_BEFORE > 0 )); then
+  if (( RUNNING_AFTER == RUNNING_BEFORE )); then
+    log "Container dang chay duoc GIU NGUYEN qua restart docker: ${RUNNING_AFTER}/${RUNNING_BEFORE}"
+  else
+    warn "Container truoc=${RUNNING_BEFORE} sau=${RUNNING_AFTER} - kiem tra: docker ps -a"
+  fi
+fi
 
 #------------------------------- 6. PRE-PULL IMAGE ---------------------------
 if (( DO_PULL == 1 )); then
@@ -225,7 +247,10 @@ install_cron_stack() {
   mkdir -p "$BASE_DIR"
   cat > /usr/local/bin/ii-restart-all.sh <<'EOS'
 #!/usr/bin/env bash
-# Restart TAT CA folder InternetIncome trong thu muc cha (folder co internetIncome.sh)
+# Restart TAT CA folder InternetIncome trong thu muc cha, QUET TOI 3 TANG:
+#   /opt/ii/f1 , /opt/ii/dc/f1 , /opt/ii/res/f2 , /opt/ii/direct/f1 ... deu duoc tinh
+# Cach lam: docker restart theo danh sach containernames.txt cua tung folder.
+# - Chay dung cho CA folder nhanh main LAN test (doc file truc tiep, khong phu thuoc repo).
 BASE_DIR="__BASE_DIR__"
 LOG=/var/log/ii-restart.log
 ts() { date '+%F %T'; }
@@ -233,26 +258,54 @@ ts() { date '+%F %T'; }
 {
   echo "[$(ts)] ============== ii-restart-all (base: ${BASE_DIR}) =============="
   found=0
-  shopt -s nullglob
-  for d in "${BASE_DIR}"/*/; do
-    [[ -f "${d}internetIncome.sh" ]] || continue
+  while IFS= read -r cn; do
+    d=$(dirname "$cn")
+    [[ -f "${d}/internetIncome.sh" ]] || continue
     found=1
     echo "[$(ts)] >>> ${d}"
-    if [[ -f "${d}restart.sh" ]]; then
-      ( cd "$d" && bash restart.sh ) 2>&1
-    else
-      echo "[$(ts)] !! ${d} khong co restart.sh - bo qua"
-    fi
+    xargs -r -a "$cn" docker restart 2>&1 || echo "[$(ts)] !! loi restart tai ${d}"
     sleep 20
-  done
+  done < <(find "$BASE_DIR" -maxdepth 3 -name containernames.txt -type f 2>/dev/null | sort)
   if (( found == 0 )); then
-    echo "[$(ts)] Khong thay folder InternetIncome nao trong ${BASE_DIR}"
+    echo "[$(ts)] Khong thay folder InternetIncome nao (da --start) trong ${BASE_DIR}"
   fi
   echo "[$(ts)] ============================ xong ============================"
 } >> "$LOG" 2>&1
 EOS
   sed -i "s|__BASE_DIR__|${BASE_DIR}|g" /usr/local/bin/ii-restart-all.sh
   chmod +x /usr/local/bin/ii-restart-all.sh
+
+  # Cong cu xem nhanh suc khoe toan he thong: ii-status.sh [duong_dan]
+  cat > /usr/local/bin/ii-status.sh <<'EOS'
+#!/usr/bin/env bash
+# Xem nhanh: moi folder chay bao nhieu container + RAM/Swap/Disk/Docker
+ROOTS=("$@")
+if (( ${#ROOTS[@]} == 0 )); then ROOTS=(__DEFAULT_ROOTS__); fi
+
+echo "===== INTERNETINCOME STATUS ====="
+found=0
+while IFS= read -r cn; do
+  d=$(dirname "$cn")
+  [[ -f "${d}/internetIncome.sh" ]] || continue
+  found=1
+  total=$(wc -l < "$cn" | tr -d ' ')
+  running=0
+  while IFS= read -r c; do
+    if [[ "$(docker inspect -f '{{.State.Running}}' "$c" 2>/dev/null)" == "true" ]]; then
+      running=$((running+1))
+    fi
+  done < "$cn"
+  printf "  %-48s %4s/%-4s running\n" "$d" "$running" "$total"
+done < <(find "${ROOTS[@]}" -maxdepth 4 -name containernames.txt -type f 2>/dev/null | sort)
+if (( found == 0 )); then echo "  (chua thay folder InternetIncome nao)"; fi
+
+echo "----- tai nguyen -----"
+echo "  docker : $(docker ps -q 2>/dev/null | wc -l) running / $(docker ps -aq 2>/dev/null | wc -l) total"
+free -h | awk '/^Mem:/{printf "  RAM    : %s/%s dang dung\n",$3,$2} /^Swap:/{printf "  Swap   : %s/%s dang dung\n",$3,$2}'
+df -h / | awk 'NR==2{printf "  Disk / : %s/%s (%s)\n",$3,$2,$5}'
+EOS
+  sed -i "s|__DEFAULT_ROOTS__|\"${BASE_DIR}\"|" /usr/local/bin/ii-status.sh
+  chmod +x /usr/local/bin/ii-status.sh
 
   cat > /etc/logrotate.d/ii-logs <<'EOF'
 /var/log/ii-*.log {
@@ -316,11 +369,19 @@ echo "============================= SETUP XONG =============================="
 echo "  Docker : $(docker --version 2>/dev/null || echo 'loi')"
 echo "  Swap   : ${SW_DESC}"
 echo "  Cron   : ${CRON_DESC}"
+if [[ -f /usr/local/bin/ii-status.sh ]]; then
+  echo "  Tool   : sudo ii-status.sh  (xem nhanh folder/container/RAM/Disk)"
+  echo "           tail -f /var/log/ii-restart.log  (log restart hang ngay)"
+fi
 echo
 echo "  CAC BUOC TIEP THEO (ban tu kiem soat source, nhieu folder):"
-echo "  1) Copy folder InternetIncome (nhanh test) len VPS, vao thu muc cha:"
-echo "       rsync -a --exclude .git InternetIncome-test/ root@IP_VPS:/opt/ii/f1/"
-echo "  2) cp properties-template.conf -> f1/properties.conf roi dien token"
+echo "  1) Copy folder InternetIncome len VPS, to chuc theo muc dich:"
+echo "       /opt/ii/dc/f1   (proxy datacenter, nhanh test)"
+echo "       /opt/ii/res/f1  (proxy residential, nhanh test)"
+echo "       /opt/ii/direct/f1 (IP goc, nhanh main)"
+echo "       rsync -a --exclude .git InternetIncome-test/ root@IP_VPS:/opt/ii/dc/f1/"
+echo "  2) cp properties-proxy-test.conf -> f1/properties.conf roi dien token"
+echo "     (folder direct IP: dung properties-direct-main.conf voi folder nhanh main)"
 echo "     !! DEVICE_NAME phai KHAC NHAU tung folder: vps01-f1, vps01-f2 ..."
 echo "  3) cp proxies.txt vao f1/  (NEN la list da loc UDP)"
 echo "  4) cd /opt/ii/f1 && sudo bash internetIncome.sh --start"
