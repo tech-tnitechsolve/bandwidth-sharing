@@ -170,6 +170,12 @@ while IFS= read -r line; do
 done < "$SYSCTL_FILE"
 log "Kernel tuning xong ($SYSCTL_FILE - dong khong ho tro tu bo qua)"
 
+# Tu dong don file sysctl cua setup.sh cu (tranh 2 nguon config chong lap)
+if [[ -f /etc/sysctl.d/99-vps-optimize.conf ]]; then
+  rm -f /etc/sysctl.d/99-vps-optimize.conf
+  log "Da don /etc/sysctl.d/99-vps-optimize.conf (config cua setup.sh cu)"
+fi
+
 mkdir -p /etc/security/limits.d
 cat > /etc/security/limits.d/99-nofile.conf <<'EOF'
 * soft nofile 1048576
