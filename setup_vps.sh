@@ -5,7 +5,7 @@
 #  TU DONG HOA 100% - chi can:  sudo bash setup_vps.sh
 #   - KHONG tu tai source: ban tu copy folder InternetIncome vao VPS
 #     (toi uu cho chay NHIEU folder InternetIncome tren 1 VPS).
-#   - IDEMPOTENT: chay lai bao nhieu lan cung an toan. Chil restart docker
+#   - IDEMPOTENT: chay lai bao nhieu lan cung an toan. Chi restart docker
 #     neu daemon.json THAT SU doi (lan dau); cac lan sau KHONG dung container.
 #   - Cron 04:15 hang ngay: helper TU QUET folder trong /opt /root /home /srv
 #     (khong can khai bao thu muc, khong hoi tay, folder them sau tu duoc nhan).
@@ -71,9 +71,36 @@ case "$VIRT" in lxc|lxc-libvirt|openvz) IS_CONTAINER=1 ;; esac
 MEM_MB=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
 CPU=$(nproc 2>/dev/null || echo 1)
 
-SWAP_MB=$(( MEM_MB / 2 ))
-if (( SWAP_MB < 1024 )); then SWAP_MB=1024; fi
-if (( SWAP_MB > 8192 )); then SWAP_MB=8192; fi
+#----------------------------------- 1. SWAP ---------------------------------
+# THUAT TOAN TU DIEU CHINH SWAP & SWAPPINESS CHUAN HOA THEO TUNG MUC RAM
+if (( MEM_MB <= 1200 )); then          # ~1.0 GB RAM
+  TARGET_SWAP_MB=3584; SWAPPINESS=60
+elif (( MEM_MB <= 1700 )); then        # ~1.5 GB RAM
+  TARGET_SWAP_MB=3584; SWAPPINESS=60
+elif (( MEM_MB <= 2500 )); then        # ~2.0 GB RAM
+  TARGET_SWAP_MB=4096; SWAPPINESS=60
+elif (( MEM_MB <= 3500 )); then        # ~3.0 GB RAM
+  TARGET_SWAP_MB=4096; SWAPPINESS=50
+elif (( MEM_MB <= 5000 )); then        # ~4.0 GB RAM
+  TARGET_SWAP_MB=4096; SWAPPINESS=40
+elif (( MEM_MB <= 7000 )); then        # ~6.0 GB RAM
+  TARGET_SWAP_MB=4096; SWAPPINESS=30
+elif (( MEM_MB <= 10000 )); then       # ~8.0 GB RAM
+  TARGET_SWAP_MB=4096; SWAPPINESS=20
+elif (( MEM_MB <= 14000 )); then       # ~12.0 GB RAM
+  TARGET_SWAP_MB=6144; SWAPPINESS=20
+else                                   # >= 16.0 GB RAM
+  TARGET_SWAP_MB=8192; SWAPPINESS=10
+fi
+
+# Kiem tra dung luong o dung de khong lam day disk (luon de trong it nhat 2GB disk)
+DISK_FREE_MB=$(df -m / | awk 'NR==2 {print $4}')
+MAX_SAFE_SWAP=$(( DISK_FREE_MB - 2048 ))
+if (( MAX_SAFE_SWAP < 512 )); then MAX_SAFE_SWAP=512; fi
+if (( TARGET_SWAP_MB > MAX_SAFE_SWAP )); then
+  warn "Disk / con trong ${DISK_FREE_MB}MB -> gioi han Swap o ${MAX_SAFE_SWAP}MB de an toan o dia"
+  TARGET_SWAP_MB=$MAX_SAFE_SWAP
+fi
 
 if (( CPU <= 2 )); then
   CONCURRENT_DOWNLOADS=3; SYN_BACKLOG=8192
@@ -85,27 +112,35 @@ fi
 
 echo "=============================================================="
 echo "  VPS $(hostname) | RAM ${MEM_MB}MB | ${CPU} CPU | ao hoa: ${VIRT}"
-echo "  swap=${SWAP_MB}MB | docker parallel downloads=${CONCURRENT_DOWNLOADS}"
+echo "  Swap target=${TARGET_SWAP_MB}MB | Swappiness=${SWAPPINESS} | Parallel downloads=${CONCURRENT_DOWNLOADS}"
 echo "=============================================================="
 if (( MEM_MB < 1800 )); then
   warn "RAM ${MEM_MB}MB kha nho -> voi stack nhieu app, mo MAX_MEMORY=256m va CPU=0.35 trong properties.conf tung folder"
 fi
 
-#----------------------------------- 1. SWAP ---------------------------------
-if swapon --show=NAME --noheadings 2>/dev/null | grep -q .; then
-  log "Da co swap -> bo qua"
-elif (( IS_CONTAINER == 1 )); then
+CURR_SWAP_MB=$(free -m 2>/dev/null | awk '/^Swap:/{print $2}' || echo 0)
+
+if (( IS_CONTAINER == 1 )); then
   warn "May ${VIRT} (container) thuong KHONG tao duoc swap -> bo qua"
+elif (( CURR_SWAP_MB >= TARGET_SWAP_MB - 256 )); then
+  log "Da co swap ${CURR_SWAP_MB}MB (Dat chi tieu ~${TARGET_SWAP_MB}MB) -> bo qua tao moi"
 else
-  if ! fallocate -l "${SWAP_MB}M" /swapfile 2>/dev/null; then
-    dd if=/dev/zero of=/swapfile bs=1M count="$SWAP_MB" status=none
+  NEEDED_SWAP_MB=$(( TARGET_SWAP_MB - CURR_SWAP_MB ))
+  SWAP_TARGET_FILE="/swapfile"
+  if [[ -f /swapfile ]] && swapon --show=NAME 2>/dev/null | grep -q '/swapfile'; then
+    SWAP_TARGET_FILE="/swapfile2"
   fi
-  chmod 600 /swapfile
-  if mkswap /swapfile >/dev/null 2>&1 && swapon /swapfile 2>/dev/null; then
-    grep -q '^/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
-    log "Tao swap ${SWAP_MB}MB thanh cong"
+
+  log "Tao swap them ${NEEDED_SWAP_MB}MB (${SWAP_TARGET_FILE}) [Toan he thong dat ~${TARGET_SWAP_MB}MB]..."
+  if ! fallocate -l "${NEEDED_SWAP_MB}M" "$SWAP_TARGET_FILE" 2>/dev/null; then
+    dd if=/dev/zero of="$SWAP_TARGET_FILE" bs=1M count="$NEEDED_SWAP_MB" status=none
+  fi
+  chmod 600 "$SWAP_TARGET_FILE"
+  if mkswap "$SWAP_TARGET_FILE" >/dev/null 2>&1 && swapon "$SWAP_TARGET_FILE" 2>/dev/null; then
+    grep -q "^${SWAP_TARGET_FILE}" /etc/fstab || echo "${SWAP_TARGET_FILE} none swap sw 0 0" >> /etc/fstab
+    log "Tao swap ${SWAP_TARGET_FILE} ${NEEDED_SWAP_MB}MB thanh cong"
   else
-    rm -f /swapfile
+    rm -f "$SWAP_TARGET_FILE"
     warn "Kernel khong cho tao swap -> bo qua (van chay duoc)"
   fi
 fi
@@ -171,7 +206,7 @@ net.netfilter.nf_conntrack_max = 524288
 net.netfilter.nf_conntrack_udp_timeout = 60
 net.netfilter.nf_conntrack_udp_timeout_stream = 180
 
-vm.swappiness = 10
+vm.swappiness = ${SWAPPINESS}
 vm.vfs_cache_pressure = 50
 
 net.ipv6.conf.all.disable_ipv6 = 1
@@ -184,7 +219,7 @@ while IFS= read -r line; do
   [[ -z "${line//[[:space:]]/}" ]] && continue
   sysctl -w "$line" >/dev/null 2>&1 || true
 done < "$SYSCTL_FILE"
-log "Kernel tuning xong ($SYSCTL_FILE - dong khong ho tro tu bo qua)"
+log "Kernel tuning xong ($SYSCTL_FILE - swappiness=${SWAPPINESS})"
 
 # Tu dong don file sysctl cua setup.sh cu (tranh 2 nguon config chong lap)
 if [[ -f /etc/sysctl.d/99-vps-optimize.conf ]]; then
@@ -299,15 +334,10 @@ else
 fi
 
 #---------------------- 7. CRON 04:15 (helper TU QUET folder) ----------------
-# Thiet ke khong-BASE_DIR: helper tu tim containernames.txt trong 4 root moi lan
-# chay -> khong hoi tay, khong typo, folder them sau tu dong duoc nhan.
 install_cron_stack() {
   cat > /usr/local/bin/ii-restart-all.sh <<'EOS'
 #!/usr/bin/env bash
 # ii-restart-all.sh - TU QUET & restart MOI folder InternetIncome
-# - Tim containernames.txt trong /opt /root /home /srv (toi 4 tang), sort -u chong trung.
-# - Khong dung BASE_DIR co dinh -> folder them/xoa TU DONG duoc nhan dien moi lan chay.
-# - Co don task containerd ket (loi "AlreadyExists", moby/moby#50040) + revive Exited.
 LOG=/var/log/ii-restart.log
 ROOTS=(/opt /root /home /srv __EXTRA__)
 ts() { date '+%F %T'; }
@@ -319,7 +349,6 @@ HAVE_CTR=0; command -v ctr >/dev/null 2>&1 && HAVE_CTR=1
   if (( ${#FILES[@]} == 0 )); then
     echo "[$(ts)] chua thay folder nao (chua --start hoac khong trong ${ROOTS[*]})"
   else
-    # Don task containerd ket TRUOC de "docker restart" khoi gap loi AlreadyExists
     STUCK=$(docker ps -aq --no-trunc -f status=exited 2>/dev/null || true)
     if (( HAVE_CTR == 1 )) && [[ -n "$STUCK" ]]; then
       for cid in $STUCK; do
@@ -338,8 +367,6 @@ HAVE_CTR=0; command -v ctr >/dev/null 2>&1 && HAVE_CTR=1
       xargs -r -a "$cn" docker restart 2>&1 || echo "[$(ts)] !! loi restart tai ${d}"
       sleep 15
     done
-    # Revive: container thuoc cac folder con Exited -> start lai
-    # (docker start tren container dang chay = no-op, khong hai)
     sleep 10
     cat "${FILES[@]}" 2>/dev/null | xargs -r docker start >/dev/null 2>&1
     STILL=$(docker ps -aq -f status=exited 2>/dev/null | wc -l)
@@ -393,7 +420,6 @@ fi
 #------------------ CONG CU ii-status.sh (doc lap cron, LUON duoc cai) ------------------
 cat > /usr/local/bin/ii-status.sh <<'EOS'
 #!/usr/bin/env bash
-# ii-status.sh [duong_dan_them] - folder nao chay bao nhieu container + tai nguyen
 ROOTS=("$@")
 if (( ${#ROOTS[@]} == 0 )); then ROOTS=(/opt /root /home /srv); fi
 
@@ -433,26 +459,11 @@ fi
 echo
 echo "============================= SETUP XONG =============================="
 echo "  Docker : $(docker --version 2>/dev/null || echo 'loi')"
-echo "  Swap   : ${SW_DESC}"
+echo "  Swap   : ${SW_DESC} (Swappiness: ${SWAPPINESS})"
 echo "  Cron   : ${CRON_DESC}"
 echo "  Tool   : sudo ii-status.sh  (xem nhanh folder/container/RAM/Disk)"
 echo "           tail -f /var/log/ii-restart.log  (log restart hang ngay)"
 echo
 echo "----- TU KIEM CHUNG (chinh script tu chay ii-status) -----"
 /usr/local/bin/ii-status.sh || true
-echo
-echo "  CAC BUOC TIEP THEO (neu chua --start lan nao):"
-echo "  1) Copy folder InternetIncome len VPS, to chuc theo muc dich:"
-echo "       ~/dc/f1   (proxy datacenter, nhanh test)"
-echo "       ~/res/f1  (proxy residential, nhanh test)"
-echo "       ~/direct/f1 (IP goc, nhanh main - khong can proxies.txt)"
-echo "  2) cp properties(-proxy-test/-direct-main).conf -> f1/properties.conf, dien token"
-echo "     !! DEVICE_NAME phai KHAC NHAU tung folder: vps01-f1, vps01-f2 ..."
-echo "  3) cp proxies.txt vao f1/  (NEN la list da loc UDP)"
-echo "  4) cd f1 && sudo bash internetIncome.sh --start"
-echo "     -> helper cron TU NHAN folder nay, khong can chay lai setup."
-echo "  5) Kiem chung 24-48h (bat tam ENABLE_LOGS=true):"
-echo "       docker logs <container> 2>&1 | tail -20   # khong 'i/o timeout' lap lai la on"
-echo "     Xong thi tat log lai (ENABLE_LOGS=false)."
-echo "  6) Theo doi MB/ngay tren dashboard TraffMonetizer 7-14 ngay roi moi scale"
 echo "======================================================================"
