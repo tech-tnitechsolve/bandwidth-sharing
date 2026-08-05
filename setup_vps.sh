@@ -171,6 +171,12 @@ while IFS= read -r line; do
 done < "$SYSCTL_FILE"
 log "Kernel tuning xong ($SYSCTL_FILE - dong khong ho tro tu bo qua)"
 
+# Tu dong don file sysctl cua setup.sh cu (tranh 2 nguon config chong lap)
+if [[ -f /etc/sysctl.d/99-vps-optimize.conf ]]; then
+  rm -f /etc/sysctl.d/99-vps-optimize.conf
+  log "Da don /etc/sysctl.d/99-vps-optimize.conf (config cua setup.sh cu)"
+fi
+
 mkdir -p /etc/security/limits.d
 cat > /etc/security/limits.d/99-nofile.conf <<'EOF'
 * soft nofile 1048576
@@ -321,10 +327,19 @@ EOF
   log "Cron: 04:15 hang ngay restart cac folder trong ${BASE_DIR} (log: /var/log/ii-restart.log)"
 }
 
+if (( DO_CRON == 1 )) && [[ -z "$BASE_DIR" ]]; then
+  # Tu dong do thu muc cha dang chua folder InternetIncome (khong can --base-dir nua)
+  AUTO_BASE=""
+  if AUTO_BASE="$( { mapfile -t II_FILES < <(find /opt /root /home /srv -maxdepth 3 -name internetIncome.sh -type f 2>/dev/null); if (( ${#II_FILES[@]} > 0 )); then declare -A II_SEEN=(); II_PARENTS=(); for f in "${II_FILES[@]}"; do p="$(dirname "$f")"; if [[ -z "${II_SEEN[$p]:-}" ]]; then II_SEEN[$p]=1; II_PARENTS+=("$p"); fi; done; if (( ${#II_PARENTS[@]} == 1 )); then printf '%s' "${II_PARENTS[0]}"; fi; fi; } )" && [[ -n "$AUTO_BASE" ]]; then
+    BASE_DIR="$AUTO_BASE"
+    log "Tu dong nhan dien thu muc cha folder InternetIncome: ${BASE_DIR}"
+  fi
+fi
+
 if (( DO_CRON == 1 )) && [[ -z "$BASE_DIR" ]] && [[ -t 0 ]]; then
   echo
-  echo -e "${C_B}Muon cron tu restart tat ca folder luc 04:15 moi ngay?${C_0}"
-  echo    "  Nhap THU MUC CHA chua cac folder InternetIncome (vd: /opt/ii , /root/ii)"
+  echo -e "${C_B}Khong tu dong tim thay thu muc folder (cac folder nam rai rac nhieu noi?).${C_0}"
+  echo    "  Nhap THU MUC CHA chua cac folder InternetIncome (vd: /opt/ii , /home/ubuntu)"
   read -r -p "  (de trong = bo qua cron): " BASE_DIR || true
 fi
 
