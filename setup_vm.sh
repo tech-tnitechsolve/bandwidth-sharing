@@ -243,6 +243,25 @@ fi
 
 if has_systemd; then systemctl enable --now docker >/dev/null 2>&1 || true; fi
 docker info >/dev/null 2>&1 || die "Docker khong chay duoc - kiem tra ao hoa/kernel"
+
+# Revive 3 lop (chi can khi daemon vua restart):
+#  L1: container dung --network=container:tun* thua race khi daemon restart -> Exited 128
+#      (moby/moby#50326) -> start lai theo containernames.txt
+#  L2: shim containerd ket -> loi start "task ... already exists" (moby/moby#50040)
+#      -> ctr task kill/rm bang FULL ID (L3: --no-trunc) roi start lai
+if (( DOCKER_RESTARTED == 1 )); then
+  sleep 15
+  find /opt /root /home /srv -maxdepth 4 -name containernames.txt -type f -exec cat {} + 2>/dev/null \
+    | xargs -r docker start >/dev/null 2>&1 || true
+  if command -v ctr >/dev/null 2>&1; then
+    for cid in $(docker ps -aq --no-trunc -f status=exited 2>/dev/null); do
+      ctr -n moby task kill -s SIGKILL "$cid" >/dev/null 2>&1 || true
+      ctr -n moby task rm "$cid" >/dev/null 2>&1 || true
+    done
+  fi
+  docker ps -aq -f status=exited 2>/dev/null | xargs -r -n1 docker start >/dev/null 2>&1 || true
+  log "Da revive container Exited sau restart docker (ke ca task containerd ket)"
+fi
 RUNNING_AFTER=$(docker ps -q 2>/dev/null | wc -l)
 log "Docker OK (log 10MBx3 | DNS 8.8.8.8+1.1.1.1 | live-restore on)"
 if (( DOCKER_RESTARTED == 1 )) && (( ${RUNNING_BEFORE:-0} > 0 )); then
@@ -280,18 +299,29 @@ sleep 45
 ids=$(docker ps -aq 2>/dev/null || true)
 [[ -z "$ids" ]] && exit 0
 {
-  echo "[$(date '+%F %T')] start lai $(echo "$ids" | wc -l) container"
-  echo "$ids" | xargs -r docker start 2>&1
+  echo "[$(date '+%F %T')] pass1: start $(echo "$ids" | wc -l) container"
+  echo "$ids" | xargs -r -n1 docker start 2>&1
+  # pass2: container dung --network=container:tun* co the thua race pass1
+  # (bat truoc tun -> loi "cannot join network namespace", moby/moby#50326)
+  sleep 20
+  # Don task containerd bi ket (loi start: "task ... already exists", moby/moby#50040)
+  # (--no-trunc: task containerd dang ky bang full ID 64 ky tu, khong dung short ID)
+  for cid in $(docker ps -aq --no-trunc -f status=exited 2>/dev/null); do
+    ctr -n moby task kill -s SIGKILL "$cid" 2>/dev/null
+    ctr -n moby task rm "$cid" 2>/dev/null
+  done
+  echo "[$(date '+%F %T')] pass2: revive container con Exited"
+  docker ps -aq -f status=exited 2>/dev/null | xargs -r -n1 docker start 2>&1
 } >> "$LOG" 2>&1
 EOS
 chmod +x /usr/local/bin/ii-autostart.sh
 
-# Cong cu xem nhanh suc khoe: ii-status.sh [duong_dan] (mac dinh quet /home /root /opt)
+# Cong cu xem nhanh suc khoe: ii-status.sh [duong_dan_them] (mac dinh tu quet /opt /root /home /srv)
 cat > /usr/local/bin/ii-status.sh <<'EOS'
 #!/usr/bin/env bash
-# Xem nhanh: moi folder chay bao nhieu container + RAM/Swap/Disk/Docker
+# ii-status.sh [duong_dan_them] - folder nao chay bao nhieu container + tai nguyen
 ROOTS=("$@")
-if (( ${#ROOTS[@]} == 0 )); then ROOTS=(/home /root /opt); fi
+if (( ${#ROOTS[@]} == 0 )); then ROOTS=(/opt /root /home /srv); fi
 
 echo "===== INTERNETINCOME STATUS ====="
 found=0
@@ -299,19 +329,19 @@ while IFS= read -r cn; do
   d=$(dirname "$cn")
   [[ -f "${d}/internetIncome.sh" ]] || continue
   found=1
-  total=$(wc -l < "$cn" | tr -d ' ')
+  total=$(grep -c . "$cn" 2>/dev/null || echo 0)
   running=0
   while IFS= read -r c; do
-    if [[ "$(docker inspect -f '{{.State.Running}}' "$c" 2>/dev/null)" == "true" ]]; then
-      running=$((running+1))
-    fi
+    [[ "$(docker inspect -f '{{.State.Running}}' "$c" 2>/dev/null)" == "true" ]] && running=$((running+1))
   done < "$cn"
-  printf "  %-48s %4s/%-4s running\n" "$d" "$running" "$total"
-done < <(find "${ROOTS[@]}" -maxdepth 4 -name containernames.txt -type f 2>/dev/null | sort)
+  mark=""
+  (( running < total )) && mark="  <-- THIEU $((total-running))"
+  printf "  %-46s %4s/%-4s running%s\n" "$d" "$running" "$total" "$mark"
+done < <(find "${ROOTS[@]}" -maxdepth 4 -name containernames.txt -type f 2>/dev/null | sort -u)
 if (( found == 0 )); then echo "  (chua thay folder InternetIncome nao)"; fi
 
 echo "----- tai nguyen -----"
-echo "  docker : $(docker ps -q 2>/dev/null | wc -l) running / $(docker ps -aq 2>/dev/null | wc -l) total"
+echo "  docker : $(docker ps -q 2>/dev/null | wc -l) running / $(docker ps -aq 2>/dev/null | wc -l) total (exited: $(docker ps -aq -f status=exited 2>/dev/null | wc -l))"
 free -h | awk '/^Mem:/{printf "  RAM    : %s/%s dang dung\n",$3,$2} /^Swap:/{printf "  Swap   : %s/%s dang dung\n",$3,$2}'
 df -h / | awk 'NR==2{printf "  Disk / : %s/%s (%s)\n",$3,$2,$5}'
 EOS
@@ -334,6 +364,9 @@ EOF
   echo ''
   echo '# Sau khi MO VM: bat lai toan bo container (khong can lam gi them)'
   echo '@reboot root /usr/local/bin/ii-autostart.sh'
+  echo ''
+  echo '# 05:30 chu nhat: don image docker dang (<none>) - VM dia nho, can gon'
+  echo '30 5 * * 0 root /usr/bin/docker image prune -f >/dev/null 2>&1'
   if [[ -n "$AUTO_OFF" ]]; then
     echo ''
     echo "# Tu TAT may dung gio (ban dat: ${AUTO_OFF})"
@@ -360,8 +393,11 @@ echo
 echo "============================= SETUP XONG =============================="
 echo "  Docker : $(docker --version 2>/dev/null || echo 'loi')"
 echo "  Swap   : ${SW_DESC}"
-echo "  Cron   : @reboot autostart container$( [[ -n "$AUTO_OFF" ]] && echo " + poweroff ${AUTO_OFF}" )"
+echo "  Cron   : @reboot autostart + prune CN$( [[ -n "$AUTO_OFF" ]] && echo " + poweroff ${AUTO_OFF}" )"
 echo "  Tool   : sudo ii-status.sh  (xem nhanh folder/container/RAM/Disk)"
+echo
+echo "----- TU KIEM CHUNG (chinh script tu chay ii-status) -----"
+/usr/local/bin/ii-status.sh || true
 echo
 echo "  QUY TRINH SU DUNG HANG NGAY (VM chay 12-15h roi tat):"
 echo "  - LAN DAU (1 lan duy nhat):"
