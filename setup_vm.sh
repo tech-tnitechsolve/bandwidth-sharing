@@ -109,8 +109,12 @@ log "apt update + upgrade..."
 apt-get update -y -qq
 apt-get upgrade -y -qq || true
 apt-get install -y -qq --no-install-recommends \
-  curl wget git unzip jq bc ca-certificates uuid-runtime cron logrotate net-tools
-log "Da cai goi co ban (curl/wget/git/jq/bc/cron/logrotate...)"
+  curl wget git unzip jq bc ca-certificates uuid-runtime cron logrotate net-tools earlyoom
+log "Da cai goi co ban (curl/wget/git/jq/bc/cron/logrotate/earlyoom...)"
+
+# Chong OOM lam treo VM + gio he thong luon dung (TLS/DoH loi neu gio sai)
+if has_systemd; then systemctl enable --now earlyoom >/dev/null 2>&1 || true; fi
+timedatectl set-ntp true 2>/dev/null || true
 
 #--------------------------------- 3. DNS SACH -------------------------------
 if has_systemd && systemctl list-unit-files 2>/dev/null | grep -q '^systemd-resolved'; then
@@ -209,6 +213,7 @@ cat > /etc/docker/daemon.json <<EOF
 }
 EOF
 
+RUNNING_BEFORE=$(docker ps -q 2>/dev/null | wc -l)
 if has_systemd; then
   systemctl enable --now docker >/dev/null 2>&1 || true
   systemctl restart docker
@@ -216,7 +221,15 @@ else
   service docker start >/dev/null 2>&1 || service docker restart || true
 fi
 docker info >/dev/null 2>&1 || die "Docker khong chay duoc - kiem tra ao hoa/kernel"
+RUNNING_AFTER=$(docker ps -q 2>/dev/null | wc -l)
 log "Docker OK (log 10MBx3 | DNS 8.8.8.8+1.1.1.1 | live-restore on)"
+if (( RUNNING_BEFORE > 0 )); then
+  if (( RUNNING_AFTER == RUNNING_BEFORE )); then
+    log "Container dang chay duoc GIU NGUYEN qua restart docker: ${RUNNING_AFTER}/${RUNNING_BEFORE}"
+  else
+    warn "Container truoc=${RUNNING_BEFORE} sau=${RUNNING_AFTER} - kiem tra: docker ps -a"
+  fi
+fi
 
 #------------------------------- 6. PRE-PULL IMAGE ---------------------------
 if (( DO_PULL == 1 )); then
@@ -250,6 +263,37 @@ ids=$(docker ps -aq 2>/dev/null || true)
 } >> "$LOG" 2>&1
 EOS
 chmod +x /usr/local/bin/ii-autostart.sh
+
+# Cong cu xem nhanh suc khoe: ii-status.sh [duong_dan] (mac dinh quet /home /root /opt)
+cat > /usr/local/bin/ii-status.sh <<'EOS'
+#!/usr/bin/env bash
+# Xem nhanh: moi folder chay bao nhieu container + RAM/Swap/Disk/Docker
+ROOTS=("$@")
+if (( ${#ROOTS[@]} == 0 )); then ROOTS=(/home /root /opt); fi
+
+echo "===== INTERNETINCOME STATUS ====="
+found=0
+while IFS= read -r cn; do
+  d=$(dirname "$cn")
+  [[ -f "${d}/internetIncome.sh" ]] || continue
+  found=1
+  total=$(wc -l < "$cn" | tr -d ' ')
+  running=0
+  while IFS= read -r c; do
+    if [[ "$(docker inspect -f '{{.State.Running}}' "$c" 2>/dev/null)" == "true" ]]; then
+      running=$((running+1))
+    fi
+  done < "$cn"
+  printf "  %-48s %4s/%-4s running\n" "$d" "$running" "$total"
+done < <(find "${ROOTS[@]}" -maxdepth 4 -name containernames.txt -type f 2>/dev/null | sort)
+if (( found == 0 )); then echo "  (chua thay folder InternetIncome nao)"; fi
+
+echo "----- tai nguyen -----"
+echo "  docker : $(docker ps -q 2>/dev/null | wc -l) running / $(docker ps -aq 2>/dev/null | wc -l) total"
+free -h | awk '/^Mem:/{printf "  RAM    : %s/%s dang dung\n",$3,$2} /^Swap:/{printf "  Swap   : %s/%s dang dung\n",$3,$2}'
+df -h / | awk 'NR==2{printf "  Disk / : %s/%s (%s)\n",$3,$2,$5}'
+EOS
+chmod +x /usr/local/bin/ii-status.sh
 
 cat > /etc/logrotate.d/ii-logs <<'EOF'
 /var/log/ii-*.log {
@@ -295,11 +339,12 @@ echo "============================= SETUP XONG =============================="
 echo "  Docker : $(docker --version 2>/dev/null || echo 'loi')"
 echo "  Swap   : ${SW_DESC}"
 echo "  Cron   : @reboot autostart container$( [[ -n "$AUTO_OFF" ]] && echo " + poweroff ${AUTO_OFF}" )"
+echo "  Tool   : sudo ii-status.sh  (xem nhanh folder/container/RAM/Disk)"
 echo
 echo "  QUY TRINH SU DUNG HANG NGAY (VM chay 12-15h roi tat):"
 echo "  - LAN DAU (1 lan duy nhat):"
 echo "      1) Copy folder InternetIncome (nhanh test) vao VM, vd ~/ii/f1"
-echo "      2) cp properties-template.conf -> ~/ii/f1/properties.conf, dien token"
+echo "      2) cp properties-proxy-test.conf -> ~/ii/f1/properties.conf, dien token"
 echo "         DEVICE_NAME dat rieng cho VM: vm01 (khac ten tren cac VPS)"
 echo "      3) cp proxies.txt vao ~/ii/f1/"
 echo "      4) cd ~/ii/f1 && sudo bash internetIncome.sh --start"
