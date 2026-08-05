@@ -293,6 +293,11 @@ fi
 
 if [[ -n "$BASE_DIR" ]]; then
   install_cron_stack
+elif [[ -f /etc/cron.d/internetincome ]]; then
+  warn "Lan nay khong cai cron moi, nhung cron CU van dang chay:"
+  warn "  xem       : cat /etc/cron.d/internetincome"
+  warn "  doi folder: sua BASE_DIR trong /usr/local/bin/ii-restart-all.sh"
+  warn "  go bo han : sudo rm /etc/cron.d/internetincome"
 else
   warn "Bo qua cron restart (chay lai: sudo bash $0 --base-dir /opt/ii neu can)"
 fi
