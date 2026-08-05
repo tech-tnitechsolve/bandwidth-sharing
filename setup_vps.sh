@@ -72,6 +72,9 @@ echo "=============================================================="
 echo "  VPS $(hostname) | RAM ${MEM_MB}MB | ${CPU} CPU | ao hoa: ${VIRT}"
 echo "  swap=${SWAP_MB}MB | docker parallel downloads=${CONCURRENT_DOWNLOADS}"
 echo "=============================================================="
+if (( MEM_MB < 1800 )); then
+  warn "RAM ${MEM_MB}MB kha nho -> KHUYEN NGHI: mo MAX_MEMORY=256m va CPU=0.35 trong properties.conf tung folder"
+fi
 
 #----------------------------------- 1. SWAP ---------------------------------
 if swapon --show=NAME --noheadings 2>/dev/null | grep -q .; then
@@ -103,12 +106,14 @@ apt-get update -y -qq
 apt-get upgrade -y -qq || true
 apt-get install -y -qq --no-install-recommends \
   curl wget git unzip jq bc ca-certificates uuid-runtime cron logrotate net-tools earlyoom
+apt-get autoremove -y -qq >/dev/null 2>&1 || true
 log "Da cai goi co ban (curl/wget/git/jq/bc/cron/logrotate/earlyoom...)"
 
 # Chong OOM lam treo may (earlyoom tu giet bot tre an RAM, cuu SSH)
 if has_systemd; then systemctl enable --now earlyoom >/dev/null 2>&1 || true; fi
-# Gio he thong phai dung (TLS/DoH loi neu gio sai)
+# Gio he thong phai dung (TLS/DoH loi neu gio sai) + mui gio VN de cron 04:15 chay dung 4h sang
 timedatectl set-ntp true 2>/dev/null || true
+timedatectl set-timezone Asia/Ho_Chi_Minh 2>/dev/null || true
 # Khong tu reboot vi ban cap nhat (treo may 24/7 phai on dinh)
 mkdir -p /etc/apt/apt.conf.d
 cat > /etc/apt/apt.conf.d/99ii-noreboot <<'EOF'
@@ -192,10 +197,7 @@ else
 fi
 
 mkdir -p /etc/docker
-if [[ -f /etc/docker/daemon.json ]]; then
-  cp -f /etc/docker/daemon.json "/etc/docker/daemon.json.bak.$(date +%Y%m%d%H%M%S)"
-fi
-cat > /etc/docker/daemon.json <<EOF
+NEW_DAEMON="$(cat <<EOF
 {
   "log-driver": "json-file",
   "log-opts": { "max-size": "10m", "max-file": "3" },
@@ -207,18 +209,32 @@ cat > /etc/docker/daemon.json <<EOF
   }
 }
 EOF
+)"
 
-RUNNING_BEFORE=$(docker ps -q 2>/dev/null | wc -l)
-if has_systemd; then
-  systemctl enable --now docker >/dev/null 2>&1 || true
-  systemctl restart docker
+# Chi viet lai + restart docker khi config THAT SU thay doi
+# -> chay lai script nhieu lan KHONG lam dung container dang chay
+DOCKER_RESTARTED=0
+if [[ -f /etc/docker/daemon.json ]] && printf '%s\n' "$NEW_DAEMON" | cmp -s - /etc/docker/daemon.json; then
+  log "daemon.json khong thay doi -> bo qua viet lai & restart docker"
 else
-  service docker start >/dev/null 2>&1 || service docker restart || true
+  if [[ -f /etc/docker/daemon.json ]]; then
+    cp -f /etc/docker/daemon.json "/etc/docker/daemon.json.bak.$(date +%Y%m%d%H%M%S)"
+  fi
+  printf '%s\n' "$NEW_DAEMON" > /etc/docker/daemon.json
+  RUNNING_BEFORE=$(docker ps -q 2>/dev/null | wc -l)
+  if has_systemd; then
+    systemctl restart docker
+  else
+    service docker start >/dev/null 2>&1 || service docker restart || true
+  fi
+  DOCKER_RESTARTED=1
 fi
+
+if has_systemd; then systemctl enable --now docker >/dev/null 2>&1 || true; fi
 docker info >/dev/null 2>&1 || die "Docker khong chay duoc - kiem tra ao hoa/kernel"
 RUNNING_AFTER=$(docker ps -q 2>/dev/null | wc -l)
 log "Docker OK (log 10MBx3 | DNS 8.8.8.8+1.1.1.1 | live-restore on)"
-if (( RUNNING_BEFORE > 0 )); then
+if (( DOCKER_RESTARTED == 1 )) && (( ${RUNNING_BEFORE:-0} > 0 )); then
   if (( RUNNING_AFTER == RUNNING_BEFORE )); then
     log "Container dang chay duoc GIU NGUYEN qua restart docker: ${RUNNING_AFTER}/${RUNNING_BEFORE}"
   else
@@ -275,38 +291,6 @@ EOS
   sed -i "s|__BASE_DIR__|${BASE_DIR}|g" /usr/local/bin/ii-restart-all.sh
   chmod +x /usr/local/bin/ii-restart-all.sh
 
-  # Cong cu xem nhanh suc khoe toan he thong: ii-status.sh [duong_dan]
-  cat > /usr/local/bin/ii-status.sh <<'EOS'
-#!/usr/bin/env bash
-# Xem nhanh: moi folder chay bao nhieu container + RAM/Swap/Disk/Docker
-ROOTS=("$@")
-if (( ${#ROOTS[@]} == 0 )); then ROOTS=(__DEFAULT_ROOTS__); fi
-
-echo "===== INTERNETINCOME STATUS ====="
-found=0
-while IFS= read -r cn; do
-  d=$(dirname "$cn")
-  [[ -f "${d}/internetIncome.sh" ]] || continue
-  found=1
-  total=$(wc -l < "$cn" | tr -d ' ')
-  running=0
-  while IFS= read -r c; do
-    if [[ "$(docker inspect -f '{{.State.Running}}' "$c" 2>/dev/null)" == "true" ]]; then
-      running=$((running+1))
-    fi
-  done < "$cn"
-  printf "  %-48s %4s/%-4s running\n" "$d" "$running" "$total"
-done < <(find "${ROOTS[@]}" -maxdepth 4 -name containernames.txt -type f 2>/dev/null | sort)
-if (( found == 0 )); then echo "  (chua thay folder InternetIncome nao)"; fi
-
-echo "----- tai nguyen -----"
-echo "  docker : $(docker ps -q 2>/dev/null | wc -l) running / $(docker ps -aq 2>/dev/null | wc -l) total"
-free -h | awk '/^Mem:/{printf "  RAM    : %s/%s dang dung\n",$3,$2} /^Swap:/{printf "  Swap   : %s/%s dang dung\n",$3,$2}'
-df -h / | awk 'NR==2{printf "  Disk / : %s/%s (%s)\n",$3,$2,$5}'
-EOS
-  sed -i "s|__DEFAULT_ROOTS__|\"${BASE_DIR}\"|" /usr/local/bin/ii-status.sh
-  chmod +x /usr/local/bin/ii-status.sh
-
   cat > /etc/logrotate.d/ii-logs <<'EOF'
 /var/log/ii-*.log {
     weekly
@@ -354,6 +338,42 @@ elif [[ -f /etc/cron.d/internetincome ]]; then
 else
   warn "Bo qua cron restart (chay lai: sudo bash $0 --base-dir /opt/ii neu can)"
 fi
+
+#------------------ CONG CU ii-status.sh (doc lap cron, LUON duoc cai) ------------------
+cat > /usr/local/bin/ii-status.sh <<'EOS'
+#!/usr/bin/env bash
+# Xem nhanh: moi folder chay bao nhieu container + RAM/Swap/Disk/Docker
+ROOTS=("$@")
+if (( ${#ROOTS[@]} == 0 )); then ROOTS=(__DEFAULT_ROOTS__); fi
+
+echo "===== INTERNETINCOME STATUS ====="
+found=0
+while IFS= read -r cn; do
+  d=$(dirname "$cn")
+  [[ -f "${d}/internetIncome.sh" ]] || continue
+  found=1
+  total=$(wc -l < "$cn" | tr -d ' ')
+  running=0
+  while IFS= read -r c; do
+    if [[ "$(docker inspect -f '{{.State.Running}}' "$c" 2>/dev/null)" == "true" ]]; then
+      running=$((running+1))
+    fi
+  done < "$cn"
+  printf "  %-48s %4s/%-4s running\n" "$d" "$running" "$total"
+done < <(find "${ROOTS[@]}" -maxdepth 4 -name containernames.txt -type f 2>/dev/null | sort)
+if (( found == 0 )); then echo "  (chua thay folder InternetIncome nao)"; fi
+
+echo "----- tai nguyen -----"
+echo "  docker : $(docker ps -q 2>/dev/null | wc -l) running / $(docker ps -aq 2>/dev/null | wc -l) total"
+free -h | awk '/^Mem:/{printf "  RAM    : %s/%s dang dung\n",$3,$2} /^Swap:/{printf "  Swap   : %s/%s dang dung\n",$3,$2}'
+df -h / | awk 'NR==2{printf "  Disk / : %s/%s (%s)\n",$3,$2,$5}'
+EOS
+if [[ -n "$BASE_DIR" ]]; then
+  sed -i "s|__DEFAULT_ROOTS__|\"${BASE_DIR}\"|" /usr/local/bin/ii-status.sh
+else
+  sed -i "s|__DEFAULT_ROOTS__|/opt /root /home|" /usr/local/bin/ii-status.sh
+fi
+chmod +x /usr/local/bin/ii-status.sh
 
 #--------------------------------- TONG KET ----------------------------------
 SW_DESC=$(swapon --show=SIZE --noheadings 2>/dev/null | paste -sd' ' -)
