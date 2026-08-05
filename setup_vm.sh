@@ -71,6 +71,9 @@ echo "=============================================================="
 echo "  VM $(hostname) | RAM ${MEM_MB}MB | ${CPU} CPU | ao hoa: ${VIRT}"
 echo "  swap=${SWAP_MB}MB | docker parallel downloads=${CONCURRENT_DOWNLOADS}"
 echo "=============================================================="
+if (( MEM_MB < 1800 )); then
+  warn "RAM ${MEM_MB}MB kha nho -> KHUYEN NGHI: mo MAX_MEMORY=256m va CPU=0.35 trong properties.conf tung folder"
+fi
 
 #----------------------------------- 1. SWAP ---------------------------------
 if swapon --show=NAME --noheadings 2>/dev/null | grep -q .; then
@@ -110,11 +113,13 @@ apt-get update -y -qq
 apt-get upgrade -y -qq || true
 apt-get install -y -qq --no-install-recommends \
   curl wget git unzip jq bc ca-certificates uuid-runtime cron logrotate net-tools earlyoom
+apt-get autoremove -y -qq >/dev/null 2>&1 || true
 log "Da cai goi co ban (curl/wget/git/jq/bc/cron/logrotate/earlyoom...)"
 
-# Chong OOM lam treo VM + gio he thong luon dung (TLS/DoH loi neu gio sai)
+# Chong OOM lam treo VM + gio he thong luon dung (TLS/DoH loi neu gio sai) + mui gio VN
 if has_systemd; then systemctl enable --now earlyoom >/dev/null 2>&1 || true; fi
 timedatectl set-ntp true 2>/dev/null || true
+timedatectl set-timezone Asia/Ho_Chi_Minh 2>/dev/null || true
 
 #--------------------------------- 3. DNS SACH -------------------------------
 if has_systemd && systemctl list-unit-files 2>/dev/null | grep -q '^systemd-resolved'; then
@@ -197,10 +202,7 @@ if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
 fi
 
 mkdir -p /etc/docker
-if [[ -f /etc/docker/daemon.json ]]; then
-  cp -f /etc/docker/daemon.json "/etc/docker/daemon.json.bak.$(date +%Y%m%d%H%M%S)"
-fi
-cat > /etc/docker/daemon.json <<EOF
+NEW_DAEMON="$(cat <<EOF
 {
   "log-driver": "json-file",
   "log-opts": { "max-size": "10m", "max-file": "3" },
@@ -212,18 +214,32 @@ cat > /etc/docker/daemon.json <<EOF
   }
 }
 EOF
+)"
 
-RUNNING_BEFORE=$(docker ps -q 2>/dev/null | wc -l)
-if has_systemd; then
-  systemctl enable --now docker >/dev/null 2>&1 || true
-  systemctl restart docker
+# Chi viet lai + restart docker khi config THAT SU thay doi
+# -> chay lai script nhieu lan KHONG lam dung container dang chay
+DOCKER_RESTARTED=0
+if [[ -f /etc/docker/daemon.json ]] && printf '%s\n' "$NEW_DAEMON" | cmp -s - /etc/docker/daemon.json; then
+  log "daemon.json khong thay doi -> bo qua viet lai & restart docker"
 else
-  service docker start >/dev/null 2>&1 || service docker restart || true
+  if [[ -f /etc/docker/daemon.json ]]; then
+    cp -f /etc/docker/daemon.json "/etc/docker/daemon.json.bak.$(date +%Y%m%d%H%M%S)"
+  fi
+  printf '%s\n' "$NEW_DAEMON" > /etc/docker/daemon.json
+  RUNNING_BEFORE=$(docker ps -q 2>/dev/null | wc -l)
+  if has_systemd; then
+    systemctl restart docker
+  else
+    service docker start >/dev/null 2>&1 || service docker restart || true
+  fi
+  DOCKER_RESTARTED=1
 fi
+
+if has_systemd; then systemctl enable --now docker >/dev/null 2>&1 || true; fi
 docker info >/dev/null 2>&1 || die "Docker khong chay duoc - kiem tra ao hoa/kernel"
 RUNNING_AFTER=$(docker ps -q 2>/dev/null | wc -l)
 log "Docker OK (log 10MBx3 | DNS 8.8.8.8+1.1.1.1 | live-restore on)"
-if (( RUNNING_BEFORE > 0 )); then
+if (( DOCKER_RESTARTED == 1 )) && (( ${RUNNING_BEFORE:-0} > 0 )); then
   if (( RUNNING_AFTER == RUNNING_BEFORE )); then
     log "Container dang chay duoc GIU NGUYEN qua restart docker: ${RUNNING_AFTER}/${RUNNING_BEFORE}"
   else
