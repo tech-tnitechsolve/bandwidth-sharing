@@ -3,13 +3,20 @@
 #  setup_vps.sh (FINAL MASTER) - SETUP VPS CHAY 24/7 CHO INTERNETINCOME
 #
 #  TU DONG HOA 100% - chi can:  sudo bash setup_vps.sh
-#   - KHONG tu tai source: ban tu copy folder InternetIncome vao VPS.
+#   - KHONG tu tai source: ban tu copy folder InternetIncome vao VPS
+#     (toi uu cho chay NHIEU folder InternetIncome tren 1 VPS).
 #   - IDEMPOTENT: chay lai bao nhieu lan cung an toan. Chi restart docker
 #     neu daemon.json THAT SU doi (lan dau); cac lan sau KHONG dung container.
 #   - Cron 04:15 hang ngay: helper TU QUET folder trong /opt /root /home /srv
 #     (cuon chieu tung folder, nghi 15s/folder chong vot CPU).
 #   - Tu dong tinh Swap + Swappiness chuan hoa theo RAM tu 1GB -> 16GB.
-#   - Tich hop san vnstat, nload, speedtest-cli do bang thong tu dong.
+#   - Tich hop san vnstat (tu loc card rac veth), nload, speedtest-cli.
+#
+#  THAM SO (khong bat buoc):
+#   --base-dir DIR   : quet THEM thu muc DIR ngoai 4 root mac dinh
+#   --no-cron        : bo qua cron restart hang ngay
+#   --no-pull        : bo qua pre-pull image docker
+#   -h|--help        : xem huong dan
 #============================================================================
 set -Eeuo pipefail
 
@@ -43,11 +50,13 @@ command -v apt-get >/dev/null 2>&1 || die "Script ho tro Debian/Ubuntu (apt-get)
 
 has_systemd() { command -v systemctl >/dev/null 2>/dev/null && [[ -d /run/systemd/system ]]; }
 
+# Validate --base-dir (chong typo kieu /home/ubunt): ton tai moi dung
 if [[ -n "$BASE_DIR" ]]; then
   if [[ -d "$BASE_DIR" ]]; then
     log "Quet them thu muc: ${BASE_DIR}"
   else
-    warn "--base-dir '${BASE_DIR}' KHONG ton tai -> bo qua."
+    warn "--base-dir '${BASE_DIR}' KHONG ton tai -> bo qua (kiem tra lai chinh ta)."
+    warn "Luu y: mac dinh helper da tu quet /opt /root /home /srv, hau nhu KHONG can tham so nay."
     BASE_DIR=""
   fi
 fi
@@ -61,6 +70,7 @@ MEM_MB=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
 CPU=$(nproc 2>/dev/null || echo 1)
 
 #----------------------------------- 1. SWAP ---------------------------------
+# THUAT TOAN TU DIEU CHINH SWAP & SWAPPINESS CHUAN HOA THEO TUNG MUC RAM
 if (( MEM_MB <= 1200 )); then          # ~1.0 GB RAM
   TARGET_SWAP_MB=3584; SWAPPINESS=60
 elif (( MEM_MB <= 1700 )); then        # ~1.5 GB RAM
@@ -100,8 +110,11 @@ fi
 
 echo "=============================================================="
 echo "  VPS $(hostname) | RAM ${MEM_MB}MB | ${CPU} CPU | ao hoa: ${VIRT}"
-echo "  Swap target=${TARGET_SWAP_MB}MB | Swappiness=${SWAPPINESS} | Downloads=${CONCURRENT_DOWNLOADS}"
+echo "  Swap target=${TARGET_SWAP_MB}MB | Swappiness=${SWAPPINESS} | Parallel downloads=${CONCURRENT_DOWNLOADS}"
 echo "=============================================================="
+if (( MEM_MB < 1800 )); then
+  warn "RAM ${MEM_MB}MB kha nho -> voi stack nhieu app, mo MAX_MEMORY=256m va CPU=0.35 trong properties.conf tung folder"
+fi
 
 CURR_SWAP_MB=$(free -m 2>/dev/null | awk '/^Swap:/{print $2}' || echo 0)
 
@@ -143,21 +156,28 @@ apt-get install -y -qq --no-install-recommends \
   curl wget git unzip jq bc ca-certificates uuid-runtime cron logrotate net-tools earlyoom \
   vnstat nload speedtest-cli
 apt-get autoremove -y -qq >/dev/null 2>&1 || true
-log "Da cai goi co ban + vnstat/nload/speedtest-cli..."
+log "Da cai goi co ban (curl/wget/git/jq/bc/cron/logrotate/earlyoom/vnstat/nload/speedtest)..."
 
-# Tu dong cau hinh vnstat theo dung Card mang chinh (eth0/ens3/ens18...)
+# Tu dong cau hinh vnstat theo card mang chinh + loai bo card rac veth Docker
 MAIN_IF=$(ip route 2>/dev/null | grep default | awk '{print $5}' | head -n1 || echo "")
-if [[ -n "$MAIN_IF" && -f /etc/vnstat.conf ]]; then
-  sed -i "s/Interface \".*\"/Interface \"$MAIN_IF\"/" /etc/vnstat.conf
+if [[ -f /etc/vnstat.conf ]]; then
+  if [[ -n "$MAIN_IF" ]]; then
+    sed -i "s/Interface \".*\"/Interface \"$MAIN_IF\"/" /etc/vnstat.conf
+  fi
+  grep -q 'ExcludeInterface' /etc/vnstat.conf || echo 'ExcludeInterface "veth* docker0 tun*"' >> /etc/vnstat.conf
   if has_systemd; then systemctl restart vnstat 2>/dev/null || true; fi
+  log "vnstat da tu dong chon card mang chính: ${MAIN_IF:-eth0} (an card rac veth)"
 fi
 
+# Chong OOM lam treo may (earlyoom tu giet bot tre an RAM, cuu SSH)
 if has_systemd; then systemctl enable --now earlyoom >/dev/null 2>&1 || true; fi
+# Gio he thong phai dung (TLS/DoH loi neu gio sai) + mui gio VN de cron 04:15 chay dung 4h sang
 timedatectl set-ntp true 2>/dev/null || true
 timedatectl set-timezone Asia/Ho_Chi_Minh 2>/dev/null || true
-
+# Khong tu reboot vi ban cap nhat (treo may 24/7 phai on dinh)
 mkdir -p /etc/apt/apt.conf.d
 cat > /etc/apt/apt.conf.d/99ii-noreboot <<'EOF'
+// InternetIncome VPS - khong tu khoi dong lai vi unattended-upgrades
 Unattended-Upgrade::Automatic-Reboot "false";
 Unattended-Upgrade::Automatic-Reboot-WithUsers "false";
 EOF
@@ -168,7 +188,7 @@ if has_systemd && systemctl list-unit-files 2>/dev/null | grep -q '^systemd-reso
 fi
 rm -f /etc/resolv.conf
 printf 'nameserver 8.8.8.8\nnameserver 1.1.1.1\n' > /etc/resolv.conf
-log "resolv.conf -> 8.8.8.8 + 1.1.1.1"
+log "resolv.conf -> 8.8.8.8 + 1.1.1.1 (khong chattr, de linh hoat)"
 
 #------------------------------- 4. KERNEL TUNING ----------------------------
 modprobe nf_conntrack 2>/dev/null || true
@@ -211,8 +231,10 @@ while IFS= read -r line; do
 done < "$SYSCTL_FILE"
 log "Kernel tuning xong ($SYSCTL_FILE - swappiness=${SWAPPINESS})"
 
+# Tu dong don file sysctl cua setup.sh cu (tranh 2 nguon config chong lap)
 if [[ -f /etc/sysctl.d/99-vps-optimize.conf ]]; then
   rm -f /etc/sysctl.d/99-vps-optimize.conf
+  log "Da don /etc/sysctl.d/99-vps-optimize.conf (config cua setup.sh cu)"
 fi
 
 mkdir -p /etc/security/limits.d
@@ -230,6 +252,7 @@ SystemMaxUse=50M
 RuntimeMaxUse=20M
 EOF
 if has_systemd; then systemctl restart systemd-journald 2>/dev/null || true; fi
+log "Gioi han journald 50MB + nofile 1048576"
 
 #---------------------------------- 5. DOCKER --------------------------------
 if ! command -v docker >/dev/null 2>&1; then
@@ -254,6 +277,8 @@ NEW_DAEMON="$(cat <<EOF
 EOF
 )"
 
+# Chi viet lai + restart docker khi config THAT SU thay doi
+# -> chay lai script nhieu lan KHONG lam dung container dang chay
 DOCKER_RESTARTED=0
 if [[ -f /etc/docker/daemon.json ]] && printf '%s\n' "$NEW_DAEMON" | cmp -s - /etc/docker/daemon.json; then
   log "daemon.json khong thay doi -> bo qua viet lai & restart docker"
@@ -272,7 +297,13 @@ else
 fi
 
 if has_systemd; then systemctl enable --now docker >/dev/null 2>&1 || true; fi
+docker info >/dev/null 2>&1 || die "Docker khong chay duoc - kiem tra ao hoa/kernel"
 
+# Revive 3 lop (chi can khi daemon vua restart):
+#  L1: container dung --network=container:tun* thua race khi daemon restart -> Exited 128
+#      (moby/moby#50326) -> start lai theo containernames.txt
+#  L2: shim containerd ket -> loi start "task ... already exists" (moby/moby#50040)
+#      -> ctr task kill/rm bang FULL ID (L3: --no-trunc) roi start lai
 if (( DOCKER_RESTARTED == 1 )); then
   sleep 15
   find /opt /root /home /srv -maxdepth 4 -name containernames.txt -type f -exec cat {} + 2>/dev/null \
@@ -284,6 +315,16 @@ if (( DOCKER_RESTARTED == 1 )); then
     done
   fi
   docker ps -aq -f status=exited 2>/dev/null | xargs -r -n1 docker start >/dev/null 2>&1 || true
+  log "Da revive container Exited sau restart docker (ke ca task containerd ket)"
+fi
+RUNNING_AFTER=$(docker ps -q 2>/dev/null | wc -l)
+log "Docker OK (log 10MBx3 | DNS 8.8.8.8+1.1.1.1 | live-restore on)"
+if (( DOCKER_RESTARTED == 1 )) && (( ${RUNNING_BEFORE:-0} > 0 )); then
+  if (( RUNNING_AFTER == RUNNING_BEFORE )); then
+    log "Container dang chay duoc GIU NGUYEN qua restart docker: ${RUNNING_AFTER}/${RUNNING_BEFORE}"
+  else
+    warn "Container truoc=${RUNNING_BEFORE} sau=${RUNNING_AFTER} - kiem tra: docker ps -a"
+  fi
 fi
 
 #------------------------------- 6. PRE-PULL IMAGE ---------------------------
@@ -291,14 +332,22 @@ if (( DO_PULL == 1 )); then
   for img in "traffmonetizer/cli_v2:latest" "xjasonlyu/tun2socks:latest"; do
     if docker pull "$img" >/dev/null 2>&1; then
       log "pull OK: $img"
+    else
+      warn "pull loi: $img (se tu pull lai luc --start)"
     fi
   done
+  if docker pull ghcr.io/xjasonlyu/tun2socks:latest >/dev/null 2>&1; then
+    log "pull OK: ghcr.io/xjasonlyu/tun2socks (du phong)"
+  fi
+else
+  log "Bo qua pre-pull (--no-pull)"
 fi
 
 #---------------------- 7. CRON 04:15 (helper TU QUET folder) ----------------
 install_cron_stack() {
   cat > /usr/local/bin/ii-restart-all.sh <<'EOS'
 #!/usr/bin/env bash
+# ii-restart-all.sh - TU QUET & restart MOI folder InternetIncome
 LOG=/var/log/ii-restart.log
 ROOTS=(/opt /root /home /srv __EXTRA__)
 ts() { date '+%F %T'; }
@@ -316,6 +365,7 @@ HAVE_CTR=0; command -v ctr >/dev/null 2>&1 && HAVE_CTR=1
         ctr -n moby task kill -s SIGKILL "$cid" >/dev/null 2>&1
         ctr -n moby task rm "$cid" >/dev/null 2>&1
       done
+      echo "[$(ts)] da don task containerd ket (neu co)"
     fi
     TOTAL=0
     for cn in "${FILES[@]}"; do
@@ -329,6 +379,8 @@ HAVE_CTR=0; command -v ctr >/dev/null 2>&1 && HAVE_CTR=1
     done
     sleep 10
     cat "${FILES[@]}" 2>/dev/null | xargs -r docker start >/dev/null 2>&1
+    STILL=$(docker ps -aq -f status=exited 2>/dev/null | wc -l)
+    echo "[$(ts)] xong: ${TOTAL} container / ${#FILES[@]} folder | con Exited: ${STILL}"
   fi
 } >> "$LOG" 2>&1
 EOS
@@ -366,11 +418,16 @@ EOF
   else
     service cron start >/dev/null 2>&1 || true
   fi
+  log "Cron 04:15 hang ngay: TU QUET folder trong /opt /root /home /srv (log /var/log/ii-restart.log)"
 }
 
-if (( DO_CRON == 1 )); then install_cron_stack; fi
+if (( DO_CRON == 1 )); then
+  install_cron_stack
+else
+  warn "Bo qua cron restart (--no-cron)"
+fi
 
-#------------------ CONG CU ii-status.sh (HOAN CHINH) ------------------
+#------------------ CONG CU ii-status.sh (doc lap cron, LUON duoc cai) ------------------
 cat > /usr/local/bin/ii-status.sh <<'EOS'
 #!/usr/bin/env bash
 ROOTS=("$@")
@@ -397,20 +454,31 @@ echo "----- TAI NGUYEN HE THONG -----"
 echo "  Docker    : $(docker ps -q 2>/dev/null | wc -l) running / $(docker ps -aq 2>/dev/null | wc -l) total (exited: $(docker ps -aq -f status=exited 2>/dev/null | wc -l))"
 free -h | awk '/^Mem:/{printf "  RAM       : %s/%s dang dung\n",$3,$2} /^Swap:/{printf "  Swap      : %s/%s dang dung\n",$3,$2}'
 df -h / | awk 'NR==2{printf "  Disk /    : %s/%s (%s)\n",$3,$2,$5}'
-echo "----- BANG THONG DA DUNG -----"
-vnstat -i $(ip route 2>/dev/null | grep default | awk '{print $5}' | head -n1) 2>/dev/null | tail -n 4 || echo "  (vnstat dang khoi tao du lieu...)"
+echo "----- BANG THONG DANG DUNG -----"
+MAIN_IF_SYS=$(ip route 2>/dev/null | grep default | awk '{print $5}' | head -n1 || echo "")
+vnstat -i "$MAIN_IF_SYS" 2>/dev/null | tail -n 4 || echo "  (vnstat dang khoi tao du lieu...)"
 EOS
 chmod +x /usr/local/bin/ii-status.sh
 
 #--------------------------------- TONG KET ----------------------------------
 SW_DESC=$(swapon --show=SIZE --noheadings 2>/dev/null | paste -sd' ' -)
 if [[ -z "$SW_DESC" ]]; then SW_DESC="khong co"; fi
+if [[ -f /etc/cron.d/internetincome ]]; then
+  CRON_DESC="DA CAI: 04:15 hang ngay restart TU QUET + prune CN (/etc/cron.d/internetincome)"
+else
+  CRON_DESC="khong cai (--no-cron)"
+fi
 
 echo
 echo "============================= SETUP XONG =============================="
 echo "  Docker    : $(docker --version 2>/dev/null || echo 'loi')"
 echo "  Swap      : ${SW_DESC} (Swappiness: ${SWAPPINESS})"
 echo "  Bandwidth : vnstat / nload / speedtest-cli (Card: ${MAIN_IF:-eth0})"
-echo "  Tool xem  : sudo ii-status.sh  | vnstat | nload | speedtest-cli"
-echo "======================================================================"
+echo "  Cron      : ${CRON_DESC}"
+echo "  Tool      : sudo ii-status.sh  (xem nhanh folder/container/RAM/Disk/BangThong)"
+echo "              vnstat -i ${MAIN_IF:-eth0}  |  nload ${MAIN_IF:-eth0}  |  speedtest-cli"
+echo "              tail -f /var/log/ii-restart.log  (log restart hang ngay)"
+echo
+echo "----- TU KIEM CHUNG (chinh script tu chay ii-status) -----"
 /usr/local/bin/ii-status.sh || true
+echo "======================================================================"
