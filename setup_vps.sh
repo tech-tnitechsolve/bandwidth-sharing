@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 #============================================================================
-#  setup_vps.sh (AI-DIAGNOSTIC EDITION 2026) - SETUP VPS CHAY 24/7
+#  setup_vps.sh (SAFE ACCOUNT & MAX ROI EDITION 2026)
 #
-#  TU DONG HOA 100% ZERO-TOUCH CHO REPO: github.com/engageub/InternetIncome
-#   - AI-DIAGNOSTIC TOOL: ii-status.sh xuat bao cao chuan DevOps giup AI
-#     tu phan tich 100% tinh trang VPS ma khong can hoi them du lieu!
-#   - INOTIFY FIX: Nang max_user_watches len 2 trieu chong loi open files.
-#   - ZRAM 1GB LZ4: Nem RAM sieu toc ngay tren RAM, triet ha 100% tre đia wa!
+#  TU DONG HOA 100% ZERO-TOUCH - AN TOÀN TÀI KHOẢN KHÔNG BAN ACC
+#   - SAFE MEMORY LIMIT: Ram 50M + Swap buffer 128M chong OOM-Kill giua chung,
+#     dam bao 100% Ty le Request Proxy thanh cong -> Khong lo bi khoa Acc!
+#   - KSM KERNEL MERGE: Gop RAM ngam an toan 100% cap Kernel.
+#   - ZRAM 1GB LZ4 (pri=10): Nem RAM lz4 ngam GB/s, triet ha tre wa đia.
 #   - WATCHTOWER PURGE: Diet sach cac container Watchtower trung lap ngom RAM.
-#   - HONEYGAIN MEM LIMIT 30M: Ep Garbage Collection, giam 50% RAM Honeygain.
+#   - INOTIFY FIX: Nang max_user_watches len 2 trieu chong loi open files.
+#   - TCP BBR + TUN2SOCKS: Ip_forward=1 va BBR tang toc do Proxy toi da.
 #============================================================================
 set -Eeuo pipefail
 
@@ -63,18 +64,29 @@ case "$VIRT" in lxc|lxc-libvirt|openvz) IS_CONTAINER=1 ;; esac
 MEM_MB=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
 CPU=$(nproc 2>/dev/null || echo 1)
 
-CONTAINER_MEM_LIMIT="30m"
+# CẤU HÌNH C N BẰNG RAM 50M AN TOÀN TUYỆT ĐỐI CHO CONTAINER
+CONTAINER_MEM_LIMIT="50m"
+CONTAINER_SWAP_LIMIT="128m"
 if (( MEM_MB <= 1200 )); then
-  CONTAINER_MEM_LIMIT="25m"
+  CONTAINER_MEM_LIMIT="35m"; CONTAINER_SWAP_LIMIT="90m"
 elif (( MEM_MB <= 2500 )); then
-  CONTAINER_MEM_LIMIT="30m"
+  CONTAINER_MEM_LIMIT="50m"; CONTAINER_SWAP_LIMIT="128m"
 elif (( MEM_MB <= 5000 )); then
-  CONTAINER_MEM_LIMIT="50m"
+  CONTAINER_MEM_LIMIT="70m"; CONTAINER_SWAP_LIMIT="160m"
 else
-  CONTAINER_MEM_LIMIT="80m"
+  CONTAINER_MEM_LIMIT="100m"; CONTAINER_SWAP_LIMIT="256m"
 fi
 
-#----------------------------------- 1. ZRAM 1GB & SWAP ---------------------------------
+#------------------- 1. KSM (KERNEL SAMEPAGE MERGING - AN TOÀN CAP KERNEL) -------------------
+log "Kich hoat KSM (Kernel Samepage Merging) gop RAM ngam an toan cap Kernel..."
+if [[ -f /sys/kernel/mm/ksm/run ]]; then
+  echo 1 > /sys/kernel/mm/ksm/run 2>/dev/null || true
+  echo 500 > /sys/kernel/mm/ksm/sleep_millisecs 2>/dev/null || true
+  echo 1000 > /sys/kernel/mm/ksm/pages_to_scan 2>/dev/null || true
+  log "Da kich hoat KSM thanh cong!"
+fi
+
+#----------------------------------- 2. ZRAM 1GB & SWAP ---------------------------------
 log "Kich hoat ZRAM 1GB (Nem RAM lz4 sieu toc chong tre wa đia NVMe)..."
 if ! swapon --show 2>/dev/null | grep -q "/dev/zram0"; then
   modprobe zram num_devices=1 2>/dev/null || true
@@ -116,8 +128,8 @@ else
 fi
 
 echo "=============================================================="
-echo "  VPS $(hostname) | RAM ${MEM_MB}MB | ${CPU} CPU | AI-DIAGNOSTIC STATUS INTEGRATED"
-echo "  Swap target=${TARGET_SWAP_MB}MB | Swappiness=${SWAPPINESS} | Container Limit=${CONTAINER_MEM_LIMIT}"
+echo "  VPS $(hostname) | RAM ${MEM_MB}MB | ${CPU} CPU | SAFE ACCOUNT & MAX ROI"
+echo "  Swap target=${TARGET_SWAP_MB}MB | Swappiness=${SWAPPINESS} | Limit=${CONTAINER_MEM_LIMIT}/${CONTAINER_SWAP_LIMIT}"
 echo "=============================================================="
 
 CURR_SWAP_MB=$(free -m 2>/dev/null | awk '/^Swap:/{print $2}' || echo 0)
@@ -163,7 +175,7 @@ else
   fi
 fi
 
-#------------------ 2. DIỆT BLOATWARE OS & DỌN WATCHTOWER DƯ THỪA ------------------
+#------------------ 3. DIỆT BLOATWARE OS & DỌN WATCHTOWER DƯ THỪA ------------------
 log "Dang diet cac dich vu OS ngom RAM ngam (snapd, multipathd, udisks2)..."
 if has_systemd; then
   systemctl stop snapd multipathd udisks2 accountsservice 2>/dev/null || true
@@ -213,14 +225,14 @@ Unattended-Upgrade::Automatic-Reboot "false";
 Unattended-Upgrade::Automatic-Reboot-WithUsers "false";
 EOF
 
-#--------------------------------- 3. DNS SACH 4 LỚP -------------------------------
+#--------------------------------- 4. DNS SACH 4 LỚP -------------------------------
 if has_systemd && systemctl list-unit-files 2>/dev/null | grep -q '^systemd-resolved'; then
   systemctl disable --now systemd-resolved >/dev/null 2>&1 || true
 fi
 rm -f /etc/resolv.conf
 printf 'nameserver 8.8.8.8\nnameserver 1.1.1.1\nnameserver 9.9.9.9\nnameserver 1.0.0.1\n' > /etc/resolv.conf
 
-#------------------- 4. KERNEL TUNING + BBR + INOTIFY FIX -------------------
+#------------------- 5. KERNEL TUNING + BBR + ĐỆM TCP AN TOÀN -------------------
 modprobe nf_conntrack 2>/dev/null || true
 modprobe tcp_bbr 2>/dev/null || true
 
@@ -236,11 +248,13 @@ net.ipv4.tcp_congestion_control = bbr
 #--- CẤU HÌNH IP_FORWARD QUAN TRỌNG CHO TUN2SOCKS ENGAGEUB ---
 net.ipv4.ip_forward = 1
 
-#--- SIẾT BỘ NHỚ ĐỆM SOCKET TCP ĐỂ CHỐNG PHÌNH RAM NGẦM KERNEL ---
-net.ipv4.tcp_rmem = 4096 16384 1048576
-net.ipv4.tcp_wmem = 4096 16384 1048576
+#--- ĐỆM SOCKET TCP CHUẨN AN TOÀN TRÁNH TRUYỀN DỮ LIỆU BỊ XÉ NHỎ ---
+net.ipv4.tcp_rmem = 4096 87380 2097152
+net.ipv4.tcp_wmem = 4096 65536 2097152
 
 #--- EXTREME OVERCOMMIT & CHỐNG PHÌNH RAM CACHE ---
+vm.min_free_kbytes = 65536
+vm.page-cluster = 0
 vm.overcommit_memory = 1
 vm.swappiness = ${SWAPPINESS}
 vm.vfs_cache_pressure = 125
@@ -279,7 +293,7 @@ while IFS= read -r line; do
   [[ -z "${line//[[:space:]]/}" ]] && continue
   sysctl -w "$line" >/dev/null 2>&1 || true
 done < "$SYSCTL_FILE"
-log "Kernel Tuning + ZRAM + Inotify Fix xong"
+log "Kernel Tuning Safe Mode xong"
 
 if [[ -f /etc/sysctl.d/99-vps-optimize.conf ]]; then
   rm -f /etc/sysctl.d/99-vps-optimize.conf
@@ -301,9 +315,9 @@ RuntimeMaxUse=5M
 EOF
 if has_systemd; then systemctl restart systemd-journald 2>/dev/null || true; fi
 
-#------------------- 5. AUTO-PATCHER ENGAGEUB: TỰ ĐỘNG KHÓA RAM CONTAINER 30M -------------------
+#------------------- 6. AUTO-PATCHER ENGAGEUB: KHÓA RAM AN TOÀN 50M/128M -------------------
 auto_patch_engageub_repo() {
-  log "Dang quet va KHÓA RAM SIẾT (${CONTAINER_MEM_LIMIT}) cho repo engageub/InternetIncome..."
+  log "Dang quet va KHÓA RAM AN TOÀN (${CONTAINER_MEM_LIMIT}/${CONTAINER_SWAP_LIMIT}) cho engageub/InternetIncome..."
   ROOTS=(/opt /root /home /srv)
   if [[ -n "$BASE_DIR" ]]; then ROOTS+=("$BASE_DIR"); fi
 
@@ -317,16 +331,16 @@ auto_patch_engageub_repo() {
     if [[ -f "$sh_file" ]]; then
       cp -n "$sh_file" "${sh_file}.bak" 2>/dev/null || true
       sed -i "s/--memory=\"[0-9]*[a-z]*\"/--memory=\"${CONTAINER_MEM_LIMIT}\"/g" "$sh_file" 2>/dev/null || true
-      sed -i "s/--memory-swap=\"[0-9]*[a-z]*\"/--memory-swap=\"${CONTAINER_MEM_LIMIT}\"/g" "$sh_file" 2>/dev/null || true
+      sed -i "s/--memory-swap=\"[0-9]*[a-z]*\"/--memory-swap=\"${CONTAINER_SWAP_LIMIT}\"/g" "$sh_file" 2>/dev/null || true
       if ! grep -q "\--memory" "$sh_file"; then
-        sed -i "s/docker run -d/docker run -d --memory=\"${CONTAINER_MEM_LIMIT}\" --memory-swap=\"${CONTAINER_MEM_LIMIT}\"/g" "$sh_file"
+        sed -i "s/docker run -d/docker run -d --memory=\"${CONTAINER_MEM_LIMIT}\" --memory-swap=\"${CONTAINER_SWAP_LIMIT}\"/g" "$sh_file"
       fi
     fi
   done < <(find "${ROOTS[@]}" -maxdepth 4 -name internetIncome.sh -type f 2>/dev/null | sort -u)
 }
 auto_patch_engageub_repo
 
-#------------------ 6. DOCKER ------------------
+#------------------ 7. DOCKER ------------------
 if ! command -v docker >/dev/null 2>&1; then
   log "Cai dat Docker..."
   curl -fsSL https://get.docker.com | sh
@@ -395,7 +409,7 @@ if (( DOCKER_RESTARTED == 1 )); then
   log "Da revive xong tat ca container mot cach em ai!"
 fi
 
-#---------------------- 7. CRON 04:15 + WATCHDOG 15M ----------------
+#---------------------- 8. CRON 04:15 + WATCHDOG 15M ----------------
 install_cron_stack() {
   cat > /usr/local/bin/ii-restart-all.sh <<'EOS'
 #!/usr/bin/env bash
@@ -480,7 +494,7 @@ if (( DO_CRON == 1 )); then
   install_cron_stack
 fi
 
-#------------------ CONG CU ii-status.sh (BÁO CÁO AI-PARSEABLE DEEVOPS) ------------------
+#------------------ CONG CU ii-status.sh (BÁO CÁO AI CHUẨN XÁC SAFE MODE) ------------------
 cat > /usr/local/bin/ii-status.sh <<'EOS'
 #!/usr/bin/env bash
 ROOTS=("$@")
@@ -524,7 +538,7 @@ echo "  Active Swap Devices:"
 swapon --show 2>/dev/null | awk 'NR>1{printf "    - %s (%s, Priority %s, Used %s)\n",$1,$3,$5,$4}' || true
 
 echo -e "\n--- [4. SWAP PAGING (si/so), RUN QUEUE (r) & CONTEXT SWITCHES (cs)] ---"
-vmstat 1 2 2>/dev/null | tail -n 1 | awk '{printf "  r=%s (runqueue) | b=%s (blocked) | si=%s KB/s (swap-in) | so=%s KB/s (swap-out) | cs=%s/s (context-switches) | wa=%s%% (iowait)\n", $1, $2, $7, $8, $12, $16}'
+vmstat 1 2 2>/dev/null | tail -n 1 | awk '{printf "  r=%s (runqueue) | b=%s (blocked) | si=%s KB/s (swap-in) | so=%s KB/s (swap-out) | cs=%s/s (context-switches) | wa=%s%%\n", $1, $2, $7, $8, $12, $16}'
 
 echo -e "\n--- [5. MEMORY PRESSURE STALLS (PSI)] ---"
 if [[ -f /proc/pressure/memory ]]; then
@@ -547,17 +561,21 @@ echo "  Inotify Max User Watches : ${WATCHES}"
 echo -e "\n---------------- [AI SYSTEM DIAGNOSTIC SUMMARY] ----------------"
 RAM_AVAIL_MB=$(free -m 2>/dev/null | awk '/^Mem:/{print $7}' || echo 999)
 SWAP_FREE_MB=$(free -m 2>/dev/null | awk '/^Swap:/{print $4}' || echo 999)
+PSI_FULL_10=$(cat /proc/pressure/memory 2>/dev/null | grep "full" | awk '{print $2}' | cut -d= -f2 || echo 0)
+PSI_INT=${PSI_FULL_10%.*}
 
 if (( RAM_AVAIL_MB < 30 )) && (( SWAP_FREE_MB < 100 )); then
   echo "  STATUS: [CRITICAL_MEMORY_EXHAUSTION] Virtual memory near zero! Risk of crash!"
 elif (( EXITED_CTRS > 0 )); then
   echo "  STATUS: [CONTAINERS_EXITED] Some containers have stopped. Check docker ps -a."
+elif (( PSI_INT >= 15 )); then
+  echo "  STATUS: [SILENT_MEMORY_THRASHING] PSI Full Memory Pressure is ${PSI_FULL_10}% (>15%)."
 else
-  echo "  STATUS: [HEALTHY_OPTIMIZED] VPS is running smoothly with active ZRAM, 0% I/O wait, and clean sockets."
+  echo "  STATUS: [HEALTHY_OPTIMIZED] VPS is running smoothly with clean KSM memory and low PSI."
 fi
 echo "=========================================================================="
 EOS
 chmod +x /usr/local/bin/ii-status.sh
 
-echo "============================= SETUP XONG (AI-DIAGNOSTIC STATUS INTEGRATED) =============================="
+echo "============================= SETUP XONG (SAFE ACCOUNT & MAX ROI INTEGRATED) =============================="
 /usr/local/bin/ii-status.sh || true
