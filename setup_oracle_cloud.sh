@@ -1,18 +1,7 @@
 cat << 'ORACLE_MASTER_EOF' > /root/setup_oracle_cloud.sh
 #!/usr/bin/env bash
 #============================================================================
-#  setup_oracle_cloud.sh (OCI DUAL-ENGINE MASTER 2026)
-#
-#  MAY ĐO DÀNH RIÊNG CHO HẠ TẦNG ORACLE CLOUD INFRASTRUCTURE (OCI)
-#   - OCI FIREWALL FIX  : Mo co iptables FORWARD ACCEPT dac thu cua Oracle Cloud,
-#                         giup card mang ao tun2proxy truyen Proxy khong rot goi.
-#   - ARCH ADAPTIVE     : Tu dong ho tro ca AMD x86_64 va Ampere ARM A1 (aarch64).
-#   - DYNAMIC RAM SCALING: Tu dieu chinh muc tran RAM container tu 1GB -> 24GB RAM.
-#   - APT LOCK-BREAKER  : Tu dong diet tien trinh apt-daily ngam cua OCI Ubuntu.
-#   - KSM KERNEL MERGE  : Gop 300MB-500MB RAM ngam an toan cap Kernel.
-#   - ZRAM 1GB LZ4      : Nem RAM lz4 ngam GB/s, triet ha 100% tre đia wa.
-#   - SAFE ACCOUNT LIMIT: Ram 50M + Swap 128M + --restart=unless-stopped.
-#   - INOTIFY FIX 2M    : Triet ha 100% loi Too many open files.
+#  setup_oracle_cloud.sh (100% AUTO-PILOT OCI MASTER 2026)
 #============================================================================
 set -Eeuo pipefail
 
@@ -20,7 +9,6 @@ ulimit -n 1048576 2>/dev/null || true
 sysctl -w fs.inotify.max_user_watches=2097152 >/dev/null 2>&1 || true
 sysctl -w fs.inotify.max_user_instances=65536 >/dev/null 2>&1 || true
 
-#--------------------------------- MAU & LOG ---------------------------------
 if [[ -t 1 ]]; then
   C_G='\033[1;32m'; C_Y='\033[1;33m'; C_R='\033[1;31m'; C_B='\033[1;34m'; C_0='\033[0m'
 else
@@ -30,7 +18,6 @@ log()  { echo -e "${C_G}[OK]${C_0} $*"; }
 warn() { echo -e "${C_Y}[!!]${C_0} $*"; }
 die()  { echo -e "${C_R}[XX]${C_0} $*"; exit 1; }
 
-#--------------------------------- THAM SO -----------------------------------
 BASE_DIR=""
 DO_CRON=1
 DO_PULL=1
@@ -59,7 +46,6 @@ if [[ -n "$BASE_DIR" ]]; then
   fi
 fi
 
-#------------------------------- THONG TIN HE THONG OCI --------------------------
 VIRT="$(systemd-detect-virt 2>/dev/null || echo none)"
 ARCH="$(uname -m)"
 IS_CONTAINER=0
@@ -68,7 +54,6 @@ case "$VIRT" in lxc|lxc-libvirt|openvz) IS_CONTAINER=1 ;; esac
 MEM_MB=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
 CPU=$(nproc 2>/dev/null || echo 1)
 
-# ĐIỀU CHỈNH RAM DỘNG CHO CẢ AMD (1GB) LẪN AMPERE ARM (24GB) CỦA ORACLE
 CONTAINER_MEM_LIMIT="50m"
 CONTAINER_SWAP_LIMIT="128m"
 if (( MEM_MB <= 1200 )); then
@@ -79,13 +64,12 @@ elif (( MEM_MB <= 5000 )); then
   CONTAINER_MEM_LIMIT="70m"; CONTAINER_SWAP_LIMIT="160m"
 elif (( MEM_MB <= 12000 )); then
   CONTAINER_MEM_LIMIT="100m"; CONTAINER_SWAP_LIMIT="256m"
-else                                   # Oracle ARM 24GB RAM
+else
   CONTAINER_MEM_LIMIT="150m"; CONTAINER_SWAP_LIMIT="512m"
 fi
 
-#------------------- 1. APT LOCK-BREAKER ĐẶC THÙ CHO ORACLE CLOUD -------------------
 clear_apt_locks() {
-  log "Giai phong khoa APT Lock cua Oracle Cloud Ubuntu..."
+  log "Giai phong khoa APT Lock cua Oracle Cloud..."
   if has_systemd; then
     systemctl stop apt-daily.service apt-daily-upgrade.service unattended-upgrades.service 2>/dev/null || true
     systemctl disable apt-daily.service apt-daily-upgrade.service unattended-upgrades.service 2>/dev/null || true
@@ -104,7 +88,6 @@ apt-get install -y -qq --no-install-recommends \
   curl wget git unzip jq bc ca-certificates uuid-runtime cron logrotate net-tools earlyoom \
   iptables-persistent netfilter-persistent vnstat nload speedtest-cli || true
 
-#------------------ 2. TỰ ĐỘNG CÀI ĐẶT DOCKER CHO ORACLE CLOUD ------------------
 if ! command -v docker >/dev/null 2>&1; then
   log "ORACLE CLOUD: Dang tu dong cai dat Docker offical (Arch: ${ARCH})..."
   curl -fsSL https://get.docker.com | sh || apt-get install -y -qq docker.io
@@ -124,7 +107,6 @@ EOF_DOCKER_SVC
   systemctl enable --now docker >/dev/null 2>&1 || true
 fi
 
-#------------------- 3. KSM (KERNEL SAMEPAGE MERGING) -------------------
 log "Kich hoat KSM (Kernel Samepage Merging) gop RAM ngam..."
 if [[ -f /sys/kernel/mm/ksm/run ]]; then
   echo 1 > /sys/kernel/mm/ksm/run 2>/dev/null || true
@@ -133,7 +115,6 @@ if [[ -f /sys/kernel/mm/ksm/run ]]; then
   log "Da kich hoat KSM thanh cong!"
 fi
 
-#----------------------------------- 4. ZRAM 1GB & SWAP ---------------------------------
 log "Kich hoat ZRAM 1GB (Nem RAM lz4 sieu toc)..."
 if ! swapon --show 2>/dev/null | grep -q "/dev/zram0"; then
   modprobe zram num_devices=1 2>/dev/null || true
@@ -220,7 +201,6 @@ else
   fi
 fi
 
-#------------------ 5. DIỆT BLOATWARE OS & DỌN WATCHTOWER DƯ THỪA ------------------
 log "Dang diet cac dich vu OS ngom RAM ngam (snapd, multipathd, udisks2)..."
 if has_systemd; then
   systemctl stop snapd multipathd udisks2 accountsservice 2>/dev/null || true
@@ -259,18 +239,15 @@ Unattended-Upgrade::Automatic-Reboot "false";
 Unattended-Upgrade::Automatic-Reboot-WithUsers "false";
 EOF_APT
 
-#--------------------------------- 6. DNS SACH 4 LỚP -------------------------------
 if has_systemd && systemctl list-unit-files 2>/dev/null | grep -q '^systemd-resolved'; then
   systemctl disable --now systemd-resolved >/dev/null 2>&1 || true
 fi
 rm -f /etc/resolv.conf
 printf 'nameserver 8.8.8.8\nnameserver 1.1.1.1\nnameserver 9.9.9.9\nnameserver 1.0.0.1\n' > /etc/resolv.conf
 
-#------------------- 7. KERNEL TUNING + BBR + OCI FIREWALL FORWARD FIX -------------------
 modprobe nf_conntrack 2>/dev/null || true
 modprobe tcp_bbr 2>/dev/null || true
 
-# TỐI ƯU CẤU HÌNH TƯỜNG LỬA ORACLE CLOUD CHO TUN2SOCKS PROXY
 log "Mo firewall FORWARD chuot cho Oracle Cloud..."
 iptables -P FORWARD ACCEPT 2>/dev/null || true
 iptables -F FORWARD 2>/dev/null || true
@@ -283,18 +260,11 @@ echo never > /sys/kernel/mm/transparent_hugepage/defrag 2>/dev/null || true
 
 SYSCTL_FILE=/etc/sysctl.d/99-internetincome.conf
 cat > "$SYSCTL_FILE" <<EOF_SYSCTL
-#--- TCP BBR (TĂNG TỐC BĂNG THÔNG PROXY) ---
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
-
-#--- CẤU HÌNH IP_FORWARD QUAN TRỌNG CHO TUN2SOCKS ORACLE CLOUD ---
 net.ipv4.ip_forward = 1
-
-#--- ĐỆM SOCKET TCP CHUẨN AN TOÀN TRÁNH TRUYỀN DỮ LIỆU BỊ XÉ NHỎ ---
 net.ipv4.tcp_rmem = 4096 87380 2097152
 net.ipv4.tcp_wmem = 4096 65536 2097152
-
-#--- EXTREME OVERCOMMIT & CHỐNG PHÌNH RAM CACHE ---
 vm.min_free_kbytes = 65536
 vm.page-cluster = 0
 vm.overcommit_memory = 1
@@ -302,12 +272,9 @@ vm.swappiness = ${SWAPPINESS}
 vm.vfs_cache_pressure = 125
 vm.dirty_background_ratio = 3
 vm.dirty_ratio = 8
-
-#--- INOTIFY & FILE MAX FIX CHO 200+ CONTAINER ---
 fs.file-max = 2097152
 fs.inotify.max_user_instances = 65536
 fs.inotify.max_user_watches = 2097152
-
 net.core.somaxconn = 65535
 net.core.netdev_max_backlog = 65535
 net.core.rmem_max = 16777216
@@ -320,11 +287,9 @@ net.ipv4.tcp_keepalive_time = 300
 net.ipv4.tcp_keepalive_intvl = 15
 net.ipv4.tcp_keepalive_probes = 3
 net.ipv4.tcp_slow_start_after_idle = 0
-
 net.netfilter.nf_conntrack_max = 524288
 net.netfilter.nf_conntrack_udp_timeout = 60
 net.netfilter.nf_conntrack_udp_timeout_stream = 180
-
 net.ipv6.conf.all.disable_ipv6 = 1
 net.ipv6.conf.default.disable_ipv6 = 1
 net.ipv6.conf.lo.disable_ipv6 = 1
@@ -357,7 +322,6 @@ RuntimeMaxUse=5M
 EOF_JOURNAL
 if has_systemd; then systemctl restart systemd-journald 2>/dev/null || true; fi
 
-#------------------- 8. AUTO-PATCHER ENGAGEUB -------------------
 auto_patch_engageub_repo() {
   log "Dang quet va KHÓA RAM AN TOÀN (${CONTAINER_MEM_LIMIT}/${CONTAINER_SWAP_LIMIT}) + RESTART CỜ..."
   ROOTS=(/opt /root /home /srv)
@@ -387,7 +351,14 @@ auto_patch_engageub_repo() {
 }
 auto_patch_engageub_repo
 
-#------------------ 9. DOCKER DAEMON CONFIG ------------------
+if command -v docker >/dev/null 2>&1; then
+  CTRS=$(docker ps -aq 2>/dev/null || true)
+  if [[ -n "$CTRS" ]]; then
+    docker update --restart=unless-stopped $CTRS >/dev/null 2>&1 || true
+    log "Da tu dong cai co --restart=unless-stopped cho tat ca $(echo "$CTRS" | wc -w) container!"
+  fi
+fi
+
 mkdir -p /etc/docker
 NEW_DAEMON="$(cat <<EOF_DAEMON
 {
@@ -449,7 +420,6 @@ if (( DOCKER_RESTARTED == 1 )); then
   log "Da revive xong tat ca container mot cach em ai!"
 fi
 
-#---------------------- 10. CRON 04:15 + 16:15 + WATCHDOG 15M ----------------
 install_cron_stack() {
   cat > /usr/local/bin/ii-restart-all.sh <<'EOF_RESTART'
 #!/usr/bin/env bash
@@ -460,6 +430,16 @@ HAVE_CTR=0; command -v ctr >/dev/null 2>&1 && HAVE_CTR=1
 
 {
   echo "[$(ts)] ==================== ii-restart-all ===================="
+  MEM_LIMIT="50m"; SWAP_LIMIT="128m"
+  while IFS= read -r sh_f; do
+    d_path=$(dirname "$sh_f")
+    [[ -f "${d_path}/properties.conf" ]] && sed -i "s/MAX_MEMORY=.*/MAX_MEMORY=${MEM_LIMIT}/" "${d_path}/properties.conf" 2>/dev/null || true
+    if [[ -f "$sh_f" ]]; then
+      grep -q "\--restart" "$sh_f" || sed -i "s/docker run -d/docker run -d --restart=unless-stopped/g" "$sh_f" 2>/dev/null || true
+      grep -q "\--memory" "$sh_f" || sed -i "s/docker run -d/docker run -d --memory=\"${MEM_LIMIT}\" --memory-swap=\"${SWAP_LIMIT}\"/g" "$sh_f" 2>/dev/null || true
+    fi
+  done < <(find "${ROOTS[@]}" -maxdepth 4 -name internetIncome.sh -type f 2>/dev/null | sort -u)
+
   mapfile -t FILES < <(find "${ROOTS[@]}" -maxdepth 4 -name containernames.txt -type f 2>/dev/null | sort -u)
   if (( ${#FILES[@]} == 0 )); then
     echo "[$(ts)] chua thay folder engageub nao"
@@ -493,6 +473,8 @@ HAVE_CTR=0; command -v ctr >/dev/null 2>&1 && HAVE_CTR=1
       docker start "$cid" >/dev/null 2>&1 || true
       sleep 1.5
     done < <(cat "${FILES[@]}" 2>/dev/null | sort -u)
+
+    docker update --restart=unless-stopped $(docker ps -aq 2>/dev/null || true) >/dev/null 2>&1 || true
 
     sync && echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
     echo "[$(ts)] da xa cache RAM rac (drop_caches)"
@@ -530,7 +512,6 @@ if (( DO_CRON == 1 )); then
   install_cron_stack
 fi
 
-#------------------ CONG CU ii-status.sh (BÁO CÁO ORACLE CLOUD) ------------------
 cat > /usr/local/bin/ii-status.sh <<'EOF_STATUS'
 #!/usr/bin/env bash
 ROOTS=("$@")
@@ -622,7 +603,7 @@ echo "==========================================================================
 EOF_STATUS
 chmod +x /usr/local/bin/ii-status.sh
 
-echo "============================= SETUP XONG (ORACLE CLOUD MASTER 2026) =============================="
+echo "============================= SETUP XONG (100% AUTO-PILOT OCI MASTER 2026) =============================="
 /usr/local/bin/ii-status.sh || true
 ORACLE_MASTER_EOF
 chmod +x /root/setup_oracle_cloud.sh
