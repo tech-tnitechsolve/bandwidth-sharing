@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 #============================================================================
-#  setup_vps.sh (FINAL ULTIMATE MASTER 2026) - OPTIMIZED FOR ALL CASES
+#  setup_vps.sh (FINAL ULTIMATE MASTER 2026 - INOTIFY FIX)
 #
 #  TU DONG HOA 100% ZERO-TOUCH CHO REPO: github.com/engageub/InternetIncome
+#   - INOTIFY FIX: Nang max_user_watches len 2 trieu de triet ha loi
+#     "Failed to allocate directory watch: Too many open files" khi chay 200+ container.
 #   - SOCKET BUFFER SIẾT: Siết tcp_rmem/tcp_wmem giảm 80% RAM ngầm Kernel.
 #   - AUTO-PATCHER ENGAGEUB: Tu dong quet tat ca folder engageub/InternetIncome
 #     va chen co --memory="40m" --memory-swap="40m" vao internetIncome.sh.
@@ -13,6 +15,11 @@
 #   - STAGGERED START: Bat/Restart container TU TU (nghi 1.5s/container).
 #============================================================================
 set -Eeuo pipefail
+
+# NÂNG HẠN MỨC INOTIFY NGAY LẬP TỨC ĐỂ TRÁNH LỖI TOO MANY OPEN FILES
+ulimit -n 1048576 2>/dev/null || true
+sysctl -w fs.inotify.max_user_watches=2097152 >/dev/null 2>&1 || true
+sysctl -w fs.inotify.max_user_instances=65536 >/dev/null 2>&1 || true
 
 #--------------------------------- MAU & LOG ---------------------------------
 if [[ -t 1 ]]; then
@@ -110,7 +117,7 @@ else
 fi
 
 echo "=============================================================="
-echo "  VPS $(hostname) | RAM ${MEM_MB}MB | ${CPU} CPU | FINAL ULTIMATE MASTER"
+echo "  VPS $(hostname) | RAM ${MEM_MB}MB | ${CPU} CPU | INOTIFY WATCHES ULTRA FIX"
 echo "  Swap target=${TARGET_SWAP_MB}MB | Swappiness=${SWAPPINESS} | Container Limit=${CONTAINER_MEM_LIMIT}"
 echo "=============================================================="
 
@@ -214,11 +221,10 @@ fi
 rm -f /etc/resolv.conf
 printf 'nameserver 8.8.8.8\nnameserver 1.1.1.1\nnameserver 9.9.9.9\nnameserver 1.0.0.1\n' > /etc/resolv.conf
 
-#------------------- 4. KERNEL TUNING + BBR + TUN2SOCKS + SOCKET BUFFER SIẾT -------------------
+#------------------- 4. KERNEL TUNING + BBR + INOTIFY FIX -------------------
 modprobe nf_conntrack 2>/dev/null || true
 modprobe tcp_bbr 2>/dev/null || true
 
-# Tat Transparent Huge Pages nguu ngoc gay phin RAM ngam
 echo never > /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || true
 echo never > /sys/kernel/mm/transparent_hugepage/defrag 2>/dev/null || true
 
@@ -242,10 +248,10 @@ vm.vfs_cache_pressure = 125
 vm.dirty_background_ratio = 3
 vm.dirty_ratio = 8
 
-#--- InternetIncome tuning ---
+#--- INOTIFY & FILE MAX FIX CHO 200+ CONTAINER ---
 fs.file-max = 2097152
-fs.inotify.max_user_instances = 8192
-fs.inotify.max_user_watches = 1048576
+fs.inotify.max_user_instances = 65536
+fs.inotify.max_user_watches = 2097152
 
 net.core.somaxconn = 65535
 net.core.netdev_max_backlog = 65535
@@ -274,7 +280,7 @@ while IFS= read -r line; do
   [[ -z "${line//[[:space:]]/}" ]] && continue
   sysctl -w "$line" >/dev/null 2>&1 || true
 done < "$SYSCTL_FILE"
-log "Kernel Tuning + BBR + IP_Forward + Socket Buffer Siết xong"
+log "Kernel Tuning + Inotify 2M Fix xong"
 
 if [[ -f /etc/sysctl.d/99-vps-optimize.conf ]]; then
   rm -f /etc/sysctl.d/99-vps-optimize.conf
@@ -324,7 +330,7 @@ auto_patch_engageub_repo() {
 }
 auto_patch_engageub_repo
 
-#------------------ 6. DOCKER (TẮT USERLAND-PROXY DIỆT HÀNG TRĂM PROCESS ĐỌC PORT) ------------------
+#------------------ 6. DOCKER ------------------
 if ! command -v docker >/dev/null 2>&1; then
   log "Cai dat Docker..."
   curl -fsSL https://get.docker.com | sh
@@ -490,7 +496,7 @@ if (( DO_CRON == 1 )); then
   install_cron_stack
 fi
 
-#------------------ CONG CU ii-status.sh (CHECK CHO ENGAGEUB REPO) ------------------
+#------------------ CONG CU ii-status.sh ------------------
 cat > /usr/local/bin/ii-status.sh <<'EOS'
 #!/usr/bin/env bash
 ROOTS=("$@")
@@ -532,5 +538,5 @@ fi
 EOS
 chmod +x /usr/local/bin/ii-status.sh
 
-echo "============================= SETUP XONG (FINAL ULTIMATE MASTER) =============================="
+echo "============================= SETUP XONG (INOTIFY FIX DONE) =============================="
 /usr/local/bin/ii-status.sh || true
