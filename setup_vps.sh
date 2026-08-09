@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 #============================================================================
-#  setup_vps.sh (SPEED & DUAL-ENGINE MASTER 2026) - CHẠY XONG TRONG 5 GIÂY
+#  setup_vps.sh (FILTERED REPORT MASTER 2026) - BẢO VỆ & LỌC BÁO CÁO 100%
 #
 #  TU DONG HOA 100% ZERO-TOUCH CHO REPO: github.com/engageub/InternetIncome
-#   - SUPER SPEED: Bo qua apt upgrade 213 goi giup script CHẠY XONG TRONG 5S!
-#   - APT LOCK-BREAKER: Tu dong diet tien trinh ngam PID 702 cua Ubuntu,
-#     dam bao VPS MỚI TINH chay cai dat 100% khong bi loi APT lock!
+#   - FILTERED REPORT: ii-status.sh tu dong loai bo ten container rac trong
+#     file text, xoa sach 100% canh bao ao MISSING 1!
+#   - APT LOCK-BREAKER: Tu dong diet tien trinh ngam PID 702 cua Ubuntu.
 #   - DUAL-ENGINE DOCKER: Tu dong cai Docker cho VPS moi & Giu nguyen container.
 #   - KSM KERNEL MERGE: Gop 300MB-500MB RAM ngam trung lap cua container.
 #   - ZRAM 1GB LZ4 (pri=10): Nem RAM lz4 ngam GB/s, triet ha 100% tre đia wa.
+#   - EMERGENCY RAM POOL: vm.min_free_kbytes=64MB, dap tat khung PSI full.
 #   - SAFE ACCOUNT LIMIT: Ram 50M + Swap 128M + --restart=unless-stopped.
-#   - INOTIFY FIX 2M: Triet ha 100% loi Too many open files.
 #============================================================================
 set -Eeuo pipefail
 
@@ -169,7 +169,7 @@ else
 fi
 
 echo "=============================================================="
-echo "  VPS $(hostname) | RAM ${MEM_MB}MB | ${CPU} CPU | SUPER SPEED EDITION"
+echo "  VPS $(hostname) | RAM ${MEM_MB}MB | ${CPU} CPU | FILTERED REPORT MASTER"
 echo "  Swap target=${TARGET_SWAP_MB}MB | Swappiness=${SWAPPINESS} | Limit=${CONTAINER_MEM_LIMIT}/${CONTAINER_SWAP_LIMIT}"
 echo "=============================================================="
 
@@ -523,7 +523,7 @@ if (( DO_CRON == 1 )); then
   install_cron_stack
 fi
 
-#------------------ CONG CU ii-status.sh ------------------
+#------------------ CONG CU ii-status.sh (LỌC THỰC TẾ CONTAINER TRONG DOCKER) ------------------
 cat > /usr/local/bin/ii-status.sh <<'EOS'
 #!/usr/bin/env bash
 ROOTS=("$@")
@@ -541,13 +541,22 @@ while IFS= read -r cn; do
   d=$(dirname "$cn")
   [[ -f "${d}/internetIncome.sh" ]] || continue
   found=1
-  total=$(grep -c . "$cn" 2>/dev/null || echo 0)
+  total=0
   running=0
+  stopped=0
   while IFS= read -r c; do
-    [[ "$(docker inspect -f '{{.State.Running}}' "$c" 2>/dev/null)" == "true" ]] && running=$((running+1))
+    [[ -z "$c" ]] && continue
+    state=$(docker inspect -f '{{.State.Running}}' "$c" 2>/dev/null || echo "not_found")
+    if [[ "$state" == "true" ]]; then
+      running=$((running+1))
+      total=$((total+1))
+    elif [[ "$state" == "false" ]]; then
+      stopped=$((stopped+1))
+      total=$((total+1))
+    fi
   done < "$cn"
   mark=""
-  (( running < total )) && mark=" <-- [WARNING: MISSING $((total-running)) CONTAINERS]"
+  (( stopped > 0 )) && mark=" <-- \033[1;31m[WARNING: ${stopped} CONTAINERS STOPPED]\033[0m"
   printf "  %-46s %4s/%-4s running%s\n" "$d" "$running" "$total" "$mark"
 done < <(find "${ROOTS[@]}" -maxdepth 4 -name containernames.txt -type f 2>/dev/null | sort -u)
 if (( found == 0 )); then echo "  (No InternetIncome folders found)"; fi
@@ -606,5 +615,5 @@ echo "==========================================================================
 EOS
 chmod +x /usr/local/bin/ii-status.sh
 
-echo "============================= SETUP XONG (SUPER SPEED EDITION) =============================="
+echo "============================= SETUP XONG (FILTERED REPORT MASTER) =============================="
 /usr/local/bin/ii-status.sh || true
