@@ -1,16 +1,7 @@
+cat > ~/setup_vps.sh <<'EOF'
 #!/usr/bin/env bash
 #============================================================================
-#  setup_vps.sh (FILTERED REPORT MASTER 2026) - BẢO VỆ & LỌC BÁO CÁO 100%
-#
-#  TU DONG HOA 100% ZERO-TOUCH CHO REPO: github.com/engageub/InternetIncome
-#   - FILTERED REPORT: ii-status.sh tu dong loai bo ten container rac trong
-#     file text, xoa sach 100% canh bao ao MISSING 1!
-#   - APT LOCK-BREAKER: Tu dong diet tien trinh ngam PID 702 cua Ubuntu.
-#   - DUAL-ENGINE DOCKER: Tu dong cai Docker cho VPS moi & Giu nguyen container.
-#   - KSM KERNEL MERGE: Gop 300MB-500MB RAM ngam trung lap cua container.
-#   - ZRAM 1GB LZ4 (pri=10): Nem RAM lz4 ngam GB/s, triet ha 100% tre đia wa.
-#   - EMERGENCY RAM POOL: vm.min_free_kbytes=64MB, dap tat khung PSI full.
-#   - SAFE ACCOUNT LIMIT: Ram 50M + Swap 128M + --restart=unless-stopped.
+#  setup_vps.sh (DUAL-ENGINE MASTER 2026 - NEW & LIVE VPS OPTIMIZED)
 #============================================================================
 set -Eeuo pipefail
 
@@ -18,7 +9,6 @@ ulimit -n 1048576 2>/dev/null || true
 sysctl -w fs.inotify.max_user_watches=2097152 >/dev/null 2>&1 || true
 sysctl -w fs.inotify.max_user_instances=65536 >/dev/null 2>&1 || true
 
-#--------------------------------- MAU & LOG ---------------------------------
 if [[ -t 1 ]]; then
   C_G='\033[1;32m'; C_Y='\033[1;33m'; C_R='\033[1;31m'; C_B='\033[1;34m'; C_0='\033[0m'
 else
@@ -28,7 +18,6 @@ log()  { echo -e "${C_G}[OK]${C_0} $*"; }
 warn() { echo -e "${C_Y}[!!]${C_0} $*"; }
 die()  { echo -e "${C_R}[XX]${C_0} $*"; exit 1; }
 
-#--------------------------------- THAM SO -----------------------------------
 BASE_DIR=""
 DO_CRON=1
 DO_PULL=1
@@ -46,7 +35,7 @@ done
 [[ $EUID -eq 0 ]] || die "Can chay bang quyen root: sudo bash $0"
 command -v apt-get >/dev/null 2>&1 || die "Script ho tro Debian/Ubuntu (apt-get)"
 
-has_systemd() { command -v systemctl >/dev/null 2>/dev/null && [[ -d /run/systemd/system ]]; }
+has_systemd() { command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; }
 
 if [[ -n "$BASE_DIR" ]]; then
   if [[ -d "$BASE_DIR" ]]; then
@@ -57,7 +46,6 @@ if [[ -n "$BASE_DIR" ]]; then
   fi
 fi
 
-#------------------------------- THONG TIN HE THONG --------------------------
 VIRT="$(systemd-detect-virt 2>/dev/null || echo none)"
 IS_CONTAINER=0
 case "$VIRT" in lxc|lxc-libvirt|openvz) IS_CONTAINER=1 ;; esac
@@ -77,7 +65,6 @@ else
   CONTAINER_MEM_LIMIT="100m"; CONTAINER_SWAP_LIMIT="256m"
 fi
 
-#------------------- 1. APT LOCK-BREAKER CHO VPS MỚI TINH -------------------
 clear_apt_locks() {
   log "Giai phong khoa APT Lock..."
   if has_systemd; then
@@ -98,7 +85,6 @@ apt-get install -y -qq --no-install-recommends \
   curl wget git unzip jq bc ca-certificates uuid-runtime cron logrotate net-tools earlyoom \
   vnstat nload speedtest-cli || true
 
-#------------------ 2. TỰ ĐỘNG CÀI ĐẶT DOCKER CHO VPS MỚI TINH ------------------
 if ! command -v docker >/dev/null 2>&1; then
   log "VPS MOI: Dang tu dong cai dat Docker offical..."
   curl -fsSL https://get.docker.com | sh || apt-get install -y -qq docker.io
@@ -109,16 +95,15 @@ fi
 
 if has_systemd; then
   mkdir -p /etc/systemd/system/docker.service.d
-  cat > /etc/systemd/system/docker.service.d/override.conf <<'EOF'
+  cat > /etc/systemd/system/docker.service.d/override.conf <<'EOFF'
 [Service]
 Restart=always
 RestartSec=3s
-EOF
+EOFF
   systemctl daemon-reload 2>/dev/null || true
   systemctl enable --now docker >/dev/null 2>&1 || true
 fi
 
-#------------------- 3. KSM (KERNEL SAMEPAGE MERGING) -------------------
 log "Kich hoat KSM (Kernel Samepage Merging) gop RAM ngam..."
 if [[ -f /sys/kernel/mm/ksm/run ]]; then
   echo 1 > /sys/kernel/mm/ksm/run 2>/dev/null || true
@@ -127,7 +112,6 @@ if [[ -f /sys/kernel/mm/ksm/run ]]; then
   log "Da kich hoat KSM thanh cong!"
 fi
 
-#----------------------------------- 4. ZRAM 1GB & SWAP ---------------------------------
 log "Kich hoat ZRAM 1GB (Nem RAM lz4 sieu toc)..."
 if ! swapon --show 2>/dev/null | grep -q "/dev/zram0"; then
   modprobe zram num_devices=1 2>/dev/null || true
@@ -141,13 +125,13 @@ if ! swapon --show 2>/dev/null | grep -q "/dev/zram0"; then
   fi
 fi
 
-if (( MEM_MB <= 1200 )); then          # ~1.0 GB RAM
+if (( MEM_MB <= 1200 )); then
   TARGET_SWAP_MB=1536; SWAPPINESS=20
-elif (( MEM_MB <= 1700 )); then        # ~1.5 GB RAM
+elif (( MEM_MB <= 1700 )); then
   TARGET_SWAP_MB=1536; SWAPPINESS=20
-elif (( MEM_MB <= 2500 )); then        # ~2.0 GB RAM
+elif (( MEM_MB <= 2500 )); then
   TARGET_SWAP_MB=2048; SWAPPINESS=20
-elif (( MEM_MB <= 3500 )); then        # ~3.0 GB RAM
+elif (( MEM_MB <= 3500 )); then
   TARGET_SWAP_MB=2048; SWAPPINESS=20
 else
   TARGET_SWAP_MB=3072; SWAPPINESS=20
@@ -169,7 +153,7 @@ else
 fi
 
 echo "=============================================================="
-echo "  VPS $(hostname) | RAM ${MEM_MB}MB | ${CPU} CPU | FILTERED REPORT MASTER"
+echo "  VPS $(hostname) | RAM ${MEM_MB}MB | ${CPU} CPU | DUAL-ENGINE MASTER 2026"
 echo "  Swap target=${TARGET_SWAP_MB}MB | Swappiness=${SWAPPINESS} | Limit=${CONTAINER_MEM_LIMIT}/${CONTAINER_SWAP_LIMIT}"
 echo "=============================================================="
 
@@ -216,7 +200,6 @@ else
   fi
 fi
 
-#------------------ 5. DIỆT BLOATWARE OS & DỌN WATCHTOWER DƯ THỪA ------------------
 log "Dang diet cac dich vu OS ngom RAM ngam (snapd, multipathd, udisks2)..."
 if has_systemd; then
   systemctl stop snapd multipathd udisks2 accountsservice 2>/dev/null || true
@@ -240,9 +223,9 @@ if [[ -f /etc/vnstat.conf ]]; then
 fi
 
 if [[ -f /etc/default/earlyoom ]]; then
-  cat > /etc/default/earlyoom <<'EOF'
+  cat > /etc/default/earlyoom <<'EOFF'
 EARLYOOM_ARGS="-m 3 -s 5 --avoid '^(sshd|systemd|cron)$'"
-EOF
+EOFF
 fi
 if has_systemd; then systemctl enable --now earlyoom >/dev/null 2>&1 || true; fi
 
@@ -250,19 +233,17 @@ timedatectl set-ntp true 2>/dev/null || true
 timedatectl set-timezone Asia/Ho_Chi_Minh 2>/dev/null || true
 
 mkdir -p /etc/apt/apt.conf.d
-cat > /etc/apt/apt.conf.d/99ii-noreboot <<'EOF'
+cat > /etc/apt/apt.conf.d/99ii-noreboot <<'EOFF'
 Unattended-Upgrade::Automatic-Reboot "false";
 Unattended-Upgrade::Automatic-Reboot-WithUsers "false";
-EOF
+EOFF
 
-#--------------------------------- 6. DNS SACH 4 LỚP -------------------------------
 if has_systemd && systemctl list-unit-files 2>/dev/null | grep -q '^systemd-resolved'; then
   systemctl disable --now systemd-resolved >/dev/null 2>&1 || true
 fi
 rm -f /etc/resolv.conf
 printf 'nameserver 8.8.8.8\nnameserver 1.1.1.1\nnameserver 9.9.9.9\nnameserver 1.0.0.1\n' > /etc/resolv.conf
 
-#------------------- 7. KERNEL TUNING + BBR -------------------
 modprobe nf_conntrack 2>/dev/null || true
 modprobe tcp_bbr 2>/dev/null || true
 
@@ -270,19 +251,12 @@ echo never > /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || true
 echo never > /sys/kernel/mm/transparent_hugepage/defrag 2>/dev/null || true
 
 SYSCTL_FILE=/etc/sysctl.d/99-internetincome.conf
-cat > "$SYSCTL_FILE" <<EOF
-#--- TCP BBR (TĂNG TỐC BĂNG THÔNG PROXY) ---
+cat > "$SYSCTL_FILE" <<EOFF
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
-
-#--- CẤU HÌNH IP_FORWARD QUAN TRỌNG CHO TUN2SOCKS ENGAGEUB ---
 net.ipv4.ip_forward = 1
-
-#--- ĐỆM SOCKET TCP CHUẨN AN TOÀN TRÁNH TRUYỀN DỮ LIỆU BỊ XÉ NHỎ ---
 net.ipv4.tcp_rmem = 4096 87380 2097152
 net.ipv4.tcp_wmem = 4096 65536 2097152
-
-#--- EXTREME OVERCOMMIT & CHỐNG PHÌNH RAM CACHE ---
 vm.min_free_kbytes = 65536
 vm.page-cluster = 0
 vm.overcommit_memory = 1
@@ -290,12 +264,9 @@ vm.swappiness = ${SWAPPINESS}
 vm.vfs_cache_pressure = 125
 vm.dirty_background_ratio = 3
 vm.dirty_ratio = 8
-
-#--- INOTIFY & FILE MAX FIX CHO 200+ CONTAINER ---
 fs.file-max = 2097152
 fs.inotify.max_user_instances = 65536
 fs.inotify.max_user_watches = 2097152
-
 net.core.somaxconn = 65535
 net.core.netdev_max_backlog = 65535
 net.core.rmem_max = 16777216
@@ -308,15 +279,13 @@ net.ipv4.tcp_keepalive_time = 300
 net.ipv4.tcp_keepalive_intvl = 15
 net.ipv4.tcp_keepalive_probes = 3
 net.ipv4.tcp_slow_start_after_idle = 0
-
 net.netfilter.nf_conntrack_max = 524288
 net.netfilter.nf_conntrack_udp_timeout = 60
 net.netfilter.nf_conntrack_udp_timeout_stream = 180
-
 net.ipv6.conf.all.disable_ipv6 = 1
 net.ipv6.conf.default.disable_ipv6 = 1
 net.ipv6.conf.lo.disable_ipv6 = 1
-EOF
+EOFF
 
 while IFS= read -r line; do
   [[ "$line" =~ ^[[:space:]]*# ]] && continue
@@ -330,22 +299,21 @@ if [[ -f /etc/sysctl.d/99-vps-optimize.conf ]]; then
 fi
 
 mkdir -p /etc/security/limits.d
-cat > /etc/security/limits.d/99-nofile.conf <<'EOF'
+cat > /etc/security/limits.d/99-nofile.conf <<'EOFF'
 * soft nofile 1048576
 * hard nofile 1048576
 root soft nofile 1048576
 root hard nofile 1048576
-EOF
+EOFF
 
 mkdir -p /etc/systemd/journald.conf.d
-cat > /etc/systemd/journald.conf.d/99-ii-limit.conf <<'EOF'
+cat > /etc/systemd/journald.conf.d/99-ii-limit.conf <<'EOFF'
 [Journal]
 SystemMaxUse=10M
 RuntimeMaxUse=5M
-EOF
+EOFF
 if has_systemd; then systemctl restart systemd-journald 2>/dev/null || true; fi
 
-#------------------- 8. AUTO-PATCHER ENGAGEUB -------------------
 auto_patch_engageub_repo() {
   log "Dang quet va KHÓA RAM AN TOÀN (${CONTAINER_MEM_LIMIT}/${CONTAINER_SWAP_LIMIT}) + RESTART CỜ..."
   ROOTS=(/opt /root /home /srv)
@@ -375,9 +343,8 @@ auto_patch_engageub_repo() {
 }
 auto_patch_engageub_repo
 
-#------------------ 9. DOCKER DAEMON CONFIG ------------------
 mkdir -p /etc/docker
-NEW_DAEMON="$(cat <<EOF
+NEW_DAEMON="$(cat <<EOFF
 {
   "log-driver": "json-file",
   "log-opts": { "max-size": "2m", "max-file": "2" },
@@ -389,7 +356,7 @@ NEW_DAEMON="$(cat <<EOF
     "nofile": { "Name": "nofile", "Hard": 65536, "Soft": 65536 }
   }
 }
-EOF
+EOFF
 )"
 
 DOCKER_RESTARTED=0
@@ -408,8 +375,6 @@ else
   fi
   DOCKER_RESTARTED=1
 fi
-
-if has_systemd; then systemctl enable --now docker >/dev/null 2>&1 || true; fi
 
 if (( DOCKER_RESTARTED == 1 )); then
   sleep 10
@@ -437,9 +402,8 @@ if (( DOCKER_RESTARTED == 1 )); then
   log "Da revive xong tat ca container mot cach em ai!"
 fi
 
-#---------------------- 10. CRON 04:15 + 16:15 + WATCHDOG 15M ----------------
 install_cron_stack() {
-  cat > /usr/local/bin/ii-restart-all.sh <<'EOS'
+  cat > /usr/local/bin/ii-restart-all.sh <<'EOFF'
 #!/usr/bin/env bash
 LOG=/var/log/ii-restart.log
 ROOTS=(/opt /root /home /srv __EXTRA__)
@@ -488,7 +452,7 @@ HAVE_CTR=0; command -v ctr >/dev/null 2>&1 && HAVE_CTR=1
     echo "[$(ts)] xong: ${TOTAL} container | con Exited: ${STILL}"
   fi
 } >> "$LOG" 2>&1
-EOS
+EOFF
   if [[ -n "$BASE_DIR" ]]; then
     sed -i "s|__EXTRA__|\"${BASE_DIR}\"|" /usr/local/bin/ii-restart-all.sh
   else
@@ -496,20 +460,15 @@ EOS
   fi
   chmod +x /usr/local/bin/ii-restart-all.sh
 
-  cat > /etc/cron.d/internetincome <<'EOF'
+  cat > /etc/cron.d/internetincome <<'EOFF'
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-# 04:15 sang & 16:15 chieu: restart cuon chieu bao tri + drop cache RAM 2 lan/ngay
 15 4 * * * root /usr/local/bin/ii-restart-all.sh
 15 16 * * * root sync && echo 3 > /proc/sys/vm/drop_caches >/dev/null 2>&1
-
-# 15 phut/lan: WATCHDOG tu dong bat lai container bi chet ngam (Exited)
 */15 * * * * root docker ps -aq -f status=exited 2>/dev/null | xargs -r -n1 docker start >/dev/null 2>&1
-
-# 05:30 chu nhat: don dẹp image rac
 30 5 * * 0 root /usr/bin/docker image prune -f >/dev/null 2>&1
-EOF
+EOFF
   chmod 644 /etc/cron.d/internetincome
 
   if has_systemd; then
@@ -523,8 +482,7 @@ if (( DO_CRON == 1 )); then
   install_cron_stack
 fi
 
-#------------------ CONG CU ii-status.sh (LỌC THỰC TẾ CONTAINER TRONG DOCKER) ------------------
-cat > /usr/local/bin/ii-status.sh <<'EOS'
+cat > /usr/local/bin/ii-status.sh <<'EOFF'
 #!/usr/bin/env bash
 ROOTS=("$@")
 if (( ${#ROOTS[@]} == 0 )); then ROOTS=(/opt /root /home /srv); fi
@@ -612,8 +570,10 @@ else
   echo "  STATUS: [HEALTHY_OPTIMIZED] VPS is running smoothly with clean KSM memory and low PSI."
 fi
 echo "=========================================================================="
-EOS
+EOFF
 chmod +x /usr/local/bin/ii-status.sh
 
-echo "============================= SETUP XONG (FILTERED REPORT MASTER) =============================="
+echo "============================= SETUP XONG (COMPLETE MASTERPIECE 2026) =============================="
 /usr/local/bin/ii-status.sh || true
+EOF
+chmod +x ~/setup_vps.sh
