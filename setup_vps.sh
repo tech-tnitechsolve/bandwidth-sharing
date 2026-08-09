@@ -125,13 +125,13 @@ if ! swapon --show 2>/dev/null | grep -q "/dev/zram0"; then
   fi
 fi
 
-if (( MEM_MB <= 1200 )); then
+if (( MEM_MB <= 1200 )); then          # ~1.0 GB RAM
   TARGET_SWAP_MB=1536; SWAPPINESS=20
-elif (( MEM_MB <= 1700 )); then
+elif (( MEM_MB <= 1700 )); then        # ~1.5 GB RAM
   TARGET_SWAP_MB=1536; SWAPPINESS=20
-elif (( MEM_MB <= 2500 )); then
+elif (( MEM_MB <= 2500 )); then        # ~2.0 GB RAM
   TARGET_SWAP_MB=2048; SWAPPINESS=20
-elif (( MEM_MB <= 3500 )); then
+elif (( MEM_MB <= 3500 )); then        # ~3.0 GB RAM
   TARGET_SWAP_MB=2048; SWAPPINESS=20
 else
   TARGET_SWAP_MB=3072; SWAPPINESS=20
@@ -376,6 +376,8 @@ else
   DOCKER_RESTARTED=1
 fi
 
+if has_systemd; then systemctl enable --now docker >/dev/null 2>&1 || true; fi
+
 if (( DOCKER_RESTARTED == 1 )); then
   sleep 10
   log "Dang bat lai cac container engageub TU TU..."
@@ -573,7 +575,5 @@ echo "==========================================================================
 EOFF
 chmod +x /usr/local/bin/ii-status.sh
 
-echo "============================= SETUP XONG (COMPLETE MASTERPIECE 2026) =============================="
+echo "============================= SETUP XONG (DUAL-ENGINE MASTER 2026) =============================="
 /usr/local/bin/ii-status.sh || true
-EOF
-chmod +x ~/setup_vps.sh
