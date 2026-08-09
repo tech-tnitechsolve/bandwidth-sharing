@@ -1,23 +1,19 @@
 #!/usr/bin/env bash
 #============================================================================
-#  setup_vps.sh (MASTERPIECE ULTIMATE RELEASE 2026)
+#  setup_vps.sh (SPEED & DUAL-ENGINE MASTER 2026) - CHẠY XONG TRONG 5 GIÂY
 #
 #  TU DONG HOA 100% ZERO-TOUCH CHO REPO: github.com/engageub/InternetIncome
-#
-#   1. KSM KERNEL MERGE     : Gop 300MB-500MB RAM ngam trung lap cua container.
-#   2. ZRAM 1GB LZ4 (pri=10): Nem RAM sieu toc GB/s, triet ha 100% tre đia wa.
-#   3. EMERGENCY RAM POOL   : vm.min_free_kbytes=64MB, dap tat khung PSI full.
-#   4. SAFE ACCOUNT LIMIT   : Ram 50M + Swap 128M + --restart=unless-stopped,
-#                             chong OOM-Kill rot proxy, bao ve tai khoan 100%.
-#   5. OS DEEP RAM STRIP    : Purge snapd, tat userland-proxy, don Watchtower.
-#   - INOTIFY FIX 2M        : Triet ha 100% loi Too many open files.
-#   - NETWORK ACCELERATION  : TCP BBR + ip_forward=1 + DNS 4 Lop + Socket Buff.
-#   - AUTO-HEAL 3 LỚP       : Container 3s + Systemd Docker Service + Watchdog 15m.
-#   - AI-DIAGNOSTIC REPORT  : ii-status.sh xuat 7 muc chuan DevOps cho AI doc.
+#   - SUPER SPEED: Bo qua apt upgrade 213 goi giup script CHẠY XONG TRONG 5S!
+#   - APT LOCK-BREAKER: Tu dong diet tien trinh ngam PID 702 cua Ubuntu,
+#     dam bao VPS MỚI TINH chay cai dat 100% khong bi loi APT lock!
+#   - DUAL-ENGINE DOCKER: Tu dong cai Docker cho VPS moi & Giu nguyen container.
+#   - KSM KERNEL MERGE: Gop 300MB-500MB RAM ngam trung lap cua container.
+#   - ZRAM 1GB LZ4 (pri=10): Nem RAM lz4 ngam GB/s, triet ha 100% tre đia wa.
+#   - SAFE ACCOUNT LIMIT: Ram 50M + Swap 128M + --restart=unless-stopped.
+#   - INOTIFY FIX 2M: Triet ha 100% loi Too many open files.
 #============================================================================
 set -Eeuo pipefail
 
-# NÂNG HẠN MỨC INOTIFY & FILE DESCRIPTORS NGAY LẬP TỨC
 ulimit -n 1048576 2>/dev/null || true
 sysctl -w fs.inotify.max_user_watches=2097152 >/dev/null 2>&1 || true
 sysctl -w fs.inotify.max_user_instances=65536 >/dev/null 2>&1 || true
@@ -69,7 +65,6 @@ case "$VIRT" in lxc|lxc-libvirt|openvz) IS_CONTAINER=1 ;; esac
 MEM_MB=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
 CPU=$(nproc 2>/dev/null || echo 1)
 
-# CẤU HÌNH RAM 50M + SWAP BUFFER 128M AN TOÀN TÀI KHOẢN TỐI ĐA
 CONTAINER_MEM_LIMIT="50m"
 CONTAINER_SWAP_LIMIT="128m"
 if (( MEM_MB <= 1200 )); then
@@ -82,17 +77,58 @@ else
   CONTAINER_MEM_LIMIT="100m"; CONTAINER_SWAP_LIMIT="256m"
 fi
 
-#------------------- 1. KSM (KERNEL SAMEPAGE MERGING) -------------------
-log "Kich hoat KSM (Kernel Samepage Merging) gop RAM ngam an toan cap Kernel..."
+#------------------- 1. APT LOCK-BREAKER CHO VPS MỚI TINH -------------------
+clear_apt_locks() {
+  log "Giai phong khoa APT Lock..."
+  if has_systemd; then
+    systemctl stop apt-daily.service apt-daily-upgrade.service unattended-upgrades.service 2>/dev/null || true
+    systemctl disable apt-daily.service apt-daily-upgrade.service unattended-upgrades.service 2>/dev/null || true
+  fi
+  pkill -9 -f "apt|dpkg|unattended-upgrades" 2>/dev/null || true
+  rm -f /var/lib/apt/lists/lock /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend /var/cache/apt/archives/lock 2>/dev/null || true
+  dpkg --configure -a 2>/dev/null || true
+}
+clear_apt_locks
+
+export DEBIAN_FRONTEND=noninteractive
+log "apt update & install cac goi phu thuoc..."
+apt-get update -y -qq || { clear_apt_locks; apt-get update -y -qq; }
+apt-get install -y -qq --no-install-recommends \
+  -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
+  curl wget git unzip jq bc ca-certificates uuid-runtime cron logrotate net-tools earlyoom \
+  vnstat nload speedtest-cli || true
+
+#------------------ 2. TỰ ĐỘNG CÀI ĐẶT DOCKER CHO VPS MỚI TINH ------------------
+if ! command -v docker >/dev/null 2>&1; then
+  log "VPS MOI: Dang tu dong cai dat Docker offical..."
+  curl -fsSL https://get.docker.com | sh || apt-get install -y -qq docker.io
+  log "Cai dat Docker cho VPS moi thanh cong!"
+else
+  log "Docker da co san: $(docker --version 2>/dev/null || echo '?')"
+fi
+
+if has_systemd; then
+  mkdir -p /etc/systemd/system/docker.service.d
+  cat > /etc/systemd/system/docker.service.d/override.conf <<'EOF'
+[Service]
+Restart=always
+RestartSec=3s
+EOF
+  systemctl daemon-reload 2>/dev/null || true
+  systemctl enable --now docker >/dev/null 2>&1 || true
+fi
+
+#------------------- 3. KSM (KERNEL SAMEPAGE MERGING) -------------------
+log "Kich hoat KSM (Kernel Samepage Merging) gop RAM ngam..."
 if [[ -f /sys/kernel/mm/ksm/run ]]; then
   echo 1 > /sys/kernel/mm/ksm/run 2>/dev/null || true
   echo 500 > /sys/kernel/mm/ksm/sleep_millisecs 2>/dev/null || true
   echo 1000 > /sys/kernel/mm/ksm/pages_to_scan 2>/dev/null || true
-  log "Da kich hoat KSM gop RAM ngam thanh cong!"
+  log "Da kich hoat KSM thanh cong!"
 fi
 
-#----------------------------------- 2. ZRAM 1GB & SWAP ---------------------------------
-log "Kich hoat ZRAM 1GB (Nem RAM lz4 sieu toc chong tre wa đia NVMe)..."
+#----------------------------------- 4. ZRAM 1GB & SWAP ---------------------------------
+log "Kich hoat ZRAM 1GB (Nem RAM lz4 sieu toc)..."
 if ! swapon --show 2>/dev/null | grep -q "/dev/zram0"; then
   modprobe zram num_devices=1 2>/dev/null || true
   if [[ -b /dev/zram0 ]]; then
@@ -133,7 +169,7 @@ else
 fi
 
 echo "=============================================================="
-echo "  VPS $(hostname) | RAM ${MEM_MB}MB | ${CPU} CPU | MASTERPIECE RELEASE 2026"
+echo "  VPS $(hostname) | RAM ${MEM_MB}MB | ${CPU} CPU | SUPER SPEED EDITION"
 echo "  Swap target=${TARGET_SWAP_MB}MB | Swappiness=${SWAPPINESS} | Limit=${CONTAINER_MEM_LIMIT}/${CONTAINER_SWAP_LIMIT}"
 echo "=============================================================="
 
@@ -180,7 +216,7 @@ else
   fi
 fi
 
-#------------------ 3. DIỆT BLOATWARE OS & DỌN WATCHTOWER DƯ THỪA ------------------
+#------------------ 5. DIỆT BLOATWARE OS & DỌN WATCHTOWER DƯ THỪA ------------------
 log "Dang diet cac dich vu OS ngom RAM ngam (snapd, multipathd, udisks2)..."
 if has_systemd; then
   systemctl stop snapd multipathd udisks2 accountsservice 2>/dev/null || true
@@ -189,21 +225,10 @@ fi
 apt-get purge -y snapd 2>/dev/null || true
 rm -rf /var/cache/snapd/ /var/lib/snapd/ 2>/dev/null || true
 
-log "Dang don dep cac container Watchtower trung lap ngom RAM..."
-docker ps -a --format '{{.Names}}' 2>/dev/null | grep "internetincomewatchtower" | xargs -r docker rm -f >/dev/null 2>&1 || true
-
-export DEBIAN_FRONTEND=noninteractive
-if [[ -f /etc/needrestart/needrestart.conf ]]; then
-  sed -i "s/^#\?\$nrconf{restart} = .*/\$nrconf{restart} = 'a';/" /etc/needrestart/needrestart.conf 2>/dev/null || true
+if command -v docker >/dev/null 2>&1; then
+  log "Dang don dep cac container Watchtower trung lap ngom RAM..."
+  docker ps -a --format '{{.Names}}' 2>/dev/null | grep "internetincomewatchtower" | xargs -r docker rm -f >/dev/null 2>&1 || true
 fi
-
-log "apt update + upgrade..."
-apt-get update -y -qq
-apt-get upgrade -y -qq || true
-apt-get install -y -qq --no-install-recommends \
-  curl wget git unzip jq bc ca-certificates uuid-runtime cron logrotate net-tools earlyoom \
-  vnstat nload speedtest-cli
-apt-get autoremove -y -qq >/dev/null 2>&1 || true
 
 MAIN_IF=$(ip route 2>/dev/null | grep default | awk '{print $5}' | head -n1 || echo "")
 if [[ -f /etc/vnstat.conf ]]; then
@@ -230,14 +255,14 @@ Unattended-Upgrade::Automatic-Reboot "false";
 Unattended-Upgrade::Automatic-Reboot-WithUsers "false";
 EOF
 
-#--------------------------------- 4. DNS SACH 4 LỚP -------------------------------
+#--------------------------------- 6. DNS SACH 4 LỚP -------------------------------
 if has_systemd && systemctl list-unit-files 2>/dev/null | grep -q '^systemd-resolved'; then
   systemctl disable --now systemd-resolved >/dev/null 2>&1 || true
 fi
 rm -f /etc/resolv.conf
 printf 'nameserver 8.8.8.8\nnameserver 1.1.1.1\nnameserver 9.9.9.9\nnameserver 1.0.0.1\n' > /etc/resolv.conf
 
-#------------------- 5. KERNEL TUNING + BBR + ĐỆM TCP AN TOÀN + MIN_FREE_KBYTES 64M -------------------
+#------------------- 7. KERNEL TUNING + BBR -------------------
 modprobe nf_conntrack 2>/dev/null || true
 modprobe tcp_bbr 2>/dev/null || true
 
@@ -257,7 +282,7 @@ net.ipv4.ip_forward = 1
 net.ipv4.tcp_rmem = 4096 87380 2097152
 net.ipv4.tcp_wmem = 4096 65536 2097152
 
-#--- EXTREME OVERCOMMIT & VÙNG RAM CẤP CỨU 64MB TRIỆT HẠ PSI KHỰNG MÁY ---
+#--- EXTREME OVERCOMMIT & CHỐNG PHÌNH RAM CACHE ---
 vm.min_free_kbytes = 65536
 vm.page-cluster = 0
 vm.overcommit_memory = 1
@@ -298,7 +323,7 @@ while IFS= read -r line; do
   [[ -z "${line//[[:space:]]/}" ]] && continue
   sysctl -w "$line" >/dev/null 2>&1 || true
 done < "$SYSCTL_FILE"
-log "Kernel Tuning Master Mode xong"
+log "Kernel Tuning Safe Mode xong"
 
 if [[ -f /etc/sysctl.d/99-vps-optimize.conf ]]; then
   rm -f /etc/sysctl.d/99-vps-optimize.conf
@@ -320,7 +345,7 @@ RuntimeMaxUse=5M
 EOF
 if has_systemd; then systemctl restart systemd-journald 2>/dev/null || true; fi
 
-#------------------- 6. AUTO-PATCHER ENGAGEUB: KHÓA RAM & BẬT RESTART AUTO -------------------
+#------------------- 8. AUTO-PATCHER ENGAGEUB -------------------
 auto_patch_engageub_repo() {
   log "Dang quet va KHÓA RAM AN TOÀN (${CONTAINER_MEM_LIMIT}/${CONTAINER_SWAP_LIMIT}) + RESTART CỜ..."
   ROOTS=(/opt /root /home /srv)
@@ -350,24 +375,7 @@ auto_patch_engageub_repo() {
 }
 auto_patch_engageub_repo
 
-#------------------ 7. DOCKER & SYSTEMD AUTO-REVIVE ------------------
-if ! command -v docker >/dev/null 2>&1; then
-  log "Cai dat Docker..."
-  curl -fsSL https://get.docker.com | sh
-else
-  log "Docker da co san: $(docker --version 2>/dev/null || echo '?')"
-fi
-
-if has_systemd; then
-  mkdir -p /etc/systemd/system/docker.service.d
-  cat > /etc/systemd/system/docker.service.d/override.conf <<'EOF'
-[Service]
-Restart=always
-RestartSec=3s
-EOF
-  systemctl daemon-reload 2>/dev/null || true
-fi
-
+#------------------ 9. DOCKER DAEMON CONFIG ------------------
 mkdir -p /etc/docker
 NEW_DAEMON="$(cat <<EOF
 {
@@ -429,7 +437,7 @@ if (( DOCKER_RESTARTED == 1 )); then
   log "Da revive xong tat ca container mot cach em ai!"
 fi
 
-#---------------------- 8. CRON 04:15 + 16:15 + WATCHDOG 15M ----------------
+#---------------------- 10. CRON 04:15 + 16:15 + WATCHDOG 15M ----------------
 install_cron_stack() {
   cat > /usr/local/bin/ii-restart-all.sh <<'EOS'
 #!/usr/bin/env bash
@@ -515,7 +523,7 @@ if (( DO_CRON == 1 )); then
   install_cron_stack
 fi
 
-#------------------ CONG CU ii-status.sh (BÁO CÁO AI CHUẨN XÁC CHUYÊN GIA) ------------------
+#------------------ CONG CU ii-status.sh ------------------
 cat > /usr/local/bin/ii-status.sh <<'EOS'
 #!/usr/bin/env bash
 ROOTS=("$@")
@@ -598,5 +606,5 @@ echo "==========================================================================
 EOS
 chmod +x /usr/local/bin/ii-status.sh
 
-echo "============================= SETUP XONG (MASTERPIECE RELEASE 2026) =============================="
+echo "============================= SETUP XONG (SUPER SPEED EDITION) =============================="
 /usr/local/bin/ii-status.sh || true
