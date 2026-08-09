@@ -1,7 +1,17 @@
 cat << 'MASTER_EOF' > ~/setup_vps.sh
 #!/usr/bin/env bash
 #============================================================================
-#  setup_vps.sh (DUAL-ENGINE MASTER 2026 - FINAL UNAMBIGUOUS BUILD)
+#  setup_vps.sh (100% AUTO-PILOT SET & FORGET MASTER 2026)
+#
+#  CÀI 1 LẦN DUY NHẤT - TỰ ĐỘNG TỐI ƯU 100% CHO CẢ VPS MỚI LẪN VPS CỦ
+#   - AUTO-PILOT WATCHDOG: Cron 15m ngam TU DONG QUET folder moi add,
+#     TU DONG CHÈN CO --memory="50m" va co --restart=unless-stopped!
+#   - APT LOCK-BREAKER: Tu dong diet tien trinh ngam PID 702 cua Ubuntu.
+#   - DUAL-ENGINE DOCKER: Tu dong cai Docker cho VPS moi & Giu nguyen container.
+#   - KSM KERNEL MERGE: Gop 300MB-500MB RAM ngam trung lap cua container.
+#   - ZRAM 1GB LZ4 (pri=10): Nem RAM lz4 ngam GB/s, triet ha 100% tre đia wa.
+#   - SAFE ACCOUNT LIMIT: Ram 50M + Swap 128M + --restart=unless-stopped.
+#   - INOTIFY FIX 2M: Triet ha 100% loi Too many open files.
 #============================================================================
 set -Eeuo pipefail
 
@@ -153,7 +163,7 @@ else
 fi
 
 echo "=============================================================="
-echo "  VPS $(hostname) | RAM ${MEM_MB}MB | ${CPU} CPU | DUAL-ENGINE MASTER 2026"
+echo "  VPS $(hostname) | RAM ${MEM_MB}MB | ${CPU} CPU | AUTO-PILOT MASTER 2026"
 echo "  Swap target=${TARGET_SWAP_MB}MB | Swappiness=${SWAPPINESS} | Limit=${CONTAINER_MEM_LIMIT}/${CONTAINER_SWAP_LIMIT}"
 echo "=============================================================="
 
@@ -343,6 +353,14 @@ auto_patch_engageub_repo() {
 }
 auto_patch_engageub_repo
 
+if command -v docker >/dev/null 2>&1; then
+  CTRS=$(docker ps -aq 2>/dev/null || true)
+  if [[ -n "$CTRS" ]]; then
+    docker update --restart=unless-stopped $CTRS >/dev/null 2>&1 || true
+    log "Da tu dong cai co --restart=unless-stopped cho tat ca $(echo "$CTRS" | wc -w) container!"
+  fi
+fi
+
 mkdir -p /etc/docker
 NEW_DAEMON="$(cat <<EOF_DAEMON
 {
@@ -414,6 +432,17 @@ HAVE_CTR=0; command -v ctr >/dev/null 2>&1 && HAVE_CTR=1
 
 {
   echo "[$(ts)] ==================== ii-restart-all ===================="
+  # AUTO-PILOT: TU DONG PATCH RAM 50M VA CỜ RESTART CHO MOI FOLDER MOI KHÔNG CAN RUN SETUP_VPS LẠI
+  MEM_LIMIT="50m"; SWAP_LIMIT="128m"
+  while IFS= read -r sh_f; do
+    d_path=$(dirname "$sh_f")
+    [[ -f "${d_path}/properties.conf" ]] && sed -i "s/MAX_MEMORY=.*/MAX_MEMORY=${MEM_LIMIT}/" "${d_path}/properties.conf" 2>/dev/null || true
+    if [[ -f "$sh_f" ]]; then
+      grep -q "\--restart" "$sh_f" || sed -i "s/docker run -d/docker run -d --restart=unless-stopped/g" "$sh_f" 2>/dev/null || true
+      grep -q "\--memory" "$sh_f" || sed -i "s/docker run -d/docker run -d --memory=\"${MEM_LIMIT}\" --memory-swap=\"${SWAP_LIMIT}\"/g" "$sh_f" 2>/dev/null || true
+    fi
+  done < <(find "${ROOTS[@]}" -maxdepth 4 -name internetIncome.sh -type f 2>/dev/null | sort -u)
+
   mapfile -t FILES < <(find "${ROOTS[@]}" -maxdepth 4 -name containernames.txt -type f 2>/dev/null | sort -u)
   if (( ${#FILES[@]} == 0 )); then
     echo "[$(ts)] chua thay folder engageub nao"
@@ -447,6 +476,9 @@ HAVE_CTR=0; command -v ctr >/dev/null 2>&1 && HAVE_CTR=1
       docker start "$cid" >/dev/null 2>&1 || true
       sleep 1.5
     done < <(cat "${FILES[@]}" 2>/dev/null | sort -u)
+
+    # DỌN CỜ RESTART AUTO CHO CONTAINER MỚI
+    docker update --restart=unless-stopped $(docker ps -aq 2>/dev/null || true) >/dev/null 2>&1 || true
 
     sync && echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
     echo "[$(ts)] da xa cache RAM rac (drop_caches)"
@@ -575,7 +607,7 @@ echo "==========================================================================
 EOF_STATUS
 chmod +x /usr/local/bin/ii-status.sh
 
-echo "============================= SETUP XONG (DUAL-ENGINE MASTER 2026) =============================="
+echo "============================= SETUP XONG (100% AUTO-PILOT MASTER 2026) =============================="
 /usr/local/bin/ii-status.sh || true
 MASTER_EOF
 chmod +x ~/setup_vps.sh
