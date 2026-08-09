@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 #============================================================================
-#  setup_vps.sh (SAFE ACCOUNT & MAX ROI EDITION 2026)
+#  setup_vps.sh (AUTO-HEAL ULTIMATE MASTER 2026) - BẤT TỬ 253+ CONTAINER
 #
-#  TU DONG HOA 100% ZERO-TOUCH - AN TOÀN TÀI KHOẢN KHÔNG BAN ACC
-#   - SAFE MEMORY LIMIT: Ram 50M + Swap buffer 128M chong OOM-Kill giua chung,
-#     dam bao 100% Ty le Request Proxy thanh cong -> Khong lo bi khoa Acc!
+#  TU DONG HOA 100% ZERO-TOUCH CHO REPO: github.com/engageub/InternetIncome
+#   - DOCKER AUTO-RESTART: Tu dong patch --restart=unless-stopped vao tat ca
+#     container, tu bat lai container bi chet ngam trong 3 giay!
+#   - DOCKER SERVICE REVIVE: Systemd tu khoi dong lai Docker Daemon neu treo.
 #   - KSM KERNEL MERGE: Gop RAM ngam an toan 100% cap Kernel.
 #   - ZRAM 1GB LZ4 (pri=10): Nem RAM lz4 ngam GB/s, triet ha tre wa đia.
-#   - WATCHTOWER PURGE: Diet sach cac container Watchtower trung lap ngom RAM.
+#   - DOUBLE CACHE FLUSH: Xa cache RAM 2 lan/ngay (04:15 va 16:15).
 #   - INOTIFY FIX: Nang max_user_watches len 2 trieu chong loi open files.
-#   - TCP BBR + TUN2SOCKS: Ip_forward=1 va BBR tang toc do Proxy toi da.
 #============================================================================
 set -Eeuo pipefail
 
@@ -64,7 +64,6 @@ case "$VIRT" in lxc|lxc-libvirt|openvz) IS_CONTAINER=1 ;; esac
 MEM_MB=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
 CPU=$(nproc 2>/dev/null || echo 1)
 
-# CẤU HÌNH C N BẰNG RAM 50M AN TOÀN TUYỆT ĐỐI CHO CONTAINER
 CONTAINER_MEM_LIMIT="50m"
 CONTAINER_SWAP_LIMIT="128m"
 if (( MEM_MB <= 1200 )); then
@@ -77,7 +76,7 @@ else
   CONTAINER_MEM_LIMIT="100m"; CONTAINER_SWAP_LIMIT="256m"
 fi
 
-#------------------- 1. KSM (KERNEL SAMEPAGE MERGING - AN TOÀN CAP KERNEL) -------------------
+#------------------- 1. KSM (KERNEL SAMEPAGE MERGING) -------------------
 log "Kich hoat KSM (Kernel Samepage Merging) gop RAM ngam an toan cap Kernel..."
 if [[ -f /sys/kernel/mm/ksm/run ]]; then
   echo 1 > /sys/kernel/mm/ksm/run 2>/dev/null || true
@@ -128,7 +127,7 @@ else
 fi
 
 echo "=============================================================="
-echo "  VPS $(hostname) | RAM ${MEM_MB}MB | ${CPU} CPU | SAFE ACCOUNT & MAX ROI"
+echo "  VPS $(hostname) | RAM ${MEM_MB}MB | ${CPU} CPU | AUTO-HEAL ULTIMATE"
 echo "  Swap target=${TARGET_SWAP_MB}MB | Swappiness=${SWAPPINESS} | Limit=${CONTAINER_MEM_LIMIT}/${CONTAINER_SWAP_LIMIT}"
 echo "=============================================================="
 
@@ -232,7 +231,7 @@ fi
 rm -f /etc/resolv.conf
 printf 'nameserver 8.8.8.8\nnameserver 1.1.1.1\nnameserver 9.9.9.9\nnameserver 1.0.0.1\n' > /etc/resolv.conf
 
-#------------------- 5. KERNEL TUNING + BBR + ĐỆM TCP AN TOÀN -------------------
+#------------------- 5. KERNEL TUNING + BBR -------------------
 modprobe nf_conntrack 2>/dev/null || true
 modprobe tcp_bbr 2>/dev/null || true
 
@@ -315,9 +314,9 @@ RuntimeMaxUse=5M
 EOF
 if has_systemd; then systemctl restart systemd-journald 2>/dev/null || true; fi
 
-#------------------- 6. AUTO-PATCHER ENGAGEUB: KHÓA RAM AN TOÀN 50M/128M -------------------
+#------------------- 6. AUTO-PATCHER ENGAGEUB: KHÓA RAM & BẬT RESTART AUTO -------------------
 auto_patch_engageub_repo() {
-  log "Dang quet va KHÓA RAM AN TOÀN (${CONTAINER_MEM_LIMIT}/${CONTAINER_SWAP_LIMIT}) cho engageub/InternetIncome..."
+  log "Dang quet va KHÓA RAM AN TOÀN (${CONTAINER_MEM_LIMIT}/${CONTAINER_SWAP_LIMIT}) + RESTART CỜ..."
   ROOTS=(/opt /root /home /srv)
   if [[ -n "$BASE_DIR" ]]; then ROOTS+=("$BASE_DIR"); fi
 
@@ -330,8 +329,15 @@ auto_patch_engageub_repo() {
 
     if [[ -f "$sh_file" ]]; then
       cp -n "$sh_file" "${sh_file}.bak" 2>/dev/null || true
+      # Patch RAM & Memory-Swap
       sed -i "s/--memory=\"[0-9]*[a-z]*\"/--memory=\"${CONTAINER_MEM_LIMIT}\"/g" "$sh_file" 2>/dev/null || true
       sed -i "s/--memory-swap=\"[0-9]*[a-z]*\"/--memory-swap=\"${CONTAINER_SWAP_LIMIT}\"/g" "$sh_file" 2>/dev/null || true
+      
+      # Patch co --restart=unless-stopped cho tat ca docker run
+      if ! grep -q "\--restart" "$sh_file"; then
+        sed -i "s/docker run -d/docker run -d --restart=unless-stopped/g" "$sh_file" 2>/dev/null || true
+      fi
+
       if ! grep -q "\--memory" "$sh_file"; then
         sed -i "s/docker run -d/docker run -d --memory=\"${CONTAINER_MEM_LIMIT}\" --memory-swap=\"${CONTAINER_SWAP_LIMIT}\"/g" "$sh_file"
       fi
@@ -340,12 +346,23 @@ auto_patch_engageub_repo() {
 }
 auto_patch_engageub_repo
 
-#------------------ 7. DOCKER ------------------
+#------------------ 7. DOCKER & SYSTEMD AUTO-REVIVE ------------------
 if ! command -v docker >/dev/null 2>&1; then
   log "Cai dat Docker..."
   curl -fsSL https://get.docker.com | sh
 else
   log "Docker da co san: $(docker --version 2>/dev/null || echo '?')"
+fi
+
+# Cau hinh Systemd de Tu Cuu DOCKER DAEMON neu bi treo
+if has_systemd; then
+  mkdir -p /etc/systemd/system/docker.service.d
+  cat > /etc/systemd/system/docker.service.d/override.conf <<'EOF'
+[Service]
+Restart=always
+RestartSec=3s
+EOF
+  systemctl daemon-reload 2>/dev/null || true
 fi
 
 mkdir -p /etc/docker
@@ -409,7 +426,7 @@ if (( DOCKER_RESTARTED == 1 )); then
   log "Da revive xong tat ca container mot cach em ai!"
 fi
 
-#---------------------- 8. CRON 04:15 + WATCHDOG 15M ----------------
+#---------------------- 8. CRON 04:15 + 16:15 + WATCHDOG 15M ----------------
 install_cron_stack() {
   cat > /usr/local/bin/ii-restart-all.sh <<'EOS'
 #!/usr/bin/env bash
@@ -472,8 +489,9 @@ EOS
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-# 04:15 hang ngay: restart cuon chieu bao tri + drop cache RAM
+# 04:15 sang & 16:15 chieu: restart cuon chieu bao tri + drop cache RAM 2 lan/ngay
 15 4 * * * root /usr/local/bin/ii-restart-all.sh
+15 16 * * * root sync && echo 3 > /proc/sys/vm/drop_caches >/dev/null 2>&1
 
 # 15 phut/lan: WATCHDOG tu dong bat lai container bi chet ngam (Exited)
 */15 * * * * root docker ps -aq -f status=exited 2>/dev/null | xargs -r -n1 docker start >/dev/null 2>&1
@@ -494,7 +512,7 @@ if (( DO_CRON == 1 )); then
   install_cron_stack
 fi
 
-#------------------ CONG CU ii-status.sh (BÁO CÁO AI CHUẨN XÁC SAFE MODE) ------------------
+#------------------ CONG CU ii-status.sh (BÁO CÁO AI CHUẨN XÁC) ------------------
 cat > /usr/local/bin/ii-status.sh <<'EOS'
 #!/usr/bin/env bash
 ROOTS=("$@")
@@ -577,5 +595,5 @@ echo "==========================================================================
 EOS
 chmod +x /usr/local/bin/ii-status.sh
 
-echo "============================= SETUP XONG (SAFE ACCOUNT & MAX ROI INTEGRATED) =============================="
+echo "============================= SETUP XONG (AUTO-HEAL ULTIMATE INTEGRATED) =============================="
 /usr/local/bin/ii-status.sh || true
