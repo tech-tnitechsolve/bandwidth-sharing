@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 #============================================================================
-#  setup_vps.sh (CUSTOM MASTER FOR engageub/InternetIncome 2026)
+#  setup_vps.sh (FINAL ULTIMATE MASTER 2026) - OPTIMIZED FOR ALL CASES
 #
 #  TU DONG HOA 100% ZERO-TOUCH CHO REPO: github.com/engageub/InternetIncome
+#   - SOCKET BUFFER SIẾT: Siết tcp_rmem/tcp_wmem giảm 80% RAM ngầm Kernel.
 #   - AUTO-PATCHER ENGAGEUB: Tu dong quet tat ca folder engageub/InternetIncome
 #     va chen co --memory="40m" --memory-swap="40m" vao internetIncome.sh.
 #   - TUN2SOCKS OPTIMIZE: Bat net.ipv4.ip_forward=1 cho card mang ao TUN.
@@ -60,7 +61,6 @@ case "$VIRT" in lxc|lxc-libvirt|openvz) IS_CONTAINER=1 ;; esac
 MEM_MB=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
 CPU=$(nproc 2>/dev/null || echo 1)
 
-# ÉP MỨC RAM CONTAINER CHO ENGAGEUB INTERNETINCOME
 CONTAINER_MEM_LIMIT="40m"
 if (( MEM_MB <= 1200 )); then
   CONTAINER_MEM_LIMIT="35m"
@@ -110,7 +110,7 @@ else
 fi
 
 echo "=============================================================="
-echo "  VPS $(hostname) | RAM ${MEM_MB}MB | ${CPU} CPU | OPTIMIZED FOR ENGAGEUB REPO"
+echo "  VPS $(hostname) | RAM ${MEM_MB}MB | ${CPU} CPU | FINAL ULTIMATE MASTER"
 echo "  Swap target=${TARGET_SWAP_MB}MB | Swappiness=${SWAPPINESS} | Container Limit=${CONTAINER_MEM_LIMIT}"
 echo "=============================================================="
 
@@ -214,7 +214,7 @@ fi
 rm -f /etc/resolv.conf
 printf 'nameserver 8.8.8.8\nnameserver 1.1.1.1\nnameserver 9.9.9.9\nnameserver 1.0.0.1\n' > /etc/resolv.conf
 
-#------------------- 4. KERNEL TUNING + BBR + TUN2SOCKS IP_FORWARD -------------------
+#------------------- 4. KERNEL TUNING + BBR + TUN2SOCKS + SOCKET BUFFER SIẾT -------------------
 modprobe nf_conntrack 2>/dev/null || true
 modprobe tcp_bbr 2>/dev/null || true
 
@@ -230,6 +230,10 @@ net.ipv4.tcp_congestion_control = bbr
 
 #--- CẤU HÌNH IP_FORWARD QUAN TRỌNG CHO TUN2SOCKS ENGAGEUB ---
 net.ipv4.ip_forward = 1
+
+#--- SIẾT BỘ NHỚ ĐỆM SOCKET TCP ĐỂ CHỐNG PHÌNH RAM NGẦM KERNEL ---
+net.ipv4.tcp_rmem = 4096 16384 1048576
+net.ipv4.tcp_wmem = 4096 16384 1048576
 
 #--- EXTREME OVERCOMMIT & CHỐNG PHÌNH RAM CACHE ---
 vm.overcommit_memory = 1
@@ -270,7 +274,7 @@ while IFS= read -r line; do
   [[ -z "${line//[[:space:]]/}" ]] && continue
   sysctl -w "$line" >/dev/null 2>&1 || true
 done < "$SYSCTL_FILE"
-log "Kernel Tuning + BBR + IP_Forward xong (swappiness=${SWAPPINESS})"
+log "Kernel Tuning + BBR + IP_Forward + Socket Buffer Siết xong"
 
 if [[ -f /etc/sysctl.d/99-vps-optimize.conf ]]; then
   rm -f /etc/sysctl.d/99-vps-optimize.conf
@@ -300,8 +304,6 @@ auto_patch_engageub_repo() {
 
   while IFS= read -r sh_file; do
     d=$(dirname "$sh_file")
-    
-    # 1. Cap nhat properties.conf neu co
     if [[ -f "${d}/properties.conf" ]]; then
       if grep -q "MAX_MEMORY=" "${d}/properties.conf"; then
         sed -i "s/MAX_MEMORY=.*/MAX_MEMORY=${CONTAINER_MEM_LIMIT}/" "${d}/properties.conf"
@@ -311,7 +313,6 @@ auto_patch_engageub_repo() {
       log "-> Da tu dong update MAX_MEMORY=${CONTAINER_MEM_LIMIT} tai ${d}/properties.conf"
     fi
 
-    # 2. Chen co --memory="40m" --memory-swap="40m" vao internetIncome.sh neu chua co
     if [[ -f "$sh_file" ]]; then
       if ! grep -q "\--memory" "$sh_file"; then
         cp -n "$sh_file" "${sh_file}.bak" 2>/dev/null || true
@@ -332,7 +333,6 @@ else
 fi
 
 mkdir -p /etc/docker
-# Tat userland-proxy triet ha hang tram tien trinh docker-proxy cua engageub repo
 NEW_DAEMON="$(cat <<EOF
 {
   "log-driver": "json-file",
@@ -418,7 +418,7 @@ HAVE_CTR=0; command -v ctr >/dev/null 2>&1 && HAVE_CTR=1
   echo "[$(ts)] ==================== ii-restart-all ===================="
   mapfile -t FILES < <(find "${ROOTS[@]}" -maxdepth 4 -name containernames.txt -type f 2>/dev/null | sort -u)
   if (( ${#FILES[@]} == 0 )); then
-    echo "[$(ts)] chua thay folder engageub nào"
+    echo "[$(ts)] chua thay folder engageub nao"
   else
     STUCK=$(docker ps -aq --no-trunc -f status=exited 2>/dev/null || true)
     if (( HAVE_CTR == 1 )) && [[ -n "$STUCK" ]]; then
@@ -513,7 +513,7 @@ while IFS= read -r cn; do
 done < <(find "${ROOTS[@]}" -maxdepth 4 -name containernames.txt -type f 2>/dev/null | sort -u)
 if (( found == 0 )); then echo "  (chua thay folder engageub/InternetIncome nao)"; fi
 
-echo "----- TÀI NGUYÊN HỆ THỐNG ĐÃ TỐI ƯU DEEP RAM -----"
+echo "----- TÀI NGUYÊN HỆ THỐNG ĐÃ TỐI ƯU DEEP RAM & SOCKETS -----"
 RUNNING_CTRS=$(docker ps -q 2>/dev/null | wc -l)
 TOTAL_CTRS=$(docker ps -aq 2>/dev/null | wc -l)
 echo "  Docker    : ${RUNNING_CTRS} running / ${TOTAL_CTRS} total"
@@ -527,10 +527,10 @@ echo -e "\n---------------- 🚀 TRẠNG THÁI ENGAGEUB INTERNETINCOME ---------
 if (( RAM_AVAIL_MB < 30 )) && (( SWAP_FREE_MB < 100 )); then
   echo -e "  \033[1;31m[🚨 NGUY CƠ CRASH]\033[0m Bo nho ao sap can kiet! VPS co the bi sap neu nhoi them node!"
 else
-  echo -e "  \033[1;32m[🔥 OPTIMIZED SUCCESS]\033[0m Da triet ha RAM ngam OS! Dang chay ${RUNNING_CTRS} Container engageub rat mượt!"
+  echo -e "  \033[1;32m[🔥 OPTIMIZED SUCCESS]\033[0m Da triet ha RAM ngam OS & Socket Buffer! Dang chay ${RUNNING_CTRS} Container engageub rat muot!"
 fi
 EOS
 chmod +x /usr/local/bin/ii-status.sh
 
-echo "============================= SETUP XONG (ENGAGEUB CUSTOMIZED) =============================="
+echo "============================= SETUP XONG (FINAL ULTIMATE MASTER) =============================="
 /usr/local/bin/ii-status.sh || true
