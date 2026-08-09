@@ -1,7 +1,7 @@
-cat > ~/setup_vps.sh <<'EOF'
+cat << 'MASTER_EOF' > ~/setup_vps.sh
 #!/usr/bin/env bash
 #============================================================================
-#  setup_vps.sh (DUAL-ENGINE MASTER 2026 - NEW & LIVE VPS OPTIMIZED)
+#  setup_vps.sh (DUAL-ENGINE MASTER 2026 - FINAL UNAMBIGUOUS BUILD)
 #============================================================================
 set -Eeuo pipefail
 
@@ -95,11 +95,11 @@ fi
 
 if has_systemd; then
   mkdir -p /etc/systemd/system/docker.service.d
-  cat > /etc/systemd/system/docker.service.d/override.conf <<'EOFF'
+  cat > /etc/systemd/system/docker.service.d/override.conf <<'EOF_DOCKER_SVC'
 [Service]
 Restart=always
 RestartSec=3s
-EOFF
+EOF_DOCKER_SVC
   systemctl daemon-reload 2>/dev/null || true
   systemctl enable --now docker >/dev/null 2>&1 || true
 fi
@@ -223,9 +223,9 @@ if [[ -f /etc/vnstat.conf ]]; then
 fi
 
 if [[ -f /etc/default/earlyoom ]]; then
-  cat > /etc/default/earlyoom <<'EOFF'
+  cat > /etc/default/earlyoom <<'EOF_EARLYOOM'
 EARLYOOM_ARGS="-m 3 -s 5 --avoid '^(sshd|systemd|cron)$'"
-EOFF
+EOF_EARLYOOM
 fi
 if has_systemd; then systemctl enable --now earlyoom >/dev/null 2>&1 || true; fi
 
@@ -233,10 +233,10 @@ timedatectl set-ntp true 2>/dev/null || true
 timedatectl set-timezone Asia/Ho_Chi_Minh 2>/dev/null || true
 
 mkdir -p /etc/apt/apt.conf.d
-cat > /etc/apt/apt.conf.d/99ii-noreboot <<'EOFF'
+cat > /etc/apt/apt.conf.d/99ii-noreboot <<'EOF_APT'
 Unattended-Upgrade::Automatic-Reboot "false";
 Unattended-Upgrade::Automatic-Reboot-WithUsers "false";
-EOFF
+EOF_APT
 
 if has_systemd && systemctl list-unit-files 2>/dev/null | grep -q '^systemd-resolved'; then
   systemctl disable --now systemd-resolved >/dev/null 2>&1 || true
@@ -251,7 +251,7 @@ echo never > /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || true
 echo never > /sys/kernel/mm/transparent_hugepage/defrag 2>/dev/null || true
 
 SYSCTL_FILE=/etc/sysctl.d/99-internetincome.conf
-cat > "$SYSCTL_FILE" <<EOFF
+cat > "$SYSCTL_FILE" <<EOF_SYSCTL
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
 net.ipv4.ip_forward = 1
@@ -285,7 +285,7 @@ net.netfilter.nf_conntrack_udp_timeout_stream = 180
 net.ipv6.conf.all.disable_ipv6 = 1
 net.ipv6.conf.default.disable_ipv6 = 1
 net.ipv6.conf.lo.disable_ipv6 = 1
-EOFF
+EOF_SYSCTL
 
 while IFS= read -r line; do
   [[ "$line" =~ ^[[:space:]]*# ]] && continue
@@ -299,19 +299,19 @@ if [[ -f /etc/sysctl.d/99-vps-optimize.conf ]]; then
 fi
 
 mkdir -p /etc/security/limits.d
-cat > /etc/security/limits.d/99-nofile.conf <<'EOFF'
+cat > /etc/security/limits.d/99-nofile.conf <<'EOF_LIMITS'
 * soft nofile 1048576
 * hard nofile 1048576
 root soft nofile 1048576
 root hard nofile 1048576
-EOFF
+EOF_LIMITS
 
 mkdir -p /etc/systemd/journald.conf.d
-cat > /etc/systemd/journald.conf.d/99-ii-limit.conf <<'EOFF'
+cat > /etc/systemd/journald.conf.d/99-ii-limit.conf <<'EOF_JOURNAL'
 [Journal]
 SystemMaxUse=10M
 RuntimeMaxUse=5M
-EOFF
+EOF_JOURNAL
 if has_systemd; then systemctl restart systemd-journald 2>/dev/null || true; fi
 
 auto_patch_engageub_repo() {
@@ -344,7 +344,7 @@ auto_patch_engageub_repo() {
 auto_patch_engageub_repo
 
 mkdir -p /etc/docker
-NEW_DAEMON="$(cat <<EOFF
+NEW_DAEMON="$(cat <<EOF_DAEMON
 {
   "log-driver": "json-file",
   "log-opts": { "max-size": "2m", "max-file": "2" },
@@ -356,7 +356,7 @@ NEW_DAEMON="$(cat <<EOFF
     "nofile": { "Name": "nofile", "Hard": 65536, "Soft": 65536 }
   }
 }
-EOFF
+EOF_DAEMON
 )"
 
 DOCKER_RESTARTED=0
@@ -405,7 +405,7 @@ if (( DOCKER_RESTARTED == 1 )); then
 fi
 
 install_cron_stack() {
-  cat > /usr/local/bin/ii-restart-all.sh <<'EOFF'
+  cat > /usr/local/bin/ii-restart-all.sh <<'EOF_RESTART'
 #!/usr/bin/env bash
 LOG=/var/log/ii-restart.log
 ROOTS=(/opt /root /home /srv __EXTRA__)
@@ -454,7 +454,7 @@ HAVE_CTR=0; command -v ctr >/dev/null 2>&1 && HAVE_CTR=1
     echo "[$(ts)] xong: ${TOTAL} container | con Exited: ${STILL}"
   fi
 } >> "$LOG" 2>&1
-EOFF
+EOF_RESTART
   if [[ -n "$BASE_DIR" ]]; then
     sed -i "s|__EXTRA__|\"${BASE_DIR}\"|" /usr/local/bin/ii-restart-all.sh
   else
@@ -462,7 +462,7 @@ EOFF
   fi
   chmod +x /usr/local/bin/ii-restart-all.sh
 
-  cat > /etc/cron.d/internetincome <<'EOFF'
+  cat > /etc/cron.d/internetincome <<'EOF_CRON'
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
@@ -470,7 +470,7 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 15 16 * * * root sync && echo 3 > /proc/sys/vm/drop_caches >/dev/null 2>&1
 */15 * * * * root docker ps -aq -f status=exited 2>/dev/null | xargs -r -n1 docker start >/dev/null 2>&1
 30 5 * * 0 root /usr/bin/docker image prune -f >/dev/null 2>&1
-EOFF
+EOF_CRON
   chmod 644 /etc/cron.d/internetincome
 
   if has_systemd; then
@@ -484,7 +484,7 @@ if (( DO_CRON == 1 )); then
   install_cron_stack
 fi
 
-cat > /usr/local/bin/ii-status.sh <<'EOFF'
+cat > /usr/local/bin/ii-status.sh <<'EOF_STATUS'
 #!/usr/bin/env bash
 ROOTS=("$@")
 if (( ${#ROOTS[@]} == 0 )); then ROOTS=(/opt /root /home /srv); fi
@@ -572,8 +572,10 @@ else
   echo "  STATUS: [HEALTHY_OPTIMIZED] VPS is running smoothly with clean KSM memory and low PSI."
 fi
 echo "=========================================================================="
-EOFF
+EOF_STATUS
 chmod +x /usr/local/bin/ii-status.sh
 
 echo "============================= SETUP XONG (DUAL-ENGINE MASTER 2026) =============================="
 /usr/local/bin/ii-status.sh || true
+MASTER_EOF
+chmod +x ~/setup_vps.sh
