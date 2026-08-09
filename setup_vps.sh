@@ -1,16 +1,15 @@
 #!/usr/bin/env bash
 #============================================================================
-#  setup_vps.sh (ULTIMATE AUTO-OPTIMIZE + SMART ALERT 2026)
+#  setup_vps.sh (CUSTOM MASTER FOR engageub/InternetIncome 2026)
 #
-#  TU DONG HOA 100% ZERO-TOUCH - chi can:  sudo bash setup_vps.sh
-#   - SMART ALERT: Canh bao QUÁ TẢI (Màu đỏ) va goi y so luong container
-#     can cat giam ngay trong ii-status.sh!
-#   - AUTO-PATCHER: Tu dong quet tat ca folder InternetIncome & CHÈN CỜ
-#     --memory khong khong che RAM tu dong (KHONG CAN SUA TAY!).
+#  TU DONG HOA 100% ZERO-TOUCH CHO REPO: github.com/engageub/InternetIncome
+#   - AUTO-PATCHER ENGAGEUB: Tu dong quet tat ca folder engageub/InternetIncome
+#     va chen co --memory="40m" --memory-swap="40m" vao internetIncome.sh.
+#   - TUN2SOCKS OPTIMIZE: Bat net.ipv4.ip_forward=1 cho card mang ao TUN.
+#   - KILL RAM NGẦM: Tat userland-proxy, go snapd, tat THP, siet journald.
 #   - TCP BBR: Bat thuat toan Google BBR tang toc do Proxy & thu nhap.
 #   - WATCHDOG 15m: Quet va tu phuc hoi container chet ngam moi 15 phut.
-#   - STAGGERED START: Bat/Restart container TU TU (nghi 1.5s-2s/container).
-#   - SAFE LIVE: Chay lai an toan 100% tren VPS dang co container chay.
+#   - STAGGERED START: Bat/Restart container TU TU (nghi 1.5s/container).
 #============================================================================
 set -Eeuo pipefail
 
@@ -61,15 +60,16 @@ case "$VIRT" in lxc|lxc-libvirt|openvz) IS_CONTAINER=1 ;; esac
 MEM_MB=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
 CPU=$(nproc 2>/dev/null || echo 1)
 
-CONTAINER_MEM_LIMIT="60m"
+# ÉP MỨC RAM CONTAINER CHO ENGAGEUB INTERNETINCOME
+CONTAINER_MEM_LIMIT="40m"
 if (( MEM_MB <= 1200 )); then
-  CONTAINER_MEM_LIMIT="45m"
+  CONTAINER_MEM_LIMIT="35m"
 elif (( MEM_MB <= 2500 )); then
-  CONTAINER_MEM_LIMIT="60m"
+  CONTAINER_MEM_LIMIT="40m"
 elif (( MEM_MB <= 5000 )); then
-  CONTAINER_MEM_LIMIT="90m"
+  CONTAINER_MEM_LIMIT="60m"
 else
-  CONTAINER_MEM_LIMIT="120m"
+  CONTAINER_MEM_LIMIT="80m"
 fi
 
 #----------------------------------- 1. SWAP ---------------------------------
@@ -110,7 +110,7 @@ else
 fi
 
 echo "=============================================================="
-echo "  VPS $(hostname) | RAM ${MEM_MB}MB | ${CPU} CPU | ao hoa: ${VIRT}"
+echo "  VPS $(hostname) | RAM ${MEM_MB}MB | ${CPU} CPU | OPTIMIZED FOR ENGAGEUB REPO"
 echo "  Swap target=${TARGET_SWAP_MB}MB | Swappiness=${SWAPPINESS} | Container Limit=${CONTAINER_MEM_LIMIT}"
 echo "=============================================================="
 
@@ -160,7 +160,15 @@ else
   fi
 fi
 
-#------------------------------ 2. APT KHONG HOI -----------------------------
+#------------------ 2. DIỆT BLOATWARE OS ĐỂ GIẢM RAM NGẦM ------------------
+log "Dang diet cac dich vu OS ngom RAM ngam (snapd, multipathd, udisks2)..."
+if has_systemd; then
+  systemctl stop snapd multipathd udisks2 accountsservice 2>/dev/null || true
+  systemctl disable snapd multipathd udisks2 accountsservice 2>/dev/null || true
+fi
+apt-get purge -y snapd 2>/dev/null || true
+rm -rf /var/cache/snapd/ /var/lib/snapd/ 2>/dev/null || true
+
 export DEBIAN_FRONTEND=noninteractive
 if [[ -f /etc/needrestart/needrestart.conf ]]; then
   sed -i "s/^#\?\$nrconf{restart} = .*/\$nrconf{restart} = 'a';/" /etc/needrestart/needrestart.conf 2>/dev/null || true
@@ -179,13 +187,13 @@ if [[ -f /etc/vnstat.conf ]]; then
   if [[ -n "$MAIN_IF" ]]; then
     sed -i "s/Interface \".*\"/Interface \"$MAIN_IF\"/" /etc/vnstat.conf
   fi
-  grep -q 'ExcludeInterface' /etc/vnstat.conf || echo 'ExcludeInterface "veth* docker0 tun*"' >> /etc/vnstat.conf
+  grep -q 'ExcludeInterface' /etc/vnstat.conf || echo 'ExcludeInterface "veth* docker0 tun* tap*"' >> /etc/vnstat.conf
   if has_systemd; then systemctl restart vnstat 2>/dev/null || true; fi
 fi
 
 if [[ -f /etc/default/earlyoom ]]; then
   cat > /etc/default/earlyoom <<'EOF'
-EARLYOOM_ARGS="-m 5 -s 10 --avoid '^(sshd|systemd|cron)$'"
+EARLYOOM_ARGS="-m 3 -s 5 --avoid '^(sshd|systemd|cron)$'"
 EOF
 fi
 if has_systemd; then systemctl enable --now earlyoom >/dev/null 2>&1 || true; fi
@@ -205,17 +213,30 @@ if has_systemd && systemctl list-unit-files 2>/dev/null | grep -q '^systemd-reso
 fi
 rm -f /etc/resolv.conf
 printf 'nameserver 8.8.8.8\nnameserver 1.1.1.1\nnameserver 9.9.9.9\nnameserver 1.0.0.1\n' > /etc/resolv.conf
-log "DNS -> Google (8.8.8.8) + Cloudflare (1.1.1.1) + Quad9 (9.9.9.9)"
 
-#------------------------------- 4. KERNEL TUNING + TCP BBR ----------------------------
+#------------------- 4. KERNEL TUNING + BBR + TUN2SOCKS IP_FORWARD -------------------
 modprobe nf_conntrack 2>/dev/null || true
 modprobe tcp_bbr 2>/dev/null || true
+
+# Tat Transparent Huge Pages nguu ngoc gay phin RAM ngam
+echo never > /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || true
+echo never > /sys/kernel/mm/transparent_hugepage/defrag 2>/dev/null || true
 
 SYSCTL_FILE=/etc/sysctl.d/99-internetincome.conf
 cat > "$SYSCTL_FILE" <<EOF
 #--- TCP BBR (TĂNG TỐC BĂNG THÔNG PROXY) ---
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
+
+#--- CẤU HÌNH IP_FORWARD QUAN TRỌNG CHO TUN2SOCKS ENGAGEUB ---
+net.ipv4.ip_forward = 1
+
+#--- EXTREME OVERCOMMIT & CHỐNG PHÌNH RAM CACHE ---
+vm.overcommit_memory = 1
+vm.swappiness = ${SWAPPINESS}
+vm.vfs_cache_pressure = 125
+vm.dirty_background_ratio = 3
+vm.dirty_ratio = 8
 
 #--- InternetIncome tuning ---
 fs.file-max = 2097152
@@ -239,12 +260,6 @@ net.netfilter.nf_conntrack_max = 524288
 net.netfilter.nf_conntrack_udp_timeout = 60
 net.netfilter.nf_conntrack_udp_timeout_stream = 180
 
-# TOI UU MEMORY & SWAP
-vm.swappiness = ${SWAPPINESS}
-vm.vfs_cache_pressure = 50
-vm.dirty_background_ratio = 5
-vm.dirty_ratio = 10
-
 net.ipv6.conf.all.disable_ipv6 = 1
 net.ipv6.conf.default.disable_ipv6 = 1
 net.ipv6.conf.lo.disable_ipv6 = 1
@@ -255,7 +270,7 @@ while IFS= read -r line; do
   [[ -z "${line//[[:space:]]/}" ]] && continue
   sysctl -w "$line" >/dev/null 2>&1 || true
 done < "$SYSCTL_FILE"
-log "Kernel tuning + BBR xong (swappiness=${SWAPPINESS})"
+log "Kernel Tuning + BBR + IP_Forward xong (swappiness=${SWAPPINESS})"
 
 if [[ -f /etc/sysctl.d/99-vps-optimize.conf ]]; then
   rm -f /etc/sysctl.d/99-vps-optimize.conf
@@ -272,40 +287,43 @@ EOF
 mkdir -p /etc/systemd/journald.conf.d
 cat > /etc/systemd/journald.conf.d/99-ii-limit.conf <<'EOF'
 [Journal]
-SystemMaxUse=30M
-RuntimeMaxUse=10M
+SystemMaxUse=10M
+RuntimeMaxUse=5M
 EOF
 if has_systemd; then systemctl restart systemd-journald 2>/dev/null || true; fi
 
-#------------------- 5. AUTO-PATCHER: TỰ ĐỘNG KHÓA RAM TẤT CẢ CONTAINER -------------------
-auto_patch_memory_limits() {
-  log "Dang quet & tu dong KHÓA RAM (${CONTAINER_MEM_LIMIT}) cho tat ca folder InternetIncome..."
+#------------------- 5. AUTO-PATCHER ENGAGEUB: TỰ ĐỘNG KHÓA RAM CONTAINER -------------------
+auto_patch_engageub_repo() {
+  log "Dang quet va KHÓA RAM (${CONTAINER_MEM_LIMIT}) cho repo engageub/InternetIncome..."
   ROOTS=(/opt /root /home /srv)
   if [[ -n "$BASE_DIR" ]]; then ROOTS+=("$BASE_DIR"); fi
 
   while IFS= read -r sh_file; do
     d=$(dirname "$sh_file")
+    
+    # 1. Cap nhat properties.conf neu co
     if [[ -f "${d}/properties.conf" ]]; then
       if grep -q "MAX_MEMORY=" "${d}/properties.conf"; then
         sed -i "s/MAX_MEMORY=.*/MAX_MEMORY=${CONTAINER_MEM_LIMIT}/" "${d}/properties.conf"
       else
         echo "MAX_MEMORY=${CONTAINER_MEM_LIMIT}" >> "${d}/properties.conf"
       fi
-      log "-> Da tu dong set MAX_MEMORY=${CONTAINER_MEM_LIMIT} tai ${d}/properties.conf"
+      log "-> Da tu dong update MAX_MEMORY=${CONTAINER_MEM_LIMIT} tai ${d}/properties.conf"
     fi
 
+    # 2. Chen co --memory="40m" --memory-swap="40m" vao internetIncome.sh neu chua co
     if [[ -f "$sh_file" ]]; then
       if ! grep -q "\--memory" "$sh_file"; then
         cp -n "$sh_file" "${sh_file}.bak" 2>/dev/null || true
-        sed -i "s/docker run -d/docker run -d --memory=\"${CONTAINER_MEM_LIMIT}\"/g" "$sh_file"
-        log "-> Da tu dong chen cờ --memory=\"${CONTAINER_MEM_LIMIT}\" vao ${sh_file}"
+        sed -i "s/docker run -d/docker run -d --memory=\"${CONTAINER_MEM_LIMIT}\" --memory-swap=\"${CONTAINER_MEM_LIMIT}\"/g" "$sh_file"
+        log "-> Da tu dong patch co --memory=\"${CONTAINER_MEM_LIMIT}\" vao ${sh_file}"
       fi
     fi
   done < <(find "${ROOTS[@]}" -maxdepth 4 -name internetIncome.sh -type f 2>/dev/null | sort -u)
 }
-auto_patch_memory_limits
+auto_patch_engageub_repo
 
-#---------------------------------- 6. DOCKER --------------------------------
+#------------------ 6. DOCKER (TẮT USERLAND-PROXY DIỆT HÀNG TRĂM PROCESS ĐỌC PORT) ------------------
 if ! command -v docker >/dev/null 2>&1; then
   log "Cai dat Docker..."
   curl -fsSL https://get.docker.com | sh
@@ -314,6 +332,7 @@ else
 fi
 
 mkdir -p /etc/docker
+# Tat userland-proxy triet ha hang tram tien trinh docker-proxy cua engageub repo
 NEW_DAEMON="$(cat <<EOF
 {
   "log-driver": "json-file",
@@ -321,6 +340,7 @@ NEW_DAEMON="$(cat <<EOF
   "dns": ["8.8.8.8", "1.1.1.1", "9.9.9.9"],
   "max-concurrent-downloads": ${CONCURRENT_DOWNLOADS},
   "live-restore": true,
+  "userland-proxy": false,
   "default-ulimits": {
     "nofile": { "Name": "nofile", "Hard": 65536, "Soft": 65536 }
   }
@@ -350,7 +370,7 @@ docker info >/dev/null 2>&1 || die "Docker khong chay duoc - kiem tra ao hoa/ker
 
 if (( DOCKER_RESTARTED == 1 )); then
   sleep 10
-  log "Dang bat lai cac container TU TU (nghi 1.5s/container chong nghen CPU)..."
+  log "Dang bat lai cac container engageub TU TU (nghi 1.5s/container chong nghen CPU)..."
   
   while IFS= read -r cid; do
     [[ -n "$cid" ]] || continue
@@ -375,7 +395,7 @@ if (( DOCKER_RESTARTED == 1 )); then
 fi
 
 RUNNING_AFTER=$(docker ps -q 2>/dev/null | wc -l)
-log "Docker OK (live-restore on)"
+log "Docker OK (userland-proxy=disabled | live-restore on)"
 
 #------------------------------- 7. PRE-PULL IMAGE ---------------------------
 if (( DO_PULL == 1 )); then
@@ -398,7 +418,7 @@ HAVE_CTR=0; command -v ctr >/dev/null 2>&1 && HAVE_CTR=1
   echo "[$(ts)] ==================== ii-restart-all ===================="
   mapfile -t FILES < <(find "${ROOTS[@]}" -maxdepth 4 -name containernames.txt -type f 2>/dev/null | sort -u)
   if (( ${#FILES[@]} == 0 )); then
-    echo "[$(ts)] chua thay folder nao"
+    echo "[$(ts)] chua thay folder engageub nào"
   else
     STUCK=$(docker ps -aq --no-trunc -f status=exited 2>/dev/null || true)
     if (( HAVE_CTR == 1 )) && [[ -n "$STUCK" ]]; then
@@ -470,13 +490,13 @@ if (( DO_CRON == 1 )); then
   install_cron_stack
 fi
 
-#------------------ CONG CU ii-status.sh (TÍCH HỢP CẢNH BÁO TẢI THÔNG MINH) ------------------
+#------------------ CONG CU ii-status.sh (CHECK CHO ENGAGEUB REPO) ------------------
 cat > /usr/local/bin/ii-status.sh <<'EOS'
 #!/usr/bin/env bash
 ROOTS=("$@")
 if (( ${#ROOTS[@]} == 0 )); then ROOTS=(/opt /root /home /srv); fi
 
-echo "===== INTERNETINCOME STATUS ====="
+echo "===== ENGAGEUB INTERNETINCOME STATUS ====="
 found=0
 while IFS= read -r cn; do
   d=$(dirname "$cn")
@@ -491,56 +511,26 @@ while IFS= read -r cn; do
   (( running < total )) && mark="  <-- THIEU $((total-running))"
   printf "  %-46s %4s/%-4s running%s\n" "$d" "$running" "$total" "$mark"
 done < <(find "${ROOTS[@]}" -maxdepth 4 -name containernames.txt -type f 2>/dev/null | sort -u)
-if (( found == 0 )); then echo "  (chua thay folder InternetIncome nao)"; fi
+if (( found == 0 )); then echo "  (chua thay folder engageub/InternetIncome nao)"; fi
 
-echo "----- TAI NGUYEN HE THONG -----"
+echo "----- TÀI NGUYÊN HỆ THỐNG ĐÃ TỐI ƯU DEEP RAM -----"
 RUNNING_CTRS=$(docker ps -q 2>/dev/null | wc -l)
 TOTAL_CTRS=$(docker ps -aq 2>/dev/null | wc -l)
 echo "  Docker    : ${RUNNING_CTRS} running / ${TOTAL_CTRS} total"
 free -h | awk '/^Mem:/{printf "  RAM       : %s/%s dang dung (Con trong: %s)\n",$3,$2,$7} /^Swap:/{printf "  Swap      : %s/%s dang dung\n",$3,$2}'
 df -h / | awk 'NR==2{printf "  Disk /    : %s/%s (%s)\n",$3,$2,$5}'
 
-# --- BỘ PHÂN TÍCH VÀ CẢNH BÁO QUÁ TẢI THÔNG MINH ---
-CPU_LOAD=$(awk '{print $1}' /proc/loadavg 2>/dev/null || echo 0)
 RAM_AVAIL_MB=$(free -m 2>/dev/null | awk '/^Mem:/{print $7}' || echo 999)
-SWAP_USED_MB=$(free -m 2>/dev/null | awk '/^Swap:/{print $3}' || echo 0)
-TOTAL_RAM_MB=$(free -m 2>/dev/null | awk '/^Mem:/{print $2}' || echo 2000)
+SWAP_FREE_MB=$(free -m 2>/dev/null | awk '/^Swap:/{print $4}' || echo 999)
 
-WARN_COUNT=0
-echo -e "\n---------------- ⚠️ CẢNH BÁO TẢI & KHUYẾN CÁO ----------------"
-
-if (( $(echo "$CPU_LOAD > 1.8" | bc -l 2>/dev/null || echo 0) )); then
-  echo -e "  \033[1;31m[⚠️ CẢNH BÁO CPU]\033[0m Load Average = ${CPU_LOAD} (1 vCPU dang bi gong qua tai!)."
-  WARN_COUNT=$((WARN_COUNT+1))
-fi
-
-if (( RAM_AVAIL_MB < 120 )); then
-  echo -e "  \033[1;31m[⚠️ CẢNH BÁO RAM]\033[0m RAM kha dung chi con ${RAM_AVAIL_MB}MB (Ruy co rot request!)."
-  WARN_COUNT=$((WARN_COUNT+1))
-fi
-
-if (( SWAP_USED_MB > 1200 )); then
-  echo -e "  \033[1;31m[⚠️ CẢNH BÁO SWAP]\033[0m SWAP dang ganh ${SWAP_USED_MB}MB (Dia NVMe dang bi xoi du lieu!)."
-  WARN_COUNT=$((WARN_COUNT+1))
-fi
-
-# Goi y cat giam dua tren dung luong RAM
-SAFE_LIMIT=35
-if (( TOTAL_RAM_MB <= 1200 )); then SAFE_LIMIT=20; fi
-if (( TOTAL_RAM_MB >= 3500 )); then SAFE_LIMIT=60; fi
-
-if (( RUNNING_CTRS > SAFE_LIMIT )); then
-  CUT_SUGGEST=$(( RUNNING_CTRS - SAFE_LIMIT ))
-  echo -e "  \033[1;33m[💡 GỢI Ý CẮT GIẢM]\033[0m Dang chay ${RUNNING_CTRS} Container tren VPS ${TOTAL_RAM_MB}MB RAM."
-  echo -e "     -> NEN TAT BOT KHOANG ${CUT_SUGGEST} CONTAINER DE DAT THU NHAP TOI DA!"
-  WARN_COUNT=$((WARN_COUNT+1))
-fi
-
-if (( WARN_COUNT == 0 )); then
-  echo -e "  \033[1;32m[🟢 HỆ THỐNG AN TOÀN]\033[0m VPS đang chạy rất mượt, tài nguyên tối ưu 100%!"
+echo -e "\n---------------- 🚀 TRẠNG THÁI ENGAGEUB INTERNETINCOME ----------------"
+if (( RAM_AVAIL_MB < 30 )) && (( SWAP_FREE_MB < 100 )); then
+  echo -e "  \033[1;31m[🚨 NGUY CƠ CRASH]\033[0m Bo nho ao sap can kiet! VPS co the bi sap neu nhoi them node!"
+else
+  echo -e "  \033[1;32m[🔥 OPTIMIZED SUCCESS]\033[0m Da triet ha RAM ngam OS! Dang chay ${RUNNING_CTRS} Container engageub rat mượt!"
 fi
 EOS
 chmod +x /usr/local/bin/ii-status.sh
 
-echo "============================= SETUP XONG (WITH SMART ALERT) =============================="
+echo "============================= SETUP XONG (ENGAGEUB CUSTOMIZED) =============================="
 /usr/local/bin/ii-status.sh || true
