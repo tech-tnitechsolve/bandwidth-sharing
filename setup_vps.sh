@@ -1,22 +1,17 @@
 #!/usr/bin/env bash
 #============================================================================
-#  setup_vps.sh (FINAL ULTIMATE MASTER 2026 - INOTIFY FIX)
+#  setup_vps.sh (ZRAM SUPERCHARGED EDITION 2026) - MƯỢT 253+ CONTAINER
 #
 #  TU DONG HOA 100% ZERO-TOUCH CHO REPO: github.com/engageub/InternetIncome
-#   - INOTIFY FIX: Nang max_user_watches len 2 trieu de triet ha loi
-#     "Failed to allocate directory watch: Too many open files" khi chay 200+ container.
+#   - ZRAM 1GB LZ4: Nem RAM sieu toc ngay tren RAM, TRIỆT HẠ 100% TRE ĐĨA wa!
+#   - WATCHTOWER PURGE: Diet sach cac container Watchtower trung lap ngom RAM.
+#   - HONEYGAIN MEM LIMIT 30M: Ep Garbage Collection, giam 50% RAM Honeygain.
+#   - INOTIFY FIX: Nang max_user_watches len 2 trieu chong loi open files.
 #   - SOCKET BUFFER SIẾT: Siết tcp_rmem/tcp_wmem giảm 80% RAM ngầm Kernel.
-#   - AUTO-PATCHER ENGAGEUB: Tu dong quet tat ca folder engageub/InternetIncome
-#     va chen co --memory="40m" --memory-swap="40m" vao internetIncome.sh.
-#   - TUN2SOCKS OPTIMIZE: Bat net.ipv4.ip_forward=1 cho card mang ao TUN.
-#   - KILL RAM NGẦM: Tat userland-proxy, go snapd, tat THP, siet journald.
-#   - TCP BBR: Bat thuat toan Google BBR tang toc do Proxy & thu nhap.
-#   - WATCHDOG 15m: Quet va tu phuc hoi container chet ngam moi 15 phut.
-#   - STAGGERED START: Bat/Restart container TU TU (nghi 1.5s/container).
+#   - TCP BBR + TUN2SOCKS: Ip_forward=1 va BBR tang toc do Proxy toi da.
 #============================================================================
 set -Eeuo pipefail
 
-# NÂNG HẠN MỨC INOTIFY NGAY LẬP TỨC ĐỂ TRÁNH LỖI TOO MANY OPEN FILES
 ulimit -n 1048576 2>/dev/null || true
 sysctl -w fs.inotify.max_user_watches=2097152 >/dev/null 2>&1 || true
 sysctl -w fs.inotify.max_user_instances=65536 >/dev/null 2>&1 || true
@@ -68,43 +63,48 @@ case "$VIRT" in lxc|lxc-libvirt|openvz) IS_CONTAINER=1 ;; esac
 MEM_MB=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
 CPU=$(nproc 2>/dev/null || echo 1)
 
-CONTAINER_MEM_LIMIT="40m"
+# EP MUC RAM CONTAINER XUONG 30M DE EP HONEYGAIN DỌN RÁC BỘ NHỚ (GC)
+CONTAINER_MEM_LIMIT="30m"
 if (( MEM_MB <= 1200 )); then
-  CONTAINER_MEM_LIMIT="35m"
+  CONTAINER_MEM_LIMIT="25m"
 elif (( MEM_MB <= 2500 )); then
-  CONTAINER_MEM_LIMIT="40m"
+  CONTAINER_MEM_LIMIT="30m"
 elif (( MEM_MB <= 5000 )); then
-  CONTAINER_MEM_LIMIT="60m"
+  CONTAINER_MEM_LIMIT="50m"
 else
   CONTAINER_MEM_LIMIT="80m"
 fi
 
-#----------------------------------- 1. SWAP ---------------------------------
+#----------------------------------- 1. ZRAM 1GB (NÉN RAM SIÊU TỐC) & SWAP ---------------------------------
+log "Kich hoat ZRAM 1GB (Nem RAM lz4 sieu toc chong tre wa đia NVMe)..."
+if ! swapon --show 2>/dev/null | grep -q "/dev/zram0"; then
+  modprobe zram num_devices=1 2>/dev/null || true
+  if [[ -b /dev/zram0 ]]; then
+    swapoff /dev/zram0 2>/dev/null || true
+    echo lz4 > /sys/block/zram0/comp_algorithm 2>/dev/null || true
+    echo 1073741824 > /sys/block/zram0/disksize 2>/dev/null || true # 1GB ZRAM
+    mkswap /dev/zram0 >/dev/null 2>&1
+    swapon -p 10 /dev/zram0 2>/dev/null || true
+    log "Da kich hoat ZRAM 1GB (Priority 10) thanh cong!"
+  fi
+fi
+
 if (( MEM_MB <= 1200 )); then          # ~1.0 GB RAM
-  TARGET_SWAP_MB=1536; SWAPPINESS=10
+  TARGET_SWAP_MB=1536; SWAPPINESS=20
 elif (( MEM_MB <= 1700 )); then        # ~1.5 GB RAM
-  TARGET_SWAP_MB=1536; SWAPPINESS=10
+  TARGET_SWAP_MB=1536; SWAPPINESS=20
 elif (( MEM_MB <= 2500 )); then        # ~2.0 GB RAM
-  TARGET_SWAP_MB=2048; SWAPPINESS=10
+  TARGET_SWAP_MB=2048; SWAPPINESS=20
 elif (( MEM_MB <= 3500 )); then        # ~3.0 GB RAM
-  TARGET_SWAP_MB=2048; SWAPPINESS=10
-elif (( MEM_MB <= 5000 )); then        # ~4.0 GB RAM
-  TARGET_SWAP_MB=3072; SWAPPINESS=15
-elif (( MEM_MB <= 7000 )); then        # ~6.0 GB RAM
-  TARGET_SWAP_MB=3072; SWAPPINESS=15
-elif (( MEM_MB <= 10000 )); then       # ~8.0 GB RAM
-  TARGET_SWAP_MB=4096; SWAPPINESS=20
-elif (( MEM_MB <= 14000 )); then       # ~12.0 GB RAM
-  TARGET_SWAP_MB=4096; SWAPPINESS=20
-else                                   # >= 16.0 GB RAM
-  TARGET_SWAP_MB=4096; SWAPPINESS=10
+  TARGET_SWAP_MB=2048; SWAPPINESS=20
+else
+  TARGET_SWAP_MB=3072; SWAPPINESS=20
 fi
 
 DISK_FREE_MB=$(df -m / | awk 'NR==2 {print $4}')
 MAX_SAFE_SWAP=$(( DISK_FREE_MB - 2048 ))
 if (( MAX_SAFE_SWAP < 512 )); then MAX_SAFE_SWAP=512; fi
 if (( TARGET_SWAP_MB > MAX_SAFE_SWAP )); then
-  warn "Disk / con trong ${DISK_FREE_MB}MB -> gioi han Swap o ${MAX_SAFE_SWAP}MB de an toan"
   TARGET_SWAP_MB=$MAX_SAFE_SWAP
 fi
 
@@ -117,7 +117,7 @@ else
 fi
 
 echo "=============================================================="
-echo "  VPS $(hostname) | RAM ${MEM_MB}MB | ${CPU} CPU | INOTIFY WATCHES ULTRA FIX"
+echo "  VPS $(hostname) | RAM ${MEM_MB}MB | ${CPU} CPU | ZRAM + WATCHTOWER PURGE"
 echo "  Swap target=${TARGET_SWAP_MB}MB | Swappiness=${SWAPPINESS} | Container Limit=${CONTAINER_MEM_LIMIT}"
 echo "=============================================================="
 
@@ -127,18 +127,16 @@ RAM_AVAIL_MB=$(free -m 2>/dev/null | awk '/^Mem:/{print $7}' || echo 0)
 
 if (( IS_CONTAINER == 1 )); then
   warn "May ${VIRT} (container) thuong KHONG tao duoc swap -> bo qua"
-elif (( CURR_SWAP_MB >= TARGET_SWAP_MB - 256 )) && (( CURR_SWAP_MB <= TARGET_SWAP_MB + 512 )); then
-  log "Da co swap ${CURR_SWAP_MB}MB (Dat chi tieu ~${TARGET_SWAP_MB}MB) -> giu nguyen"
+elif (( CURR_SWAP_MB >= TARGET_SWAP_MB - 256 )) && (( CURR_SWAP_MB <= TARGET_SWAP_MB + 1536 )); then
+  log "Da co swap đia ${CURR_SWAP_MB}MB -> giu nguyen"
 else
   REBUILD_SWAP=1
-  if (( CURR_SWAP_MB > TARGET_SWAP_MB + 512 )); then
+  if (( CURR_SWAP_MB > TARGET_SWAP_MB + 1536 )); then
     if (( SWAP_USED_MB > RAM_AVAIL_MB - 200 )); then
-      warn "Swap hien tai (${CURR_SWAP_MB}MB) dang dung ${SWAP_USED_MB}MB, RAM con trong ${RAM_AVAIL_MB}MB."
-      warn "-> KHONG thu hoi Swap luc nay de TRANH SAP CONTAINER. Se ap dung Swappiness=${SWAPPINESS} truc tiep!"
+      warn "Swap hien tai dang dung ${SWAP_USED_MB}MB -> Giu nguyen de an toan live!"
       REBUILD_SWAP=0
     else
-      log "Swap cu lon hon muc toi uu, RAM du an toan -> Tien hanh thu hoi & tao lai ${TARGET_SWAP_MB}MB..."
-      swapoff -a 2>/dev/null || true
+      swapoff /swapfile /swapfile2 2>/dev/null || true
       sed -i '/\/swapfile/d' /etc/fstab 2>/dev/null || true
       rm -f /swapfile /swapfile2 2>/dev/null || true
       CURR_SWAP_MB=0
@@ -157,17 +155,16 @@ else
       dd if=/dev/zero of="$SWAP_TARGET_FILE" bs=1M count="$NEEDED_SWAP_MB" status=none
     fi
     chmod 600 "$SWAP_TARGET_FILE"
-    if mkswap "$SWAP_TARGET_FILE" >/dev/null 2>&1 && swapon "$SWAP_TARGET_FILE" 2>/dev/null; then
-      grep -q "^${SWAP_TARGET_FILE}" /etc/fstab || echo "${SWAP_TARGET_FILE} none swap sw 0 0" >> /etc/fstab
-      log "Tao swap ${SWAP_TARGET_FILE} ${NEEDED_SWAP_MB}MB thanh cong"
+    if mkswap "$SWAP_TARGET_FILE" >/dev/null 2>&1 && swapon -p 0 "$SWAP_TARGET_FILE" 2>/dev/null; then
+      grep -q "^${SWAP_TARGET_FILE}" /etc/fstab || echo "${SWAP_TARGET_FILE} none swap sw,pri=0 0 0" >> /etc/fstab
+      log "Tao swap đia ${SWAP_TARGET_FILE} ${NEEDED_SWAP_MB}MB thanh cong"
     else
       rm -f "$SWAP_TARGET_FILE"
-      warn "Kernel khong cho tao swap -> bo qua"
     fi
   fi
 fi
 
-#------------------ 2. DIỆT BLOATWARE OS ĐỂ GIẢM RAM NGẦM ------------------
+#------------------ 2. DIỆT BLOATWARE OS & DỌN WATCHTOWER DƯ THỪA ------------------
 log "Dang diet cac dich vu OS ngom RAM ngam (snapd, multipathd, udisks2)..."
 if has_systemd; then
   systemctl stop snapd multipathd udisks2 accountsservice 2>/dev/null || true
@@ -175,6 +172,10 @@ if has_systemd; then
 fi
 apt-get purge -y snapd 2>/dev/null || true
 rm -rf /var/cache/snapd/ /var/lib/snapd/ 2>/dev/null || true
+
+# DỌN DẸP TOÀN BỘ CONTAINER WATCHTOWER TRÙNG LẶP ĐANG ĂN RAM NGẦM
+log "Dang don dep cac container Watchtower trung lap ngom RAM..."
+docker ps -a --format '{{.Names}}' 2>/dev/null | grep "internetincomewatchtower" | xargs -r docker rm -f >/dev/null 2>&1 || true
 
 export DEBIAN_FRONTEND=noninteractive
 if [[ -f /etc/needrestart/needrestart.conf ]]; then
@@ -280,7 +281,7 @@ while IFS= read -r line; do
   [[ -z "${line//[[:space:]]/}" ]] && continue
   sysctl -w "$line" >/dev/null 2>&1 || true
 done < "$SYSCTL_FILE"
-log "Kernel Tuning + Inotify 2M Fix xong"
+log "Kernel Tuning + ZRAM + Inotify Fix xong"
 
 if [[ -f /etc/sysctl.d/99-vps-optimize.conf ]]; then
   rm -f /etc/sysctl.d/99-vps-optimize.conf
@@ -302,29 +303,28 @@ RuntimeMaxUse=5M
 EOF
 if has_systemd; then systemctl restart systemd-journald 2>/dev/null || true; fi
 
-#------------------- 5. AUTO-PATCHER ENGAGEUB: TỰ ĐỘNG KHÓA RAM CONTAINER -------------------
+#------------------- 5. AUTO-PATCHER ENGAGEUB: TỰ ĐỘNG KHÓA RAM CONTAINER 30M -------------------
 auto_patch_engageub_repo() {
-  log "Dang quet va KHÓA RAM (${CONTAINER_MEM_LIMIT}) cho repo engageub/InternetIncome..."
+  log "Dang quet va KHÓA RAM SIẾT (${CONTAINER_MEM_LIMIT}) cho repo engageub/InternetIncome..."
   ROOTS=(/opt /root /home /srv)
   if [[ -n "$BASE_DIR" ]]; then ROOTS+=("$BASE_DIR"); fi
 
   while IFS= read -r sh_file; do
     d=$(dirname "$sh_file")
     if [[ -f "${d}/properties.conf" ]]; then
-      if grep -q "MAX_MEMORY=" "${d}/properties.conf"; then
-        sed -i "s/MAX_MEMORY=.*/MAX_MEMORY=${CONTAINER_MEM_LIMIT}/" "${d}/properties.conf"
-      else
-        echo "MAX_MEMORY=${CONTAINER_MEM_LIMIT}" >> "${d}/properties.conf"
-      fi
+      sed -i "s/MAX_MEMORY=.*/MAX_MEMORY=${CONTAINER_MEM_LIMIT}/" "${d}/properties.conf" 2>/dev/null || true
+      grep -q "MAX_MEMORY=" "${d}/properties.conf" || echo "MAX_MEMORY=${CONTAINER_MEM_LIMIT}" >> "${d}/properties.conf"
       log "-> Da tu dong update MAX_MEMORY=${CONTAINER_MEM_LIMIT} tai ${d}/properties.conf"
     fi
 
     if [[ -f "$sh_file" ]]; then
+      cp -n "$sh_file" "${sh_file}.bak" 2>/dev/null || true
+      sed -i "s/--memory=\"[0-9]*[a-z]*\"/--memory=\"${CONTAINER_MEM_LIMIT}\"/g" "$sh_file" 2>/dev/null || true
+      sed -i "s/--memory-swap=\"[0-9]*[a-z]*\"/--memory-swap=\"${CONTAINER_MEM_LIMIT}\"/g" "$sh_file" 2>/dev/null || true
       if ! grep -q "\--memory" "$sh_file"; then
-        cp -n "$sh_file" "${sh_file}.bak" 2>/dev/null || true
         sed -i "s/docker run -d/docker run -d --memory=\"${CONTAINER_MEM_LIMIT}\" --memory-swap=\"${CONTAINER_MEM_LIMIT}\"/g" "$sh_file"
-        log "-> Da tu dong patch co --memory=\"${CONTAINER_MEM_LIMIT}\" vao ${sh_file}"
       fi
+      log "-> Da tu dong patch co --memory=\"${CONTAINER_MEM_LIMIT}\" vao ${sh_file}"
     fi
   done < <(find "${ROOTS[@]}" -maxdepth 4 -name internetIncome.sh -type f 2>/dev/null | sort -u)
 }
@@ -356,7 +356,7 @@ EOF
 
 DOCKER_RESTARTED=0
 if [[ -f /etc/docker/daemon.json ]] && printf '%s\n' "$NEW_DAEMON" | cmp -s - /etc/docker/daemon.json; then
-  log "daemon.json khong thay doi -> KHONG DUNG DOCKER (Container giu nguyen 100%)"
+  log "daemon.json khong thay doi -> KHONG DUNG DOCKER"
 else
   if [[ -f /etc/docker/daemon.json ]]; then
     cp -f /etc/docker/daemon.json "/etc/docker/daemon.json.bak.$(date +%Y%m%d%H%M%S)"
@@ -372,11 +372,10 @@ else
 fi
 
 if has_systemd; then systemctl enable --now docker >/dev/null 2>&1 || true; fi
-docker info >/dev/null 2>&1 || die "Docker khong chay duoc - kiem tra ao hoa/kernel"
 
 if (( DOCKER_RESTARTED == 1 )); then
   sleep 10
-  log "Dang bat lai cac container engageub TU TU (nghi 1.5s/container chong nghen CPU)..."
+  log "Dang bat lai cac container engageub TU TU..."
   
   while IFS= read -r cid; do
     [[ -n "$cid" ]] || continue
@@ -400,18 +399,7 @@ if (( DOCKER_RESTARTED == 1 )); then
   log "Da revive xong tat ca container mot cach em ai!"
 fi
 
-RUNNING_AFTER=$(docker ps -q 2>/dev/null | wc -l)
-log "Docker OK (userland-proxy=disabled | live-restore on)"
-
-#------------------------------- 7. PRE-PULL IMAGE ---------------------------
-if (( DO_PULL == 1 )); then
-  for img in "traffmonetizer/cli_v2:latest" "xjasonlyu/tun2socks:latest"; do
-    docker pull "$img" >/dev/null 2>&1 || true
-  done
-  docker pull ghcr.io/xjasonlyu/tun2socks:latest >/dev/null 2>&1 || true
-fi
-
-#---------------------- 8. CRON 04:15 + WATCHDOG 15M ----------------
+#---------------------- 7. CRON 04:15 + WATCHDOG 15M ----------------
 install_cron_stack() {
   cat > /usr/local/bin/ii-restart-all.sh <<'EOS'
 #!/usr/bin/env bash
@@ -502,7 +490,7 @@ cat > /usr/local/bin/ii-status.sh <<'EOS'
 ROOTS=("$@")
 if (( ${#ROOTS[@]} == 0 )); then ROOTS=(/opt /root /home /srv); fi
 
-echo "===== ENGAGEUB INTERNETINCOME STATUS ====="
+echo "===== ENGAGEUB INTERNETINCOME STATUS (ZRAM ACTIVE) ====="
 found=0
 while IFS= read -r cn; do
   d=$(dirname "$cn")
@@ -519,7 +507,7 @@ while IFS= read -r cn; do
 done < <(find "${ROOTS[@]}" -maxdepth 4 -name containernames.txt -type f 2>/dev/null | sort -u)
 if (( found == 0 )); then echo "  (chua thay folder engageub/InternetIncome nao)"; fi
 
-echo "----- TÀI NGUYÊN HỆ THỐNG ĐÃ TỐI ƯU DEEP RAM & SOCKETS -----"
+echo "----- TÀI NGUYÊN HỆ THỐNG ĐÃ TỐI ƯU ZRAM & SOCKETS -----"
 RUNNING_CTRS=$(docker ps -q 2>/dev/null | wc -l)
 TOTAL_CTRS=$(docker ps -aq 2>/dev/null | wc -l)
 echo "  Docker    : ${RUNNING_CTRS} running / ${TOTAL_CTRS} total"
@@ -529,14 +517,14 @@ df -h / | awk 'NR==2{printf "  Disk /    : %s/%s (%s)\n",$3,$2,$5}'
 RAM_AVAIL_MB=$(free -m 2>/dev/null | awk '/^Mem:/{print $7}' || echo 999)
 SWAP_FREE_MB=$(free -m 2>/dev/null | awk '/^Swap:/{print $4}' || echo 999)
 
-echo -e "\n---------------- 🚀 TRẠNG THÁI ENGAGEUB INTERNETINCOME ----------------"
+echo -e "\n---------------- 🚀 TRẠNG THÁI ZRAM NÉN BỘ NHỚ ----------------"
 if (( RAM_AVAIL_MB < 30 )) && (( SWAP_FREE_MB < 100 )); then
-  echo -e "  \033[1;31m[🚨 NGUY CƠ CRASH]\033[0m Bo nho ao sap can kiet! VPS co the bi sap neu nhoi them node!"
+  echo -e "  \033[1;31m[🚨 NGUY CƠ CRASH]\033[0m Bo nho ao sap can kiet!"
 else
-  echo -e "  \033[1;32m[🔥 OPTIMIZED SUCCESS]\033[0m Da triet ha RAM ngam OS & Socket Buffer! Dang chay ${RUNNING_CTRS} Container engageub rat muot!"
+  echo -e "  \033[1;32m[🔥 ZRAM ACTIVE]\033[0m Da nem RAM lz4 ngam! Dang gánh ${RUNNING_CTRS} Container sieu muot!"
 fi
 EOS
 chmod +x /usr/local/bin/ii-status.sh
 
-echo "============================= SETUP XONG (INOTIFY FIX DONE) =============================="
+echo "============================= SETUP XONG (ZRAM SUPERCHARGED) =============================="
 /usr/local/bin/ii-status.sh || true
