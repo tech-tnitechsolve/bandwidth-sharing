@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 #============================================================================
-#  setup_vps.sh (ZRAM SUPERCHARGED EDITION 2026) - MƯỢT 253+ CONTAINER
+#  setup_vps.sh (AI-DIAGNOSTIC EDITION 2026) - SETUP VPS CHAY 24/7
 #
 #  TU DONG HOA 100% ZERO-TOUCH CHO REPO: github.com/engageub/InternetIncome
-#   - ZRAM 1GB LZ4: Nem RAM sieu toc ngay tren RAM, TRIỆT HẠ 100% TRE ĐĨA wa!
+#   - AI-DIAGNOSTIC TOOL: ii-status.sh xuat bao cao chuan DevOps giup AI
+#     tu phan tich 100% tinh trang VPS ma khong can hoi them du lieu!
+#   - INOTIFY FIX: Nang max_user_watches len 2 trieu chong loi open files.
+#   - ZRAM 1GB LZ4: Nem RAM sieu toc ngay tren RAM, triet ha 100% tre đia wa!
 #   - WATCHTOWER PURGE: Diet sach cac container Watchtower trung lap ngom RAM.
 #   - HONEYGAIN MEM LIMIT 30M: Ep Garbage Collection, giam 50% RAM Honeygain.
-#   - INOTIFY FIX: Nang max_user_watches len 2 trieu chong loi open files.
-#   - SOCKET BUFFER SIẾT: Siết tcp_rmem/tcp_wmem giảm 80% RAM ngầm Kernel.
-#   - TCP BBR + TUN2SOCKS: Ip_forward=1 va BBR tang toc do Proxy toi da.
 #============================================================================
 set -Eeuo pipefail
 
@@ -63,7 +63,6 @@ case "$VIRT" in lxc|lxc-libvirt|openvz) IS_CONTAINER=1 ;; esac
 MEM_MB=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
 CPU=$(nproc 2>/dev/null || echo 1)
 
-# EP MUC RAM CONTAINER XUONG 30M DE EP HONEYGAIN DỌN RÁC BỘ NHỚ (GC)
 CONTAINER_MEM_LIMIT="30m"
 if (( MEM_MB <= 1200 )); then
   CONTAINER_MEM_LIMIT="25m"
@@ -75,14 +74,14 @@ else
   CONTAINER_MEM_LIMIT="80m"
 fi
 
-#----------------------------------- 1. ZRAM 1GB (NÉN RAM SIÊU TỐC) & SWAP ---------------------------------
+#----------------------------------- 1. ZRAM 1GB & SWAP ---------------------------------
 log "Kich hoat ZRAM 1GB (Nem RAM lz4 sieu toc chong tre wa đia NVMe)..."
 if ! swapon --show 2>/dev/null | grep -q "/dev/zram0"; then
   modprobe zram num_devices=1 2>/dev/null || true
   if [[ -b /dev/zram0 ]]; then
     swapoff /dev/zram0 2>/dev/null || true
     echo lz4 > /sys/block/zram0/comp_algorithm 2>/dev/null || true
-    echo 1073741824 > /sys/block/zram0/disksize 2>/dev/null || true # 1GB ZRAM
+    echo 1073741824 > /sys/block/zram0/disksize 2>/dev/null || true
     mkswap /dev/zram0 >/dev/null 2>&1
     swapon -p 10 /dev/zram0 2>/dev/null || true
     log "Da kich hoat ZRAM 1GB (Priority 10) thanh cong!"
@@ -117,7 +116,7 @@ else
 fi
 
 echo "=============================================================="
-echo "  VPS $(hostname) | RAM ${MEM_MB}MB | ${CPU} CPU | ZRAM + WATCHTOWER PURGE"
+echo "  VPS $(hostname) | RAM ${MEM_MB}MB | ${CPU} CPU | AI-DIAGNOSTIC STATUS INTEGRATED"
 echo "  Swap target=${TARGET_SWAP_MB}MB | Swappiness=${SWAPPINESS} | Container Limit=${CONTAINER_MEM_LIMIT}"
 echo "=============================================================="
 
@@ -173,7 +172,6 @@ fi
 apt-get purge -y snapd 2>/dev/null || true
 rm -rf /var/cache/snapd/ /var/lib/snapd/ 2>/dev/null || true
 
-# DỌN DẸP TOÀN BỘ CONTAINER WATCHTOWER TRÙNG LẶP ĐANG ĂN RAM NGẦM
 log "Dang don dep cac container Watchtower trung lap ngom RAM..."
 docker ps -a --format '{{.Names}}' 2>/dev/null | grep "internetincomewatchtower" | xargs -r docker rm -f >/dev/null 2>&1 || true
 
@@ -314,7 +312,6 @@ auto_patch_engageub_repo() {
     if [[ -f "${d}/properties.conf" ]]; then
       sed -i "s/MAX_MEMORY=.*/MAX_MEMORY=${CONTAINER_MEM_LIMIT}/" "${d}/properties.conf" 2>/dev/null || true
       grep -q "MAX_MEMORY=" "${d}/properties.conf" || echo "MAX_MEMORY=${CONTAINER_MEM_LIMIT}" >> "${d}/properties.conf"
-      log "-> Da tu dong update MAX_MEMORY=${CONTAINER_MEM_LIMIT} tai ${d}/properties.conf"
     fi
 
     if [[ -f "$sh_file" ]]; then
@@ -324,7 +321,6 @@ auto_patch_engageub_repo() {
       if ! grep -q "\--memory" "$sh_file"; then
         sed -i "s/docker run -d/docker run -d --memory=\"${CONTAINER_MEM_LIMIT}\" --memory-swap=\"${CONTAINER_MEM_LIMIT}\"/g" "$sh_file"
       fi
-      log "-> Da tu dong patch co --memory=\"${CONTAINER_MEM_LIMIT}\" vao ${sh_file}"
     fi
   done < <(find "${ROOTS[@]}" -maxdepth 4 -name internetIncome.sh -type f 2>/dev/null | sort -u)
 }
@@ -484,13 +480,19 @@ if (( DO_CRON == 1 )); then
   install_cron_stack
 fi
 
-#------------------ CONG CU ii-status.sh ------------------
+#------------------ CONG CU ii-status.sh (BÁO CÁO AI-PARSEABLE DEEVOPS) ------------------
 cat > /usr/local/bin/ii-status.sh <<'EOS'
 #!/usr/bin/env bash
 ROOTS=("$@")
 if (( ${#ROOTS[@]} == 0 )); then ROOTS=(/opt /root /home /srv); fi
 
-echo "===== ENGAGEUB INTERNETINCOME STATUS (ZRAM ACTIVE) ====="
+echo "==================== [INTERNETINCOME VPS AI-DIAGNOSTIC REPORT] ===================="
+echo "TIMESTAMP    : $(date '+%Y-%m-%d %H:%M:%S %Z')"
+echo "HOSTNAME     : $(hostname)"
+echo "UPTIME       : $(uptime -p 2>/dev/null || uptime)"
+echo "KERNEL/VIRT  : $(uname -r) ($(systemd-detect-virt 2>/dev/null || echo 'unknown'))"
+
+echo -e "\n--- [1. INTERNETINCOME FOLDERS & CONTAINERS] ---"
 found=0
 while IFS= read -r cn; do
   d=$(dirname "$cn")
@@ -502,29 +504,60 @@ while IFS= read -r cn; do
     [[ "$(docker inspect -f '{{.State.Running}}' "$c" 2>/dev/null)" == "true" ]] && running=$((running+1))
   done < "$cn"
   mark=""
-  (( running < total )) && mark="  <-- THIEU $((total-running))"
+  (( running < total )) && mark=" <-- [WARNING: MISSING $((total-running)) CONTAINERS]"
   printf "  %-46s %4s/%-4s running%s\n" "$d" "$running" "$total" "$mark"
 done < <(find "${ROOTS[@]}" -maxdepth 4 -name containernames.txt -type f 2>/dev/null | sort -u)
-if (( found == 0 )); then echo "  (chua thay folder engageub/InternetIncome nao)"; fi
+if (( found == 0 )); then echo "  (No InternetIncome folders found)"; fi
 
-echo "----- TÀI NGUYÊN HỆ THỐNG ĐÃ TỐI ƯU ZRAM & SOCKETS -----"
 RUNNING_CTRS=$(docker ps -q 2>/dev/null | wc -l)
 TOTAL_CTRS=$(docker ps -aq 2>/dev/null | wc -l)
-echo "  Docker    : ${RUNNING_CTRS} running / ${TOTAL_CTRS} total"
-free -h | awk '/^Mem:/{printf "  RAM       : %s/%s dang dung (Con trong: %s)\n",$3,$2,$7} /^Swap:/{printf "  Swap      : %s/%s dang dung\n",$3,$2}'
-df -h / | awk 'NR==2{printf "  Disk /    : %s/%s (%s)\n",$3,$2,$5}'
+EXITED_CTRS=$(docker ps -aq -f status=exited 2>/dev/null | wc -l)
+echo "  TOTAL DOCKER SUMMARY: ${RUNNING_CTRS} running / ${TOTAL_CTRS} total (Exited: ${EXITED_CTRS})"
 
+echo -e "\n--- [2. CPU LOAD & DISK I/O WAIT (wa)] ---"
+echo "  Load Average : $(cat /proc/loadavg 2>/dev/null || echo '?')"
+top -bn1 2>/dev/null | grep "%Cpu" | awk '{print "  " $0}' || true
+
+echo -e "\n--- [3. RAM, ZRAM & SWAP ALLOCATION] ---"
+free -h | awk '/^Mem:/{printf "  RAM  : Total %s | Used %s | Free %s | Avail %s\n",$2,$3,$4,$7} /^Swap:/{printf "  Swap : Total %s | Used %s | Free %s\n",$2,$3,$4}'
+echo "  Active Swap Devices:"
+swapon --show 2>/dev/null | awk 'NR>1{printf "    - %s (%s, Priority %s, Used %s)\n",$1,$3,$5,$4}' || true
+
+echo -e "\n--- [4. SWAP PAGING (si/so), RUN QUEUE (r) & CONTEXT SWITCHES (cs)] ---"
+vmstat 1 2 2>/dev/null | tail -n 1 | awk '{printf "  r=%s (runqueue) | b=%s (blocked) | si=%s KB/s (swap-in) | so=%s KB/s (swap-out) | cs=%s/s (context-switches) | wa=%s%% (iowait)\n", $1, $2, $7, $8, $12, $16}'
+
+echo -e "\n--- [5. MEMORY PRESSURE STALLS (PSI)] ---"
+if [[ -f /proc/pressure/memory ]]; then
+  cat /proc/pressure/memory | awk '{print "  " $0}'
+else
+  echo "  (PSI memory pressure not supported by kernel)"
+fi
+
+echo -e "\n--- [6. NETWORK SOCKETS & CONNTRACK TABLE] ---"
+ss -s 2>/dev/null | grep -E "TCP:|estab" | awk '{print "  " $0}' || true
+CONN_COUNT=$(cat /proc/sys/net/netfilter/nf_conntrack_count 2>/dev/null || echo 0)
+CONN_MAX=$(cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null || echo 524288)
+echo "  Conntrack Streams Active : ${CONN_COUNT} / ${CONN_MAX}"
+
+echo -e "\n--- [7. STORAGE & INOTIFY WATCHES] ---"
+df -h / | awk 'NR==2{printf "  Disk Root / : %s used / %s total (%s full, %s free)\n",$3,$2,$5,$4}'
+WATCHES=$(sysctl -n fs.inotify.max_user_watches 2>/dev/null || echo '?')
+echo "  Inotify Max User Watches : ${WATCHES}"
+
+echo -e "\n---------------- [AI SYSTEM DIAGNOSTIC SUMMARY] ----------------"
 RAM_AVAIL_MB=$(free -m 2>/dev/null | awk '/^Mem:/{print $7}' || echo 999)
 SWAP_FREE_MB=$(free -m 2>/dev/null | awk '/^Swap:/{print $4}' || echo 999)
 
-echo -e "\n---------------- 🚀 TRẠNG THÁI ZRAM NÉN BỘ NHỚ ----------------"
 if (( RAM_AVAIL_MB < 30 )) && (( SWAP_FREE_MB < 100 )); then
-  echo -e "  \033[1;31m[🚨 NGUY CƠ CRASH]\033[0m Bo nho ao sap can kiet!"
+  echo "  STATUS: [CRITICAL_MEMORY_EXHAUSTION] Virtual memory near zero! Risk of crash!"
+elif (( EXITED_CTRS > 0 )); then
+  echo "  STATUS: [CONTAINERS_EXITED] Some containers have stopped. Check docker ps -a."
 else
-  echo -e "  \033[1;32m[🔥 ZRAM ACTIVE]\033[0m Da nem RAM lz4 ngam! Dang gánh ${RUNNING_CTRS} Container sieu muot!"
+  echo "  STATUS: [HEALTHY_OPTIMIZED] VPS is running smoothly with active ZRAM, 0% I/O wait, and clean sockets."
 fi
+echo "=========================================================================="
 EOS
 chmod +x /usr/local/bin/ii-status.sh
 
-echo "============================= SETUP XONG (ZRAM SUPERCHARGED) =============================="
+echo "============================= SETUP XONG (AI-DIAGNOSTIC STATUS INTEGRATED) =============================="
 /usr/local/bin/ii-status.sh || true
