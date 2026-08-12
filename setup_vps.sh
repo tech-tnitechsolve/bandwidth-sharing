@@ -4,14 +4,12 @@ cat << 'MASTER_EOF' > ~/setup_vps.sh
 #  setup_vps.sh (100% AUTO-PILOT SET & FORGET MASTER 2026)
 #
 #  CÀI 1 LẦN DUY NHẤT - TỰ ĐỘNG TỐI ƯU 100% CHO CẢ VPS MỚI LẪN VPS CỦ
-#   - AUTO-PILOT WATCHDOG: Cron 15m ngam TU DONG QUET folder moi add,
-#     TU DONG CHÈN CO --memory="50m" va co --restart=unless-stopped!
-#   - APT LOCK-BREAKER: Tu dong diet tien trinh ngam PID 702 cua Ubuntu.
-#   - DUAL-ENGINE DOCKER: Tu dong cai Docker cho VPS moi & Giu nguyen container.
-#   - KSM KERNEL MERGE: Gop 300MB-500MB RAM ngam trung lap cua container.
-#   - ZRAM 1GB LZ4 (pri=10): Nem RAM lz4 ngam GB/s, triet ha 100% tre đia wa.
-#   - SAFE ACCOUNT LIMIT: Ram 50M + Swap 128M + --restart=unless-stopped.
-#   - INOTIFY FIX 2M: Triet ha 100% loi Too many open files.
+#   - AUTO-PILOT WATCHDOG: Cron 15m ngam TU DONG QUET folder moi add.
+#   - DYNAMIC RAM ALLOCATION:
+#       + App thong thuong (Honeygain, EarnApp...): Limit 50M RAM / 128M Swap.
+#       + Mystnodes (mysteriumnetwork/myst): Lock rieng 250M RAM / 500M Swap.
+#       + Wipter: Lock rieng 350M RAM / 600M Swap.
+#   - 24/7 INCOME DIAGNOSTIC: Lenh 'sudo ii-status.sh' kiem tra toan dien VPS.
 #============================================================================
 set -Eeuo pipefail
 
@@ -93,7 +91,7 @@ apt-get update -y -qq || { clear_apt_locks; apt-get update -y -qq; }
 apt-get install -y -qq --no-install-recommends \
   -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
   curl wget git unzip jq bc ca-certificates uuid-runtime cron logrotate net-tools earlyoom \
-  vnstat nload speedtest-cli || true
+  vnstat nload speedtest-cli dnsutils || true
 
 if ! command -v docker >/dev/null 2>&1; then
   log "VPS MOI: Dang tu dong cai dat Docker offical..."
@@ -164,7 +162,7 @@ fi
 
 echo "=============================================================="
 echo "  VPS $(hostname) | RAM ${MEM_MB}MB | ${CPU} CPU | AUTO-PILOT MASTER 2026"
-echo "  Swap target=${TARGET_SWAP_MB}MB | Swappiness=${SWAPPINESS} | Limit=${CONTAINER_MEM_LIMIT}/${CONTAINER_SWAP_LIMIT}"
+echo "  Swap target=${TARGET_SWAP_MB}MB | Swappiness=${SWAPPINESS} | Limit default=${CONTAINER_MEM_LIMIT}/${CONTAINER_SWAP_LIMIT}"
 echo "=============================================================="
 
 CURR_SWAP_MB=$(free -m 2>/dev/null | awk '/^Swap:/{print $2}' || echo 0)
@@ -325,7 +323,7 @@ EOF_JOURNAL
 if has_systemd; then systemctl restart systemd-journald 2>/dev/null || true; fi
 
 auto_patch_engageub_repo() {
-  log "Dang quet va KHÓA RAM AN TOÀN (${CONTAINER_MEM_LIMIT}/${CONTAINER_SWAP_LIMIT}) + RESTART CỜ..."
+  log "Dang quet va PATCH RAM DOCKER (Chung: ${CONTAINER_MEM_LIMIT} | Mystnodes: 250m | Wipter: 350m)..."
   ROOTS=(/opt /root /home /srv)
   if [[ -n "$BASE_DIR" ]]; then ROOTS+=("$BASE_DIR"); fi
 
@@ -338,8 +336,6 @@ auto_patch_engageub_repo() {
 
     if [[ -f "$sh_file" ]]; then
       cp -n "$sh_file" "${sh_file}.bak" 2>/dev/null || true
-      sed -i "s/--memory=\"[0-9]*[a-z]*\"/--memory=\"${CONTAINER_MEM_LIMIT}\"/g" "$sh_file" 2>/dev/null || true
-      sed -i "s/--memory-swap=\"[0-9]*[a-z]*\"/--memory-swap=\"${CONTAINER_SWAP_LIMIT}\"/g" "$sh_file" 2>/dev/null || true
       
       if ! grep -q "\--restart" "$sh_file"; then
         sed -i "s/docker run -d/docker run -d --restart=unless-stopped/g" "$sh_file" 2>/dev/null || true
@@ -348,6 +344,15 @@ auto_patch_engageub_repo() {
       if ! grep -q "\--memory" "$sh_file"; then
         sed -i "s/docker run -d/docker run -d --memory=\"${CONTAINER_MEM_LIMIT}\" --memory-swap=\"${CONTAINER_SWAP_LIMIT}\"/g" "$sh_file"
       fi
+
+      sed -i "s/--memory=\"[0-9]*[a-z]*\"/--memory=\"${CONTAINER_MEM_LIMIT}\"/g" "$sh_file" 2>/dev/null || true
+      sed -i "s/--memory-swap=\"[0-9]*[a-z]*\"/--memory-swap=\"${CONTAINER_SWAP_LIMIT}\"/g" "$sh_file" 2>/dev/null || true
+
+      sed -i -E '/mysterium|myst/I s/--memory="[0-9]+[a-zA-Z]+"/--memory="250m"/g' "$sh_file" 2>/dev/null || true
+      sed -i -E '/mysterium|myst/I s/--memory-swap="[0-9]+[a-zA-Z]+"/--memory-swap="500m"/g' "$sh_file" 2>/dev/null || true
+
+      sed -i -E '/wipter/I s/--memory="[0-9]+[a-zA-Z]+"/--memory="350m"/g' "$sh_file" 2>/dev/null || true
+      sed -i -E '/wipter/I s/--memory-swap="[0-9]+[a-zA-Z]+"/--memory-swap="600m"/g' "$sh_file" 2>/dev/null || true
     fi
   done < <(find "${ROOTS[@]}" -maxdepth 4 -name internetIncome.sh -type f 2>/dev/null | sort -u)
 }
@@ -357,7 +362,19 @@ if command -v docker >/dev/null 2>&1; then
   CTRS=$(docker ps -aq 2>/dev/null || true)
   if [[ -n "$CTRS" ]]; then
     docker update --restart=unless-stopped $CTRS >/dev/null 2>&1 || true
-    log "Da tu dong cai co --restart=unless-stopped cho tat ca $(echo "$CTRS" | wc -w) container!"
+    
+    for cid in $CTRS; do
+      c_img=$(docker inspect -f '{{.Config.Image}}' "$cid" 2>/dev/null || true)
+      c_name=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null || true)
+      if [[ "$c_img" =~ mysterium|myst ]] || [[ "$c_name" =~ mysterium|myst ]]; then
+        docker update --memory="250m" --memory-swap="500m" "$cid" >/dev/null 2>&1 || true
+        log "CUSTOM LIMIT [MYSTNODES] ($cid): Set 250M RAM / 500M Swap"
+      elif [[ "$c_img" =~ wipter ]] || [[ "$c_name" =~ wipter ]]; then
+        docker update --memory="350m" --memory-swap="600m" "$cid" >/dev/null 2>&1 || true
+        log "CUSTOM LIMIT [WIPTER] ($cid): Set 350M RAM / 600M Swap"
+      fi
+    done
+    log "Da kiem tra va cap nhat co --restart va RAM Limit cho tat ca container!"
   fi
 fi
 
@@ -432,7 +449,6 @@ HAVE_CTR=0; command -v ctr >/dev/null 2>&1 && HAVE_CTR=1
 
 {
   echo "[$(ts)] ==================== ii-restart-all ===================="
-  # AUTO-PILOT: TU DONG PATCH RAM 50M VA CỜ RESTART CHO MOI FOLDER MOI KHÔNG CAN RUN SETUP_VPS LẠI
   MEM_LIMIT="50m"; SWAP_LIMIT="128m"
   while IFS= read -r sh_f; do
     d_path=$(dirname "$sh_f")
@@ -440,6 +456,15 @@ HAVE_CTR=0; command -v ctr >/dev/null 2>&1 && HAVE_CTR=1
     if [[ -f "$sh_f" ]]; then
       grep -q "\--restart" "$sh_f" || sed -i "s/docker run -d/docker run -d --restart=unless-stopped/g" "$sh_f" 2>/dev/null || true
       grep -q "\--memory" "$sh_f" || sed -i "s/docker run -d/docker run -d --memory=\"${MEM_LIMIT}\" --memory-swap=\"${SWAP_LIMIT}\"/g" "$sh_f" 2>/dev/null || true
+
+      sed -i "s/--memory=\"[0-9]*[a-z]*\"/--memory=\"${MEM_LIMIT}\"/g" "$sh_f" 2>/dev/null || true
+      sed -i "s/--memory-swap=\"[0-9]*[a-z]*\"/--memory-swap=\"${SWAP_LIMIT}\"/g" "$sh_f" 2>/dev/null || true
+
+      sed -i -E '/mysterium|myst/I s/--memory="[0-9]+[a-zA-Z]+"/--memory="250m"/g' "$sh_f" 2>/dev/null || true
+      sed -i -E '/mysterium|myst/I s/--memory-swap="[0-9]+[a-zA-Z]+"/--memory-swap="500m"/g' "$sh_f" 2>/dev/null || true
+
+      sed -i -E '/wipter/I s/--memory="[0-9]+[a-zA-Z]+"/--memory="350m"/g' "$sh_f" 2>/dev/null || true
+      sed -i -E '/wipter/I s/--memory-swap="[0-9]+[a-zA-Z]+"/--memory-swap="600m"/g' "$sh_f" 2>/dev/null || true
     fi
   done < <(find "${ROOTS[@]}" -maxdepth 4 -name internetIncome.sh -type f 2>/dev/null | sort -u)
 
@@ -477,8 +502,16 @@ HAVE_CTR=0; command -v ctr >/dev/null 2>&1 && HAVE_CTR=1
       sleep 1.5
     done < <(cat "${FILES[@]}" 2>/dev/null | sort -u)
 
-    # DỌN CỜ RESTART AUTO CHO CONTAINER MỚI
     docker update --restart=unless-stopped $(docker ps -aq 2>/dev/null || true) >/dev/null 2>&1 || true
+    for cid in $(docker ps -aq 2>/dev/null); do
+      c_img=$(docker inspect -f '{{.Config.Image}}' "$cid" 2>/dev/null || true)
+      c_name=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null || true)
+      if [[ "$c_img" =~ mysterium|myst ]] || [[ "$c_name" =~ mysterium|myst ]]; then
+        docker update --memory="250m" --memory-swap="500m" "$cid" >/dev/null 2>&1 || true
+      elif [[ "$c_img" =~ wipter ]] || [[ "$c_name" =~ wipter ]]; then
+        docker update --memory="350m" --memory-swap="600m" "$cid" >/dev/null 2>&1 || true
+      fi
+    done
 
     sync && echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
     echo "[$(ts)] da xa cache RAM rac (drop_caches)"
@@ -516,98 +549,236 @@ if (( DO_CRON == 1 )); then
   install_cron_stack
 fi
 
+# ============================================================================
+# TAO FILE COMMAND 'sudo ii-status.sh' CHECK CHAT LUONG VPS 24/7 ULTRA PRO
+# ============================================================================
 cat > /usr/local/bin/ii-status.sh <<'EOF_STATUS'
 #!/usr/bin/env bash
-ROOTS=("$@")
-if (( ${#ROOTS[@]} == 0 )); then ROOTS=(/opt /root /home /srv); fi
+set -u
 
-echo "==================== [INTERNETINCOME VPS AI-DIAGNOSTIC REPORT] ===================="
+if [[ -t 1 ]]; then
+  C_G='\033[1;32m'; C_Y='\033[1;33m'; C_R='\033[1;31m'; C_B='\033[1;34m'; C_C='\033[1;36m'; C_0='\033[0m'
+else
+  C_G=''; C_Y=''; C_R=''; C_B=''; C_C=''; C_0=''
+fi
+
+echo -e "${C_B}==================== [INTERNETINCOME 24/7 VPS QUALITY DIAGNOSTIC] ====================${C_0}"
 echo "TIMESTAMP    : $(date '+%Y-%m-%d %H:%M:%S %Z')"
 echo "HOSTNAME     : $(hostname)"
 echo "UPTIME       : $(uptime -p 2>/dev/null || uptime)"
 echo "KERNEL/VIRT  : $(uname -r) ($(systemd-detect-virt 2>/dev/null || echo 'unknown'))"
 
-echo -e "\n--- [1. INTERNETINCOME FOLDERS & CONTAINERS] ---"
+ISSUES_COUNT=0
+WARNINGS_COUNT=0
+
+# --- 1. DOCKER CONTAINERS & RAM AUDIT ---
+echo -e "\n${C_C}--- [1. NODE CONTAINERS & RAM LIMIT AUDIT] ---${C_0}"
+ROOTS=("$@")
+if (( ${#ROOTS[@]} == 0 )); then ROOTS=(/opt /root /home /srv); fi
+
 found=0
 while IFS= read -r cn; do
   d=$(dirname "$cn")
   [[ -f "${d}/internetIncome.sh" ]] || continue
   found=1
-  total=0
-  running=0
-  stopped=0
+  total=0; running=0; stopped=0; oom_cnt=0; high_restart=0
   while IFS= read -r c; do
     [[ -z "$c" ]] && continue
     state=$(docker inspect -f '{{.State.Running}}' "$c" 2>/dev/null || echo "not_found")
     if [[ "$state" == "true" ]]; then
       running=$((running+1))
       total=$((total+1))
+      oom=$(docker inspect -f '{{.State.OOMKilled}}' "$c" 2>/dev/null || echo "false")
+      rc=$(docker inspect -f '{{.RestartCount}}' "$c" 2>/dev/null || echo "0")
+      [[ "$oom" == "true" ]] && oom_cnt=$((oom_cnt+1))
+      (( rc > 10 )) && high_restart=$((high_restart+1))
     elif [[ "$state" == "false" ]]; then
       stopped=$((stopped+1))
       total=$((total+1))
     fi
   done < "$cn"
+
   mark=""
-  (( stopped > 0 )) && mark=" <-- \033[1;31m[WARNING: ${stopped} CONTAINERS STOPPED]\033[0m"
-  printf "  %-46s %4s/%-4s running%s\n" "$d" "$running" "$total" "$mark"
+  if (( stopped > 0 )); then
+    mark="${mark} ${C_R}[${stopped} STOPPED]${C_0}"
+    ISSUES_COUNT=$((ISSUES_COUNT+stopped))
+  fi
+  if (( oom_cnt > 0 )); then
+    mark="${mark} ${C_R}[${oom_cnt} OOM KILLED]${C_0}"
+    ISSUES_COUNT=$((ISSUES_COUNT+oom_cnt))
+  fi
+  if (( high_restart > 0 )); then
+    mark="${mark} ${C_Y}[${high_restart} UNSTABLE RESTARTS]${C_0}"
+    WARNINGS_COUNT=$((WARNINGS_COUNT+high_restart))
+  fi
+  (( total > 0 && stopped == 0 && oom_cnt == 0 && high_restart == 0 )) && mark="${C_G}[100% HEALTHY]${C_0}"
+
+  printf "  %-42s %3s/%-3s running  %b\n" "$d" "$running" "$total" "$mark"
 done < <(find "${ROOTS[@]}" -maxdepth 4 -name containernames.txt -type f 2>/dev/null | sort -u)
+
 if (( found == 0 )); then echo "  (No InternetIncome folders found)"; fi
 
 RUNNING_CTRS=$(docker ps -q 2>/dev/null | wc -l)
 TOTAL_CTRS=$(docker ps -aq 2>/dev/null | wc -l)
 EXITED_CTRS=$(docker ps -aq -f status=exited 2>/dev/null | wc -l)
-echo "  TOTAL DOCKER SUMMARY: ${RUNNING_CTRS} running / ${TOTAL_CTRS} total (Exited: ${EXITED_CTRS})"
+echo "  TOTAL SUMMARY: ${RUNNING_CTRS} running / ${TOTAL_CTRS} total (Exited: ${EXITED_CTRS})"
 
-echo -e "\n--- [2. CPU LOAD & DISK I/O WAIT (wa)] ---"
-echo "  Load Average : $(cat /proc/loadavg 2>/dev/null || echo '?')"
-top -bn1 2>/dev/null | grep "%Cpu" | awk '{print "  " $0}' || true
+echo -e "  Special App RAM Limits Audit:"
+myst_found=0; wipter_found=0
+while IFS= read -r cid; do
+  [[ -z "$cid" ]] && continue
+  c_img=$(docker inspect -f '{{.Config.Image}}' "$cid" 2>/dev/null || true)
+  c_name=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null || true)
+  c_mem=$(docker inspect -f '{{.HostConfig.Memory}}' "$cid" 2>/dev/null || echo 0)
+  c_mem_mb=$(( c_mem / 1024 / 1024 ))
 
-echo -e "\n--- [3. RAM, ZRAM & SWAP ALLOCATION] ---"
-free -h | awk '/^Mem:/{printf "  RAM  : Total %s | Used %s | Free %s | Avail %s\n",$2,$3,$4,$7} /^Swap:/{printf "  Swap : Total %s | Used %s | Free %s\n",$2,$3,$4}'
-echo "  Active Swap Devices:"
-swapon --show 2>/dev/null | awk 'NR>1{printf "    - %s (%s, Priority %s, Used %s)\n",$1,$3,$5,$4}' || true
+  if [[ "$c_img" =~ mysterium|myst ]] || [[ "$c_name" =~ mysterium|myst ]]; then
+    myst_found=1
+    if (( c_mem_mb >= 200 )); then
+      echo -e "    - Mystnodes ($c_name): ${C_G}${c_mem_mb}MB RAM Limit (PASSED)${C_0}"
+    else
+      echo -e "    - Mystnodes ($c_name): ${C_R}${c_mem_mb}MB RAM Limit (FAIL - TOO LOW! Will OOM)${C_0}"
+      ISSUES_COUNT=$((ISSUES_COUNT+1))
+    fi
+  elif [[ "$c_img" =~ wipter ]] || [[ "$c_name" =~ wipter ]]; then
+    wipter_found=1
+    if (( c_mem_mb >= 300 )); then
+      echo -e "    - Wipter ($c_name): ${C_G}${c_mem_mb}MB RAM Limit (PASSED)${C_0}"
+    else
+      echo -e "    - Wipter ($c_name): ${C_R}${c_mem_mb}MB RAM Limit (FAIL - TOO LOW! Will OOM)${C_0}"
+      ISSUES_COUNT=$((ISSUES_COUNT+1))
+    fi
+  fi
+done < <(docker ps -aq 2>/dev/null)
+(( myst_found == 0 && wipter_found == 0 )) && echo "    - (No Mystnodes / Wipter containers active on this host)"
 
-echo -e "\n--- [4. SWAP PAGING (si/so), RUN QUEUE (r) & CONTEXT SWITCHES (cs)] ---"
-vmstat 1 2 2>/dev/null | tail -n 1 | awk '{printf "  r=%s (runqueue) | b=%s (blocked) | si=%s KB/s (swap-in) | so=%s KB/s (swap-out) | cs=%s/s (context-switches) | wa=%s%%\n", $1, $2, $7, $8, $12, $16}'
-
-echo -e "\n--- [5. MEMORY PRESSURE STALLS (PSI)] ---"
-if [[ -f /proc/pressure/memory ]]; then
-  cat /proc/pressure/memory | awk '{print "  " $0}'
+# --- 2. NETWORK, PROXY & ROUTING HEALTH ---
+echo -e "\n${C_C}--- [2. NETWORK, PROXY & ROUTING HEALTH] ---${C_0}"
+IP_FWD=$(sysctl -n net.ipv4.ip_forward 2>/dev/null || echo 0)
+if [[ "$IP_FWD" == "1" ]]; then
+  echo -e "  IP Forwarding (Routing)  : ${C_G}ENABLED (1)${C_0}"
 else
-  echo "  (PSI memory pressure not supported by kernel)"
+  echo -e "  IP Forwarding (Routing)  : ${C_R}DISABLED (0) <-- CRITICAL: Mystnodes proxy will fail!${C_0}"
+  ISSUES_COUNT=$((ISSUES_COUNT+1))
 fi
 
-echo -e "\n--- [6. NETWORK SOCKETS & CONNTRACK TABLE] ---"
-ss -s 2>/dev/null | grep -E "TCP:|estab" | awk '{print "  " $0}' || true
+DNS_START=$(date +%s%N 2>/dev/null || echo 0)
+DNS_RES=$(host -w 2 google.com 8.8.8.8 2>/dev/null | grep "has address" | head -n1 || echo "")
+DNS_END=$(date +%s%N 2>/dev/null || echo 0)
+if [[ -n "$DNS_RES" ]]; then
+  DNS_MS=$(( (DNS_END - DNS_START) / 1000000 ))
+  echo -e "  DNS Resolution (Google) : ${C_G}OK (${DNS_MS}ms)${C_0}"
+else
+  echo -e "  DNS Resolution (Google) : ${C_R}FAILED / SLOW (Check /etc/resolv.conf)${C_0}"
+  ISSUES_COUNT=$((ISSUES_COUNT+1))
+fi
+
+HTTP_CODE=$(curl -o /dev/null -s -w "%{http_code}\t%{time_total}" --max-time 4 https://1.1.1.1 2>/dev/null || echo "000 0")
+CODE=$(echo "$HTTP_CODE" | awk '{print $1}')
+TIME=$(echo "$HTTP_CODE" | awk '{print $2}')
+if [[ "$CODE" == "200" || "$CODE" == "301" || "$CODE" == "302" ]]; then
+  echo -e "  Outbound Internet Latency: ${C_G}ONLINE (HTTP ${CODE} in ${TIME}s)${C_0}"
+else
+  echo -e "  Outbound Internet Latency: ${C_R}BLOCKED / TIMEOUT (No Internet)${C_0}"
+  ISSUES_COUNT=$((ISSUES_COUNT+1))
+fi
+
 CONN_COUNT=$(cat /proc/sys/net/netfilter/nf_conntrack_count 2>/dev/null || echo 0)
 CONN_MAX=$(cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null || echo 524288)
-echo "  Conntrack Streams Active : ${CONN_COUNT} / ${CONN_MAX}"
-
-echo -e "\n--- [7. STORAGE & INOTIFY WATCHES] ---"
-df -h / | awk 'NR==2{printf "  Disk Root / : %s used / %s total (%s full, %s free)\n",$3,$2,$5,$4}'
-WATCHES=$(sysctl -n fs.inotify.max_user_watches 2>/dev/null || echo '?')
-echo "  Inotify Max User Watches : ${WATCHES}"
-
-echo -e "\n---------------- [AI SYSTEM DIAGNOSTIC SUMMARY] ----------------"
-RAM_AVAIL_MB=$(free -m 2>/dev/null | awk '/^Mem:/{print $7}' || echo 999)
-SWAP_FREE_MB=$(free -m 2>/dev/null | awk '/^Swap:/{print $4}' || echo 999)
-PSI_FULL_10=$(cat /proc/pressure/memory 2>/dev/null | grep "full" | awk '{print $2}' | cut -d= -f2 || echo 0)
-PSI_INT=${PSI_FULL_10%.*}
-
-if (( RAM_AVAIL_MB < 30 )) && (( SWAP_FREE_MB < 100 )); then
-  echo "  STATUS: [CRITICAL_MEMORY_EXHAUSTION] Virtual memory near zero! Risk of crash!"
-elif (( EXITED_CTRS > 0 )); then
-  echo "  STATUS: [CONTAINERS_EXITED] Some containers have stopped. Check docker ps -a."
-elif (( PSI_INT >= 15 )); then
-  echo "  STATUS: [SILENT_MEMORY_THRASHING] PSI Full Memory Pressure is ${PSI_FULL_10}% (>15%)."
+CONN_PCT=$(( CONN_COUNT * 100 / CONN_MAX ))
+if (( CONN_PCT > 80 )); then
+  echo -e "  Conntrack Saturation    : ${C_R}${CONN_COUNT}/${CONN_MAX} (${CONN_PCT}% - NEAR SATURATION! Network drops imminent!)${C_0}"
+  ISSUES_COUNT=$((ISSUES_COUNT+1))
 else
-  echo "  STATUS: [HEALTHY_OPTIMIZED] VPS is running smoothly with clean KSM memory and low PSI."
+  echo -e "  Conntrack Active Streams: ${C_G}${CONN_COUNT} / ${CONN_MAX} (${CONN_PCT}% max)${C_0}"
 fi
-echo "=========================================================================="
+
+# --- 3. SYSTEM RAM, SWAP & ZRAM HEALTH ---
+echo -e "\n${C_C}--- [3. SYSTEM RAM, SWAP & ZRAM ALLOCATION] ---${C_0}"
+RAM_TOTAL=$(free -m | awk '/^Mem:/{print $2}')
+RAM_USED=$(free -m | awk '/^Mem:/{print $3}')
+RAM_AVAIL=$(free -m | awk '/^Mem:/{print $7}')
+SWAP_TOTAL=$(free -m | awk '/^Swap:/{print $2}')
+SWAP_USED=$(free -m | awk '/^Swap:/{print $3}')
+
+echo "  RAM  : Total ${RAM_TOTAL}MB | Used ${RAM_USED}MB | Avail ${RAM_AVAIL}MB"
+echo "  Swap : Total ${SWAP_TOTAL}MB | Used ${SWAP_USED}MB"
+
+if swapon --show 2>/dev/null | grep -q "/dev/zram0"; then
+  ZRAM_SIZE=$(swapon --show 2>/dev/null | grep "/dev/zram0" | awk '{print $3}')
+  echo -e "  ZRAM : ${C_G}ACTIVE (${ZRAM_SIZE} LZ4 Priority 10)${C_0}"
+else
+  echo -e "  ZRAM : ${C_Y}NOT ACTIVE (Performance penalty)${C_0}"
+  WARNINGS_COUNT=$((WARNINGS_COUNT+1))
+fi
+
+OOM_LOGS=$(dmesg 2>/dev/null | grep -i "out of memory" | tail -n 3 || echo "")
+if [[ -n "$OOM_LOGS" ]]; then
+  echo -e "  Kernel OOM Kills        : ${C_R}DETECTED RECENT OOM KILLS IN DMESG!${C_0}"
+  ISSUES_COUNT=$((ISSUES_COUNT+1))
+else
+  echo -e "  Kernel OOM Kills        : ${C_G}NONE (Clean kernel log)${C_0}"
+fi
+
+# --- 4. CPU LOAD & DISK / FILESYSTEM HEALTH ---
+echo -e "\n${C_C}--- [4. CPU, DISK I/O & FILESYSTEM HEALTH] ---${C_0}"
+LOAD_1=$(cat /proc/loadavg | awk '{print $1}')
+CPUS=$(nproc 2>/dev/null || echo 1)
+echo "  CPU Cores: ${CPUS} | Load Avg (1m): ${LOAD_1}"
+
+if touch /tmp/ii_rw_test 2>/dev/null; then
+  rm -f /tmp/ii_rw_test
+  echo -e "  Filesystem Write Mode  : ${C_G}READ-WRITE (Normal)${C_0}"
+else
+  echo -e "  Filesystem Write Mode  : ${C_R}READ-ONLY (CRITICAL: Disk corrupt or full!)${C_0}"
+  ISSUES_COUNT=$((ISSUES_COUNT+1))
+fi
+
+DISK_USE_PCT=$(df / | awk 'NR==2{print $5}' | tr -d '%')
+INODE_USE_PCT=$(df -i / | awk 'NR==2{print $5}' | tr -d '%')
+if (( DISK_USE_PCT > 90 )); then
+  echo -e "  Disk Storage Usage     : ${C_R}${DISK_USE_PCT}% used (FULL RISK!)${C_0}"
+  ISSUES_COUNT=$((ISSUES_COUNT+1))
+else
+  echo -e "  Disk Storage Usage     : ${C_G}${DISK_USE_PCT}% used${C_0}"
+fi
+
+if (( INODE_USE_PCT > 90 )); then
+  echo -e "  Disk Inode Usage       : ${C_R}${INODE_USE_PCT}% used (INODE EXHAUSTION!)${C_0}"
+  ISSUES_COUNT=$((ISSUES_COUNT+1))
+else
+  echo -e "  Disk Inode Usage       : ${C_G}${INODE_USE_PCT}% used${C_0}"
+fi
+
+FILE_MAX=$(cat /proc/sys/fs/file-max 2>/dev/null || echo 0)
+FILE_NR=$(cat /proc/sys/fs/file-nr 2>/dev/null | awk '{print $1}' || echo 0)
+echo "  Open File Descriptors  : ${FILE_NR} / ${FILE_MAX}"
+
+# --- 5. 24/7 INCOME STABILITY SUMMARY & QUALITY SCORE ---
+echo -e "\n${C_B}---------------- [24/7 INCOME QUALITY DIAGNOSTIC SUMMARY] ----------------${C_0}"
+
+SCORE=100
+SCORE=$(( SCORE - (ISSUES_COUNT * 20) - (WARNINGS_COUNT * 5) ))
+if (( SCORE < 0 )); then SCORE=0; fi
+
+if (( ISSUES_COUNT == 0 && WARNINGS_COUNT == 0 )); then
+  echo -e "  OVERALL SCORE : ${C_G}100% PERFECT${C_0} - System is 100% stable & optimal for maximum earnings!"
+  echo -e "  STATUS        : ${C_G}[HEALTHY_SMOOTH_24_7]${C_0} No action required."
+elif (( ISSUES_COUNT == 0 )); then
+  echo -e "  OVERALL SCORE : ${C_Y}${SCORE}% GOOD${C_0} - System running fine with minor warnings."
+  echo -e "  STATUS        : ${C_Y}[STABLE_WITH_WARNINGS]${C_0} Run 'sudo bash ~/setup_vps.sh' to re-optimize."
+else
+  echo -e "  OVERALL SCORE : ${C_R}${SCORE}% UNSTABLE (${ISSUES_COUNT} Critical Issues Found!)${C_0}"
+  echo -e "  STATUS        : ${C_R}[INCOME_RISK_DETECTED]${C_0} Income loss risk! Run 'sudo bash ~/setup_vps.sh' immediately!"
+fi
+echo -e "${C_B}=========================================================================="
 EOF_STATUS
+
 chmod +x /usr/local/bin/ii-status.sh
+ln -sf /usr/local/bin/ii-status.sh /usr/bin/ii-status.sh
+ln -sf /usr/local/bin/ii-status.sh /usr/bin/ii-status
 
 echo "============================= SETUP XONG (100% AUTO-PILOT MASTER 2026) =============================="
-/usr/local/bin/ii-status.sh || true
+sudo ii-status.sh || true
 MASTER_EOF
 chmod +x ~/setup_vps.sh
