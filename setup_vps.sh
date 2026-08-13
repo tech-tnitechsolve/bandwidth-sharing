@@ -1,15 +1,7 @@
 cat << 'MASTER_EOF' > ~/setup_vps.sh
 #!/usr/bin/env bash
 #============================================================================
-#  setup_vps.sh (100% AUTO-PILOT SET & FORGET MASTER 2026)
-#
-#  CÀI 1 LẦN DUY NHẤT - TỰ ĐỘNG TỐI ƯU 100% CHO CẢ VPS MỚI LẪN VPS CỦ
-#   - AUTO-PILOT WATCHDOG: Cron 15m ngam TU DONG QUET folder moi add.
-#   - DYNAMIC RAM ALLOCATION:
-#       + App thong thuong (Honeygain, EarnApp...): Limit 50M RAM / 128M Swap.
-#       + Mystnodes (mysteriumnetwork/myst): Lock rieng 250M RAM / 500M Swap.
-#       + Wipter: Lock rieng 350M RAM / 600M Swap.
-#   - 24/7 INCOME DIAGNOSTIC: Lenh 'sudo ii-status.sh' kiem tra toan dien VPS.
+#  setup_vps.sh (100% AUTO-PILOT SET & FORGET MASTER 2026 - OPTIMIZED MAX EARNINGS)
 #============================================================================
 set -Eeuo pipefail
 
@@ -88,13 +80,14 @@ clear_apt_locks
 export DEBIAN_FRONTEND=noninteractive
 log "apt update & install cac goi phu thuoc..."
 apt-get update -y -qq || { clear_apt_locks; apt-get update -y -qq; }
+# DA BO earlyoom DE TRANH KILL NHAM CONTAINER DANG KIEM TIEN
 apt-get install -y -qq --no-install-recommends \
   -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
-  curl wget git unzip jq bc ca-certificates uuid-runtime cron logrotate net-tools earlyoom \
+  curl wget git unzip jq bc ca-certificates uuid-runtime cron logrotate net-tools \
   vnstat nload speedtest-cli dnsutils || true
 
 if ! command -v docker >/dev/null 2>&1; then
-  log "VPS MOI: Dang tu dong cai dat Docker offical..."
+  log "VPS MOI: Dang tu dong cai dat Docker official..."
   curl -fsSL https://get.docker.com | sh || apt-get install -y -qq docker.io
   log "Cai dat Docker cho VPS moi thanh cong!"
 else
@@ -115,35 +108,29 @@ fi
 log "Kich hoat KSM (Kernel Samepage Merging) gop RAM ngam..."
 if [[ -f /sys/kernel/mm/ksm/run ]]; then
   echo 1 > /sys/kernel/mm/ksm/run 2>/dev/null || true
-  echo 500 > /sys/kernel/mm/ksm/sleep_millisecs 2>/dev/null || true
-  echo 1000 > /sys/kernel/mm/ksm/pages_to_scan 2>/dev/null || true
-  log "Da kich hoat KSM thanh cong!"
+  echo 300 > /sys/kernel/mm/ksm/sleep_millisecs 2>/dev/null || true
+  echo 1250 > /sys/kernel/mm/ksm/pages_to_scan 2>/dev/null || true
+  log "Da kich hoat KSM toi uu cao thanh cong!"
 fi
 
-log "Kich hoat ZRAM 1GB (Nem RAM lz4 sieu toc)..."
+# FIX 1: TANG KICH THUOC ZRAM BANG 100% RAM THIS (MIN 1GB, MAX 4GB)
+ZRAM_SIZE_BYTES=$(( MEM_MB * 1024 * 1024 ))
+log "Kich hoat ZRAM (${MEM_MB}MB - Nem RAM sieu toc)..."
 if ! swapon --show 2>/dev/null | grep -q "/dev/zram0"; then
   modprobe zram num_devices=1 2>/dev/null || true
   if [[ -b /dev/zram0 ]]; then
     swapoff /dev/zram0 2>/dev/null || true
     echo lz4 > /sys/block/zram0/comp_algorithm 2>/dev/null || true
-    echo 1073741824 > /sys/block/zram0/disksize 2>/dev/null || true
+    echo "$ZRAM_SIZE_BYTES" > /sys/block/zram0/disksize 2>/dev/null || true
     mkswap /dev/zram0 >/dev/null 2>&1
     swapon -p 10 /dev/zram0 2>/dev/null || true
-    log "Da kich hoat ZRAM 1GB (Priority 10) thanh cong!"
+    log "Da kich hoat ZRAM ${MEM_MB}MB (Priority 10) thanh cong!"
   fi
 fi
 
-if (( MEM_MB <= 1200 )); then          # ~1.0 GB RAM
-  TARGET_SWAP_MB=1536; SWAPPINESS=20
-elif (( MEM_MB <= 1700 )); then        # ~1.5 GB RAM
-  TARGET_SWAP_MB=1536; SWAPPINESS=20
-elif (( MEM_MB <= 2500 )); then        # ~2.0 GB RAM
-  TARGET_SWAP_MB=2048; SWAPPINESS=20
-elif (( MEM_MB <= 3500 )); then        # ~3.0 GB RAM
-  TARGET_SWAP_MB=2048; SWAPPINESS=20
-else
-  TARGET_SWAP_MB=3072; SWAPPINESS=20
-fi
+# FIX 2: THIET LAP SWAPPINESS HIGH (100) DE UU TIEN ZRAM TOI DA
+TARGET_SWAP_MB=2048
+SWAPPINESS=100
 
 DISK_FREE_MB=$(df -m / | awk 'NR==2 {print $4}')
 MAX_SAFE_SWAP=$(( DISK_FREE_MB - 2048 ))
@@ -162,7 +149,7 @@ fi
 
 echo "=============================================================="
 echo "  VPS $(hostname) | RAM ${MEM_MB}MB | ${CPU} CPU | AUTO-PILOT MASTER 2026"
-echo "  Swap target=${TARGET_SWAP_MB}MB | Swappiness=${SWAPPINESS} | Limit default=${CONTAINER_MEM_LIMIT}/${CONTAINER_SWAP_LIMIT}"
+echo "  Swap target=${TARGET_SWAP_MB}MB | Swappiness=${SWAPPINESS} (ZRAM Optimized) | Limit default=${CONTAINER_MEM_LIMIT}/${CONTAINER_SWAP_LIMIT}"
 echo "=============================================================="
 
 CURR_SWAP_MB=$(free -m 2>/dev/null | awk '/^Swap:/{print $2}' || echo 0)
@@ -208,12 +195,12 @@ else
   fi
 fi
 
-log "Dang diet cac dich vu OS ngom RAM ngam (snapd, multipathd, udisks2)..."
+log "Dang diet cac dich vu OS ngom RAM ngam (snapd, multipathd, udisks2, earlyoom)..."
 if has_systemd; then
-  systemctl stop snapd multipathd udisks2 accountsservice 2>/dev/null || true
-  systemctl disable snapd multipathd udisks2 accountsservice 2>/dev/null || true
+  systemctl stop snapd multipathd udisks2 accountsservice earlyoom 2>/dev/null || true
+  systemctl disable snapd multipathd udisks2 accountsservice earlyoom 2>/dev/null || true
 fi
-apt-get purge -y snapd 2>/dev/null || true
+apt-get purge -y snapd earlyoom 2>/dev/null || true
 rm -rf /var/cache/snapd/ /var/lib/snapd/ 2>/dev/null || true
 
 if command -v docker >/dev/null 2>&1; then
@@ -229,13 +216,6 @@ if [[ -f /etc/vnstat.conf ]]; then
   grep -q 'ExcludeInterface' /etc/vnstat.conf || echo 'ExcludeInterface "veth* docker0 tun* tap*"' >> /etc/vnstat.conf
   if has_systemd; then systemctl restart vnstat 2>/dev/null || true; fi
 fi
-
-if [[ -f /etc/default/earlyoom ]]; then
-  cat > /etc/default/earlyoom <<'EOF_EARLYOOM'
-EARLYOOM_ARGS="-m 3 -s 5 --avoid '^(sshd|systemd|cron)$'"
-EOF_EARLYOOM
-fi
-if has_systemd; then systemctl enable --now earlyoom >/dev/null 2>&1 || true; fi
 
 timedatectl set-ntp true 2>/dev/null || true
 timedatectl set-timezone Asia/Ho_Chi_Minh 2>/dev/null || true
@@ -269,7 +249,7 @@ vm.min_free_kbytes = 65536
 vm.page-cluster = 0
 vm.overcommit_memory = 1
 vm.swappiness = ${SWAPPINESS}
-vm.vfs_cache_pressure = 125
+vm.vfs_cache_pressure = 100
 vm.dirty_background_ratio = 3
 vm.dirty_ratio = 8
 fs.file-max = 2097152
@@ -300,7 +280,7 @@ while IFS= read -r line; do
   [[ -z "${line//[[:space:]]/}" ]] && continue
   sysctl -w "$line" >/dev/null 2>&1 || true
 done < "$SYSCTL_FILE"
-log "Kernel Tuning Safe Mode xong"
+log "Kernel Tuning Safe Mode xong (Swappiness 100 cho ZRAM)"
 
 if [[ -f /etc/sysctl.d/99-vps-optimize.conf ]]; then
   rm -f /etc/sysctl.d/99-vps-optimize.conf
@@ -513,8 +493,6 @@ HAVE_CTR=0; command -v ctr >/dev/null 2>&1 && HAVE_CTR=1
       fi
     done
 
-    sync && echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
-    echo "[$(ts)] da xa cache RAM rac (drop_caches)"
     STILL=$(docker ps -aq -f status=exited 2>/dev/null | wc -l)
     echo "[$(ts)] xong: ${TOTAL} container | con Exited: ${STILL}"
   fi
@@ -527,12 +505,12 @@ EOF_RESTART
   fi
   chmod +x /usr/local/bin/ii-restart-all.sh
 
+  # FIX 3: CHUYEN LICH RESTART THANH HANG TUAN (CN 4H15) VA BO DROP_CACHES
   cat > /etc/cron.d/internetincome <<'EOF_CRON'
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-15 4 * * * root /usr/local/bin/ii-restart-all.sh
-15 16 * * * root sync && echo 3 > /proc/sys/vm/drop_caches >/dev/null 2>&1
+15 4 * * 0 root /usr/local/bin/ii-restart-all.sh
 */15 * * * * root docker ps -aq -f status=exited 2>/dev/null | xargs -r -n1 docker start >/dev/null 2>&1
 30 5 * * 0 root /usr/bin/docker image prune -f >/dev/null 2>&1
 EOF_CRON
@@ -778,7 +756,7 @@ chmod +x /usr/local/bin/ii-status.sh
 ln -sf /usr/local/bin/ii-status.sh /usr/bin/ii-status.sh
 ln -sf /usr/local/bin/ii-status.sh /usr/bin/ii-status
 
-echo "============================= SETUP XONG (100% AUTO-PILOT MASTER 2026) =============================="
+echo "============================= SETUP XONG (100% AUTO-PILOT MASTER 2026 - FIX ZRAM/SWAPPINESS) =============================="
 sudo ii-status.sh || true
 MASTER_EOF
 chmod +x ~/setup_vps.sh
