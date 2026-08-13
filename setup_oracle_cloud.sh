@@ -675,21 +675,4 @@ if (( ISSUES_COUNT == 0 && WARNINGS_COUNT == 0 )); then
   echo -e "  STATUS        : ${C_G}[HEALTHY_SMOOTH_24_7]${C_0} No action required."
 elif (( ISSUES_COUNT == 0 )); then
   echo -e "  OVERALL SCORE : ${C_Y}${SCORE}% GOOD${C_0} - System running fine with minor warnings."
-  echo -e "  STATUS        : ${C_Y}[STABLE_WITH_WARNINGS]${C_0} Run 'sudo bash /root/setup_oracle_cloud.sh'."
-else
-  echo -e "  OVERALL SCORE : ${C_R}${SCORE}% UNSTABLE (${ISSUES_COUNT} Critical Issues Found!)${C_0}"
-  echo -e "  STATUS        : ${C_R}[INCOME_RISK_DETECTED]${C_0} Run 'sudo bash /root/setup_oracle_cloud.sh'!"
-fi
-echo -e "${C_B}=========================================================================="
-EOF_STATUS
-
-chmod +x /usr/local/bin/ii-status.sh
-ln -sf /usr/local/bin/ii-status.sh /usr/bin/ii-status.sh 2>/dev/null || true
-ln -sf /usr/local/bin/ii-status.sh /usr/bin/ii-status 2>/dev/null || true
-
-echo "============================= SETUP XONG (100% AUTO-PILOT OCI MASTER 2026 - FIX-ALL) =============================="
-/usr/local/bin/ii-status.sh || true
-ORACLE_MASTER_EOF
-chmod +x /root/setup_oracle_cloud.sh
-cp -f /root/setup_oracle_cloud.sh /home/ubuntu/setup_oracle_cloud.sh 2>/dev/null || true
-bash /root/setup_oracle_cloud.sh
+  echo -e "  STATUS        : ${C_Y}[STABLE_WITH_WARNINGS]${C_0} Run 'sudo bas
