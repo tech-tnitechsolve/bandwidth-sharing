@@ -1,7 +1,7 @@
+cat << 'ORACLE_MASTER_EOF' > /root/setup_oracle_cloud.sh
 #!/usr/bin/env bash
 #============================================================================
-#  setup_oracle_cloud.sh (100% AUTO-PILOT OCI MASTER 2026 - OFFICIAL)
-#  CÀI 1 LẦN DUY NHẤT CHO TOÀN BỘ VPS ORACLE CLOUD MỚI LẪN CŨ
+#  setup_oracle_cloud.sh (100% AUTO-PILOT OCI MASTER 2026 - FIX-ALL)
 #============================================================================
 set -Eeuo pipefail
 
@@ -54,7 +54,6 @@ case "$VIRT" in lxc|lxc-libvirt|openvz) IS_CONTAINER=1 ;; esac
 MEM_MB=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
 CPU=$(nproc 2>/dev/null || echo 1)
 
-# NHẬN DIỆN CẤU HÌNH ORACLE CLOUD FREE TIER (AMD 1GB/2GB - ARM 6GB-24GB)
 if (( MEM_MB <= 1200 )); then           # OCI AMD 1GB RAM
   CONTAINER_MEM_LIMIT="35m"; CONTAINER_SWAP_LIMIT="90m"
   TARGET_SWAP_MB=1536
@@ -690,3 +689,7 @@ ln -sf /usr/local/bin/ii-status.sh /usr/bin/ii-status 2>/dev/null || true
 
 echo "============================= SETUP XONG (100% AUTO-PILOT OCI MASTER 2026 - FIX-ALL) =============================="
 /usr/local/bin/ii-status.sh || true
+ORACLE_MASTER_EOF
+chmod +x /root/setup_oracle_cloud.sh
+cp -f /root/setup_oracle_cloud.sh /home/ubuntu/setup_oracle_cloud.sh 2>/dev/null || true
+bash /root/setup_oracle_cloud.sh
