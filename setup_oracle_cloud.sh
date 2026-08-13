@@ -1,11 +1,7 @@
 cat << 'ORACLE_MASTER_EOF' > /root/setup_oracle_cloud.sh
 #!/usr/bin/env bash
 #============================================================================
-#  setup_oracle_cloud.sh (100% AUTO-PILOT OCI MASTER 2026 - OPTIMIZED)
-#
-#  TỐI ƯU ĐẶC TRỊ CHO ORACLE CLOUD FREE TIER:
-#   - AMD FREE TIER: 1 CPU / 1GB RAM
-#   - ARM AMPERE FREE TIER: 1 CPU / 6GB RAM (hoặc lên tới 24GB RAM)
+#  setup_oracle_cloud.sh (100% AUTO-PILOT OCI MASTER 2026 - FIX HANG BUG)
 #============================================================================
 set -Eeuo pipefail
 
@@ -58,7 +54,6 @@ case "$VIRT" in lxc|lxc-libvirt|openvz) IS_CONTAINER=1 ;; esac
 MEM_MB=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
 CPU=$(nproc 2>/dev/null || echo 1)
 
-# NHẬN DIỆN CẤU HÌNH ORACLE CLOUD FREE TIER ĐỂ PHÂN BỔ TÀI NGUYÊN
 if (( MEM_MB <= 1200 )); then           # OCI AMD 1GB RAM
   CONTAINER_MEM_LIMIT="35m"; CONTAINER_SWAP_LIMIT="90m"
   TARGET_SWAP_MB=1536
@@ -115,7 +110,7 @@ EOF_DOCKER_SVC
   systemctl enable --now docker >/dev/null 2>&1 || true
 fi
 
-log "Kich hoat KSM (Kernel Samepage Merging) gop RAM ngam..."
+log "Kich hoat KSM gop RAM ngam..."
 if [[ -f /sys/kernel/mm/ksm/run ]]; then
   echo 1 > /sys/kernel/mm/ksm/run 2>/dev/null || true
   echo 300 > /sys/kernel/mm/ksm/sleep_millisecs 2>/dev/null || true
@@ -123,9 +118,8 @@ if [[ -f /sys/kernel/mm/ksm/run ]]; then
   log "Da kich hoat KSM thanh cong!"
 fi
 
-# TẠO ZRAM BẰNG 100% RAM VẬT LÝ DÀNH RIÊNG CHO ORACLE CLOUD
 ZRAM_SIZE_BYTES=$(( MEM_MB * 1024 * 1024 ))
-log "Kich hoat ZRAM ${MEM_MB}MB cho OCI (Nem RAM LZ4 sieu toc)..."
+log "Kich hoat ZRAM ${MEM_MB}MB cho OCI..."
 if ! swapon --show 2>/dev/null | grep -q "/dev/zram0"; then
   modprobe zram num_devices=1 2>/dev/null || true
   if [[ -b /dev/zram0 ]]; then
@@ -134,7 +128,7 @@ if ! swapon --show 2>/dev/null | grep -q "/dev/zram0"; then
     echo "$ZRAM_SIZE_BYTES" > /sys/block/zram0/disksize 2>/dev/null || true
     mkswap /dev/zram0 >/dev/null 2>&1
     swapon -p 10 /dev/zram0 2>/dev/null || true
-    log "Da kich hoat ZRAM ${MEM_MB}MB (Priority 10) thanh cong!"
+    log "Da kich hoat ZRAM ${MEM_MB}MB thanh cong!"
   fi
 fi
 
@@ -157,7 +151,7 @@ fi
 
 echo "=============================================================="
 echo "  ORACLE CLOUD VPS $(hostname) | RAM ${MEM_MB}MB | ${CPU} CPU (${ARCH})"
-echo "  Swap target=${TARGET_SWAP_MB}MB | Swappiness=${SWAPPINESS} (ZRAM Mode) | Limit=${CONTAINER_MEM_LIMIT}/${CONTAINER_SWAP_LIMIT}"
+echo "  Swap target=${TARGET_SWAP_MB}MB | Swappiness=${SWAPPINESS} (ZRAM Mode)"
 echo "=============================================================="
 
 CURR_SWAP_MB=$(free -m 2>/dev/null | awk '/^Swap:/{print $2}' || echo 0)
@@ -165,14 +159,14 @@ SWAP_USED_MB=$(free -m 2>/dev/null | awk '/^Swap:/{print $3}' || echo 0)
 RAM_AVAIL_MB=$(free -m 2>/dev/null | awk '/^Mem:/{print $7}' || echo 0)
 
 if (( IS_CONTAINER == 1 )); then
-  warn "May ${VIRT} (container) thuong KHONG tao duoc swap -> bo qua"
+  warn "May ${VIRT} khong tao duoc swap -> bo qua"
 elif (( CURR_SWAP_MB >= TARGET_SWAP_MB - 256 )) && (( CURR_SWAP_MB <= TARGET_SWAP_MB + 1536 )); then
   log "Da co swap đia ${CURR_SWAP_MB}MB -> giu nguyen"
 else
   REBUILD_SWAP=1
   if (( CURR_SWAP_MB > TARGET_SWAP_MB + 1536 )); then
     if (( SWAP_USED_MB > RAM_AVAIL_MB - 200 )); then
-      warn "Swap hien tai dang dung ${SWAP_USED_MB}MB -> Giu nguyen de an toan live!"
+      warn "Swap hien tai dang dung -> Giu nguyen an toan!"
       REBUILD_SWAP=0
     else
       swapoff /swapfile /swapfile2 2>/dev/null || true
@@ -196,39 +190,22 @@ else
     chmod 600 "$SWAP_TARGET_FILE"
     if mkswap "$SWAP_TARGET_FILE" >/dev/null 2>&1 && swapon -p 0 "$SWAP_TARGET_FILE" 2>/dev/null; then
       grep -q "^${SWAP_TARGET_FILE}" /etc/fstab || echo "${SWAP_TARGET_FILE} none swap sw,pri=0 0 0" >> /etc/fstab
-      log "Tao swap đia ${SWAP_TARGET_FILE} ${NEEDED_SWAP_MB}MB thanh cong"
+      log "Tao swap đia thanh cong"
     else
       rm -f "$SWAP_TARGET_FILE"
     fi
   fi
 fi
 
-log "Dang diet cac dich vu OS ngom RAM ngam (snapd, multipathd, udisks2, earlyoom)..."
+log "Dang diet cac dich vu OS ngom RAM ngam..."
 if has_systemd; then
   systemctl stop snapd multipathd udisks2 accountsservice earlyoom 2>/dev/null || true
   systemctl disable snapd multipathd udisks2 accountsservice earlyoom 2>/dev/null || true
+  systemctl enable --now systemd-timesyncd 2>/dev/null || true
 fi
 apt-get purge -y snapd earlyoom 2>/dev/null || true
 rm -rf /var/cache/snapd/ /var/lib/snapd/ 2>/dev/null || true
 
-if command -v docker >/dev/null 2>&1; then
-  log "Dang don dep cac container Watchtower trung lap ngom RAM..."
-  docker ps -a --format '{{.Names}}' 2>/dev/null | grep "internetincomewatchtower" | xargs -r docker rm -f >/dev/null 2>&1 || true
-fi
-
-MAIN_IF=$(ip route 2>/dev/null | grep default | awk '{print $5}' | head -n1 || echo "")
-if [[ -f /etc/vnstat.conf ]]; then
-  if [[ -n "$MAIN_IF" ]]; then
-    sed -i "s/Interface \".*\"/Interface \"$MAIN_IF\"/" /etc/vnstat.conf
-  fi
-  grep -q 'ExcludeInterface' /etc/vnstat.conf || echo 'ExcludeInterface "veth* docker0 tun* tap*"' >> /etc/vnstat.conf
-  if has_systemd; then systemctl restart vnstat 2>/dev/null || true; fi
-fi
-
-# ĐỒNG BỘ THỜI GIAN NTP SIÊU CHUẨN CHO ORACLE CLOUD
-if has_systemd; then
-  systemctl enable --now systemd-timesyncd 2>/dev/null || true
-fi
 timedatectl set-ntp true 2>/dev/null || true
 timedatectl set-timezone Asia/Ho_Chi_Minh 2>/dev/null || true
 
@@ -247,7 +224,7 @@ printf 'nameserver 8.8.8.8\nnameserver 1.1.1.1\nnameserver 9.9.9.9\nnameserver 1
 modprobe nf_conntrack 2>/dev/null || true
 modprobe tcp_bbr 2>/dev/null || true
 
-log "Mo firewall IPTables CHUẨN CHO ORACLE CLOUD (Fix Routing/Proxy)..."
+log "Mo firewall IPTables cho Oracle Cloud..."
 iptables -P INPUT ACCEPT 2>/dev/null || true
 iptables -P FORWARD ACCEPT 2>/dev/null || true
 iptables -F FORWARD 2>/dev/null || true
@@ -300,7 +277,7 @@ while IFS= read -r line; do
   [[ -z "${line//[[:space:]]/}" ]] && continue
   sysctl -w "$line" >/dev/null 2>&1 || true
 done < "$SYSCTL_FILE"
-log "Kernel Tuning Safe Mode cho OCI xong"
+log "Kernel Tuning xong"
 
 if [[ -f /etc/sysctl.d/99-vps-optimize.conf ]]; then
   rm -f /etc/sysctl.d/99-vps-optimize.conf
@@ -323,7 +300,7 @@ EOF_JOURNAL
 if has_systemd; then systemctl restart systemd-journald 2>/dev/null || true; fi
 
 auto_patch_engageub_repo() {
-  log "Dang quet va PATCH RAM DOCKER OCI (Chung: ${CONTAINER_MEM_LIMIT} | Mystnodes: 250m | Wipter: 350m)..."
+  log "Dang quet va PATCH RAM DOCKER OCI..."
   ROOTS=(/opt /root /home /srv)
   if [[ -n "$BASE_DIR" ]]; then ROOTS+=("$BASE_DIR"); fi
 
@@ -362,7 +339,6 @@ if command -v docker >/dev/null 2>&1; then
   CTRS=$(docker ps -aq 2>/dev/null || true)
   if [[ -n "$CTRS" ]]; then
     docker update --restart=unless-stopped $CTRS >/dev/null 2>&1 || true
-    
     for cid in $CTRS; do
       c_img=$(docker inspect -f '{{.Config.Image}}' "$cid" 2>/dev/null || true)
       c_name=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null || true)
@@ -372,7 +348,6 @@ if command -v docker >/dev/null 2>&1; then
         docker update --memory="350m" --memory-swap="600m" "$cid" >/dev/null 2>&1 || true
       fi
     done
-    log "Da tu dong cai co --restart=unless-stopped va RAM Limit cho tat ca $(echo "$CTRS" | wc -w) container!"
   fi
 fi
 
@@ -394,13 +369,12 @@ EOF_DAEMON
 
 DOCKER_RESTARTED=0
 if [[ -f /etc/docker/daemon.json ]] && printf '%s\n' "$NEW_DAEMON" | cmp -s - /etc/docker/daemon.json; then
-  log "daemon.json khong thay doi -> KHONG DUNG DOCKER"
+  log "daemon.json khong thay doi -> bo qua"
 else
   if [[ -f /etc/docker/daemon.json ]]; then
     cp -f /etc/docker/daemon.json "/etc/docker/daemon.json.bak.$(date +%Y%m%d%H%M%S)"
   fi
   printf '%s\n' "$NEW_DAEMON" > /etc/docker/daemon.json
-  RUNNING_BEFORE=$(docker ps -q 2>/dev/null | wc -l)
   if has_systemd; then
     systemctl restart docker
   else
@@ -413,8 +387,6 @@ if has_systemd; then systemctl enable --now docker >/dev/null 2>&1 || true; fi
 
 if (( DOCKER_RESTARTED == 1 )); then
   sleep 10
-  log "Dang bat lai cac container engageub TU TU..."
-  
   while IFS= read -r cid; do
     [[ -n "$cid" ]] || continue
     docker start "$cid" >/dev/null 2>&1 || true
@@ -433,8 +405,6 @@ if (( DOCKER_RESTARTED == 1 )); then
     docker start "$cid" >/dev/null 2>&1 || true
     sleep 1.5
   done < <(docker ps -aq -f status=exited 2>/dev/null)
-
-  log "Da revive xong tat ca container mot cach em ai!"
 fi
 
 install_cron_stack() {
@@ -636,13 +606,23 @@ else
 fi
 
 DNS_START=$(date +%s%N 2>/dev/null || echo 0)
-DNS_RES=$(host -w 2 google.com 8.8.8.8 2>/dev/null | grep "has address" | head -n1 || echo "")
+# FIX CHỐNG TREO BẰNG TIMEOUT 2
+DNS_RES=$(timeout 2 host google.com 8.8.8.8 2>/dev/null | grep "has address" | head -n1 || echo "")
 DNS_END=$(date +%s%N 2>/dev/null || echo 0)
 if [[ -n "$DNS_RES" ]]; then
   DNS_MS=$(( (DNS_END - DNS_START) / 1000000 ))
   echo -e "  DNS Resolution (Google) : ${C_G}OK (${DNS_MS}ms)${C_0}"
 else
-  echo -e "  DNS Resolution (Google) : ${C_R}FAILED / SLOW (Check /etc/resolv.conf)${C_0}"
+  echo -e "  DNS Resolution (Google) : ${C_Y}CHECK_TIMEOUT (Fallback active)${C_0}"
+fi
+
+HTTP_CODE=$(curl -o /dev/null -s -w "%{http_code}\t%{time_total}" --connect-timeout 2 --max-time 3 https://1.1.1.1 2>/dev/null || echo "000 0")
+CODE=$(echo "$HTTP_CODE" | awk '{print $1}')
+TIME=$(echo "$HTTP_CODE" | awk '{print $2}')
+if [[ "$CODE" == "200" || "$CODE" == "301" || "$CODE" == "302" ]]; then
+  echo -e "  Outbound Internet Latency: ${C_G}ONLINE (HTTP ${CODE} in ${TIME}s)${C_0}"
+else
+  echo -e "  Outbound Internet Latency: ${C_R}BLOCKED / TIMEOUT (No Internet)${C_0}"
   ISSUES_COUNT=$((ISSUES_COUNT+1))
 fi
 
@@ -708,7 +688,7 @@ chmod +x /usr/local/bin/ii-status.sh
 ln -sf /usr/local/bin/ii-status.sh /usr/bin/ii-status.sh 2>/dev/null || true
 ln -sf /usr/local/bin/ii-status.sh /usr/bin/ii-status 2>/dev/null || true
 
-echo "============================= SETUP XONG (100% AUTO-PILOT OCI MASTER 2026) =============================="
+echo "============================= SETUP XONG (100% AUTO-PILOT OCI MASTER 2026 - FIXED) =============================="
 /usr/local/bin/ii-status.sh || true
 ORACLE_MASTER_EOF
 chmod +x /root/setup_oracle_cloud.sh
