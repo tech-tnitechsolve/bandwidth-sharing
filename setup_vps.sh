@@ -1,14 +1,14 @@
 cat << 'MASTER_EOF' > ~/setup_vps.sh
 #!/usr/bin/env bash
 #============================================================================
-#  setup_vps.sh (100% AUTO-PILOT SET & FORGET MASTER 2026 - OFFICIAL FIX-ALL)
+#  setup_vps.sh (100% AUTO-PILOT SET & FORGET MASTER 2026 - FINAL EDITION)
 #
-#  CÀI 1 LẦN DUY NHẤT - TỰ ĐỘNG TỐI ƯU 100% CHO CẢ VPS MỚI LẪN VPS CỦ
-#   - FIXED NAT VPS TEST BUG: Test HTTP '-k https://google.com' khong bao gio bao ao.
-#   - DOCKER MIRRORS: Tich hop Mirror du phong chong loi TLS handshake timeout.
-#   - DYNAMIC RAM & ZRAM ALLOCATION: ZRAM = 100% RAM thuc, Swappiness 100.
+#  CÀI 1 LẦN DUY NHẤT - TỰ ĐỘNG TỐI ƯU 100% CHO CẢ VPS THƯỜNG VÀ VPS NAT
+#   - UNIVERSAL NETWORK TEST: Test 'http://1.1.1.1' fallback 'google.com', 100% khong bao ao.
+#   - MULTI-DNS RESOLVER: Tich hop Cloudflare (1.1.1.1), Google (8.8.8.8) va VNPT.
+#   - DOCKER MIRRORS: Registry Mirror chong loi TLS handshake timeout.
+#   - DYNAMIC ZRAM & SWAPPINESS: ZRAM = 100% RAM thuc, Swappiness = 100 live.
 #   - DOCKER PRUNE STACK: Tu dong don mang rac & volume ngam hang tuan.
-#   - STRICT TIME SYNC (NTP): Dam bao dong ho VPS chuan milisecond 24/7.
 #   - PRO DIAGNOSTICS: Tich hop ca 'sudo ii-status' va 'sudo ii-deep'.
 #============================================================================
 set -Eeuo pipefail
@@ -120,7 +120,7 @@ if [[ -f /sys/kernel/mm/ksm/run ]]; then
   log "Da kich hoat KSM toi uu cao thanh cong!"
 fi
 
-# TẠO ZRAM BẰNG 100% RAM VẬT LÝ
+# TẠO ZRAM BẰNG 100% RAM VẬT LÝ + SWAPPINESS 100 LIVE
 ZRAM_SIZE_BYTES=$(( MEM_MB * 1024 * 1024 ))
 log "Kich hoat ZRAM (${MEM_MB}MB - Nem RAM sieu toc LZ4)..."
 if ! swapon --show 2>/dev/null | grep -q "/dev/zram0"; then
@@ -239,8 +239,10 @@ EOF_APT
 if has_systemd && systemctl list-unit-files 2>/dev/null | grep -q '^systemd-resolved'; then
   systemctl disable --now systemd-resolved >/dev/null 2>&1 || true
 fi
+
+# MULTI-DNS DỮ TRỮ CHUẨN CẢ CHO VPS THƯỜNG VÀ VPS NAT
 rm -f /etc/resolv.conf
-printf 'nameserver 8.8.8.8\nnameserver 1.1.1.1\nnameserver 9.9.9.9\nnameserver 1.0.0.1\n' > /etc/resolv.conf
+printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\nnameserver 222.252.2.2\nnameserver 203.162.4.190\nnameserver 9.9.9.9\n' > /etc/resolv.conf
 
 modprobe nf_conntrack 2>/dev/null || true
 modprobe tcp_bbr 2>/dev/null || true
@@ -539,7 +541,7 @@ if (( DO_CRON == 1 )); then
 fi
 
 # ============================================================================
-# TAO FILE COMMAND 'sudo ii-status.sh' CHECK CHAT LUONG VPS 24/7 ULTRA PRO
+# TAO FILE COMMAND 'sudo ii-status' CHECK CHAT LUONG VPS 24/7 ULTRA PRO
 # ============================================================================
 cat > /usr/local/bin/ii-status.sh <<'EOF_STATUS'
 #!/usr/bin/env bash
@@ -660,7 +662,7 @@ else
 fi
 
 DNS_START=$(date +%s%N 2>/dev/null || echo 0)
-DNS_RES=$(timeout 2 host google.com 8.8.8.8 2>/dev/null | grep "has address" | head -n1 || echo "")
+DNS_RES=$(timeout 2 host google.com 1.1.1.1 2>/dev/null || timeout 2 host google.com 8.8.8.8 2>/dev/null || echo "")
 DNS_END=$(date +%s%N 2>/dev/null || echo 0)
 if [[ -n "$DNS_RES" ]]; then
   DNS_MS=$(( (DNS_END - DNS_START) / 1000000 ))
@@ -669,8 +671,8 @@ else
   echo -e "  DNS Resolution (Google) : ${C_Y}CHECK_TIMEOUT (Fallback active)${C_0}"
 fi
 
-# TEST DÙNG GOOGLE -K CHỐNG BỊ BÁO BỎNG MẠNG NAT
-HTTP_CODE=$(curl -o /dev/null -s -w "%{http_code}\t%{time_total}" --connect-timeout 2 --max-time 3 -k https://google.com 2>/dev/null || echo "000 0")
+# CÂU LỆNH TEST CHUẨN UNIVERSAL THỔI BAY BÁO ẢO LỖI MẠNG TRÊN MỌI VPS NAT
+HTTP_CODE=$(curl -o /dev/null -s -w "%{http_code}\t%{time_total}" --connect-timeout 2 --max-time 3 http://1.1.1.1 2>/dev/null || curl -o /dev/null -s -w "%{http_code}\t%{time_total}" --connect-timeout 2 --max-time 3 -k https://google.com 2>/dev/null || echo "000 0")
 CODE=$(echo "$HTTP_CODE" | awk '{print $1}')
 TIME=$(echo "$HTTP_CODE" | awk '{print $2}')
 if [[ "$CODE" == "200" || "$CODE" == "301" || "$CODE" == "302" ]]; then
@@ -808,7 +810,7 @@ EOF_DEEP
 chmod +x /usr/local/bin/ii-deep.sh
 ln -sf /usr/local/bin/ii-deep.sh /usr/bin/ii-deep 2>/dev/null || true
 
-echo "============================= SETUP XONG (100% AUTO-PILOT MASTER 2026 - OFFICIAL) =============================="
+echo "============================= SETUP XONG (100% AUTO-PILOT MASTER 2026 - FINAL EDITION) =============================="
 sudo ii-status.sh || true
 MASTER_EOF
 chmod +x ~/setup_vps.sh
