@@ -1,7 +1,7 @@
 cat << 'ORACLE_MASTER_EOF' > /root/setup_oracle_cloud.sh
 #!/usr/bin/env bash
 #============================================================================
-#  setup_oracle_cloud.sh (100% AUTO-PILOT OCI MASTER 2026 - FIX-ALL)
+#  setup_oracle_cloud.sh (100% AUTO-PILOT OCI MASTER 2026 - ULTIMATE EDITION)
 #============================================================================
 set -Eeuo pipefail
 
@@ -133,6 +133,7 @@ if ! swapon --show 2>/dev/null | grep -q "/dev/zram0"; then
 fi
 
 SWAPPINESS=100
+sysctl -w vm.swappiness=100 >/dev/null 2>&1 || true
 
 DISK_FREE_MB=$(df -m / | awk 'NR==2 {print $4}')
 MAX_SAFE_SWAP=$(( DISK_FREE_MB - 2048 ))
@@ -218,8 +219,9 @@ EOF_APT
 if has_systemd && systemctl list-unit-files 2>/dev/null | grep -q '^systemd-resolved'; then
   systemctl disable --now systemd-resolved >/dev/null 2>&1 || true
 fi
+
 rm -f /etc/resolv.conf
-printf 'nameserver 8.8.8.8\nnameserver 1.1.1.1\nnameserver 9.9.9.9\nnameserver 1.0.0.1\n' > /etc/resolv.conf
+printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\nnameserver 222.252.2.2\nnameserver 203.162.4.190\nnameserver 9.9.9.9\n' > /etc/resolv.conf
 
 modprobe nf_conntrack 2>/dev/null || true
 modprobe tcp_bbr 2>/dev/null || true
@@ -234,6 +236,10 @@ fi
 
 echo never > /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || true
 echo never > /sys/kernel/mm/transparent_hugepage/defrag 2>/dev/null || true
+
+# TỰ ĐỘNG BẬT PROCFS IPV6 ĐỂ DOCKER 29 KHÔNG BỊ LỖI OCI RUNTIME
+sysctl -w net.ipv6.conf.all.disable_ipv6=0 >/dev/null 2>&1 || true
+sysctl -w net.ipv6.conf.default.disable_ipv6=0 >/dev/null 2>&1 || true
 
 SYSCTL_FILE=/etc/sysctl.d/99-internetincome.conf
 cat > "$SYSCTL_FILE" <<EOF_SYSCTL
@@ -267,9 +273,6 @@ net.ipv4.tcp_slow_start_after_idle = 0
 net.netfilter.nf_conntrack_max = 524288
 net.netfilter.nf_conntrack_udp_timeout = 60
 net.netfilter.nf_conntrack_udp_timeout_stream = 180
-net.ipv6.conf.all.disable_ipv6 = 1
-net.ipv6.conf.default.disable_ipv6 = 1
-net.ipv6.conf.lo.disable_ipv6 = 1
 EOF_SYSCTL
 
 while IFS= read -r line; do
@@ -300,8 +303,8 @@ EOF_JOURNAL
 if has_systemd; then systemctl restart systemd-journald 2>/dev/null || true; fi
 
 auto_patch_engageub_repo() {
-  log "Dang quet va PATCH RAM DOCKER OCI..."
-  ROOTS=(/opt /root /home /srv /home/ubuntu)
+  log "Dang quet va PATCH RAM DOCKER OCI + FIX LỖI IPV6..."
+  ROOTS=(/opt /root /home /srv /home/ubuntu /home/opc)
   if [[ -n "$BASE_DIR" ]]; then ROOTS+=("$BASE_DIR"); fi
 
   while IFS= read -r sh_file; do
@@ -314,6 +317,9 @@ auto_patch_engageub_repo() {
     if [[ -f "$sh_file" ]]; then
       cp -n "$sh_file" "${sh_file}.bak" 2>/dev/null || true
       
+      # TỰ ĐỘNG BỎ CỜ SYSCTL IPV6 GÂY LỖI RUNC TRÊN DOCKER 29
+      sed -i 's/--sysctl net.ipv6.conf.[a-z0-9_]*.disable_ipv6=[0-9]//g' "$sh_file" 2>/dev/null || true
+
       if ! grep -q "\--restart" "$sh_file"; then
         sed -i "s/docker run -d/docker run -d --restart=unless-stopped/g" "$sh_file" 2>/dev/null || true
       fi
@@ -357,6 +363,7 @@ NEW_DAEMON="$(cat <<EOF_DAEMON
   "log-driver": "json-file",
   "log-opts": { "max-size": "2m", "max-file": "2" },
   "dns": ["8.8.8.8", "1.1.1.1", "9.9.9.9"],
+  "registry-mirrors": ["https://mirror.gcr.io", "https://docker.m.daocloud.io"],
   "max-concurrent-downloads": ${CONCURRENT_DOWNLOADS},
   "live-restore": true,
   "userland-proxy": false,
@@ -385,13 +392,18 @@ fi
 
 if has_systemd; then systemctl enable --now docker >/dev/null 2>&1 || true; fi
 
+while ! docker info >/dev/null 2>&1; do
+  sleep 1
+done
+
 if (( DOCKER_RESTARTED == 1 )); then
-  sleep 10
+  log "Dang bat lai cac container engageub TU TU..."
+  
   while IFS= read -r cid; do
     [[ -n "$cid" ]] || continue
     docker start "$cid" >/dev/null 2>&1 || true
     sleep 1.5
-  done < <(find /opt /root /home /srv /home/ubuntu -maxdepth 4 -name containernames.txt -type f -exec cat {} + 2>/dev/null | sort -u)
+  done < <(find /opt /root /home /srv /home/ubuntu /home/opc -maxdepth 4 -name containernames.txt -type f -exec cat {} + 2>/dev/null | sort -u)
 
   if command -v ctr >/dev/null 2>&1; then
     for cid in $(docker ps -aq --no-trunc -f status=exited 2>/dev/null); do
@@ -411,7 +423,7 @@ install_cron_stack() {
   cat > /usr/local/bin/ii-restart-all.sh <<'EOF_RESTART'
 #!/usr/bin/env bash
 LOG=/var/log/ii-restart.log
-ROOTS=(/opt /root /home /srv /home/ubuntu __EXTRA__)
+ROOTS=(/opt /root /home /srv /home/ubuntu /home/opc __EXTRA__)
 ts() { date '+%F %T'; }
 HAVE_CTR=0; command -v ctr >/dev/null 2>&1 && HAVE_CTR=1
 
@@ -422,6 +434,7 @@ HAVE_CTR=0; command -v ctr >/dev/null 2>&1 && HAVE_CTR=1
     d_path=$(dirname "$sh_f")
     [[ -f "${d_path}/properties.conf" ]] && sed -i "s/MAX_MEMORY=.*/MAX_MEMORY=${MEM_LIMIT}/" "${d_path}/properties.conf" 2>/dev/null || true
     if [[ -f "$sh_f" ]]; then
+      sed -i 's/--sysctl net.ipv6.conf.[a-z0-9_]*.disable_ipv6=[0-9]//g' "$sh_f" 2>/dev/null || true
       grep -q "\--restart" "$sh_f" || sed -i "s/docker run -d/docker run -d --restart=unless-stopped/g" "$sh_f" 2>/dev/null || true
       grep -q "\--memory" "$sh_f" || sed -i "s/docker run -d/docker run -d --memory=\"${MEM_LIMIT}\" --memory-swap=\"${SWAP_LIMIT}\"/g" "$sh_f" 2>/dev/null || true
 
@@ -538,7 +551,7 @@ WARNINGS_COUNT=0
 # --- 1. DOCKER CONTAINERS & RAM AUDIT ---
 echo -e "\n${C_C}--- [1. NODE CONTAINERS & RAM LIMIT AUDIT] ---${C_0}"
 ROOTS=("$@")
-if (( ${#ROOTS[@]} == 0 )); then ROOTS=(/opt /root /home /srv /home/ubuntu); fi
+if (( ${#ROOTS[@]} == 0 )); then ROOTS=(/opt /root /home /srv /home/ubuntu /home/opc); fi
 
 found=0
 while IFS= read -r cn; do
@@ -606,7 +619,7 @@ else
 fi
 
 DNS_START=$(date +%s%N 2>/dev/null || echo 0)
-DNS_RES=$(timeout 2 host google.com 8.8.8.8 2>/dev/null | grep "has address" | head -n1 || echo "")
+DNS_RES=$(timeout 2 host google.com 1.1.1.1 2>/dev/null || timeout 2 host google.com 8.8.8.8 2>/dev/null || echo "")
 DNS_END=$(date +%s%N 2>/dev/null || echo 0)
 if [[ -n "$DNS_RES" ]]; then
   DNS_MS=$(( (DNS_END - DNS_START) / 1000000 ))
@@ -615,7 +628,7 @@ else
   echo -e "  DNS Resolution (Google) : ${C_Y}CHECK_TIMEOUT (Fallback active)${C_0}"
 fi
 
-HTTP_CODE=$(curl -o /dev/null -s -w "%{http_code}\t%{time_total}" --connect-timeout 2 --max-time 3 https://1.1.1.1 2>/dev/null || echo "000 0")
+HTTP_CODE=$(curl -o /dev/null -s -w "%{http_code}\t%{time_total}" --connect-timeout 2 --max-time 3 http://1.1.1.1 2>/dev/null || curl -o /dev/null -s -w "%{http_code}\t%{time_total}" --connect-timeout 2 --max-time 3 -k https://google.com 2>/dev/null || echo "000 0")
 CODE=$(echo "$HTTP_CODE" | awk '{print $1}')
 TIME=$(echo "$HTTP_CODE" | awk '{print $2}')
 if [[ "$CODE" == "200" || "$CODE" == "301" || "$CODE" == "302" ]]; then
@@ -687,9 +700,39 @@ chmod +x /usr/local/bin/ii-status.sh
 ln -sf /usr/local/bin/ii-status.sh /usr/bin/ii-status.sh 2>/dev/null || true
 ln -sf /usr/local/bin/ii-status.sh /usr/bin/ii-status 2>/dev/null || true
 
-echo "============================= SETUP XONG (100% AUTO-PILOT OCI MASTER 2026 - FIX-ALL) =============================="
-/usr/local/bin/ii-status.sh || true
-ORACLE_MASTER_EOF
-chmod +x /root/setup_oracle_cloud.sh
+cat > /usr/local/bin/ii-deep.sh <<'EOF_DEEP'
+#!/usr/bin/env bash
+echo "==================== [PRO DEEP STABILITY DIAGNOSTIC] ===================="
+echo "TIMESTAMP : $(date '+%Y-%m-%d %H:%M:%S')"
+echo "HOSTNAME  : $(hostname)"
+echo "UPTIME    : $(uptime -p 2>/dev/null || uptime)"
+echo ""
+echo "--- [1. MEMORY PRESSURE STALLS (PSI)] ---"
+cat /proc/pressure/memory 2>/dev/null || echo "PSI not supported"
+echo ""
+echo "--- [2. KERNEL DMESG RECENT ERROR LOGS] ---"
+ERRS=$(dmesg 2>/dev/null | grep -iE "error|fail|oom|read-only" | tail -n 8 || true)
+if [[ -n "$ERRS" ]]; then echo "$ERRS"; else echo "Clean (No recent kernel errors)"; fi
+echo ""
+echo "--- [3. BANDWIDTH TRAFFIC STATS (vnstat)] ---"
+vnstat -d 3 2>/dev/null || vnstat 2>/dev/null || echo "vnstat initializing..."
+echo ""
+echo "--- [4. TOP RESTARTING CONTAINERS] ---"
+docker ps -a --format "table {{.Names}}\t{{.Status}}" 2>/dev/null | head -n 6
+echo ""
+echo "--- [5. SAMPLE CONTAINER LOGS (3 Nodes)] ---"
+for c in $(docker ps -q 2>/dev/null | shuf -n 3 2>/dev/null || docker ps -q 2>/dev/null | head -n 3); do
+  c_name=$(docker inspect -f '{{.Name}}' "$c" 2>/dev/null || echo "$c")
+  echo ">>> Log [$c_name]:"
+  docker logs --tail 3 "$c" 2>&1 | sed 's/^/    /'
+done
+echo "=========================================================================="
+EOF_DEEP
+chmod +x /usr/local/bin/ii-deep.sh
+ln -sf /usr/local/bin/ii-deep.sh /usr/bin/ii-deep 2>/dev/null || true
+
 cp -f /root/setup_oracle_cloud.sh /home/ubuntu/setup_oracle_cloud.sh 2>/dev/null || true
-bash /root/setup_oracle_cloud.sh
+cp -f /root/setup_oracle_cloud.sh /home/opc/setup_oracle_cloud.sh 2>/dev/null || true
+
+echo "============================= SETUP XONG (100% AUTO-PILOT OCI MASTER 2026 - ULTIMATE) =============================="
+/usr/local/bin/ii-status.sh || true
