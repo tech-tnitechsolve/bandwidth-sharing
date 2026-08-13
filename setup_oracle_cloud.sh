@@ -1,7 +1,7 @@
-cat << 'ORACLE_MASTER_EOF' > /root/setup_oracle_cloud.sh
 #!/usr/bin/env bash
 #============================================================================
-#  setup_oracle_cloud.sh (100% AUTO-PILOT OCI MASTER 2026 - FIX-ALL)
+#  setup_oracle_cloud.sh (100% AUTO-PILOT OCI MASTER 2026 - OFFICIAL)
+#  CÀI 1 LẦN DUY NHẤT CHO TOÀN BỘ VPS ORACLE CLOUD MỚI LẪN CŨ
 #============================================================================
 set -Eeuo pipefail
 
@@ -54,6 +54,7 @@ case "$VIRT" in lxc|lxc-libvirt|openvz) IS_CONTAINER=1 ;; esac
 MEM_MB=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
 CPU=$(nproc 2>/dev/null || echo 1)
 
+# NHẬN DIỆN CẤU HÌNH ORACLE CLOUD FREE TIER (AMD 1GB/2GB - ARM 6GB-24GB)
 if (( MEM_MB <= 1200 )); then           # OCI AMD 1GB RAM
   CONTAINER_MEM_LIMIT="35m"; CONTAINER_SWAP_LIMIT="90m"
   TARGET_SWAP_MB=1536
@@ -675,4 +676,17 @@ if (( ISSUES_COUNT == 0 && WARNINGS_COUNT == 0 )); then
   echo -e "  STATUS        : ${C_G}[HEALTHY_SMOOTH_24_7]${C_0} No action required."
 elif (( ISSUES_COUNT == 0 )); then
   echo -e "  OVERALL SCORE : ${C_Y}${SCORE}% GOOD${C_0} - System running fine with minor warnings."
-  echo -e "  STATUS        : ${C_Y}[STABLE_WITH_WARNINGS]${C_0} Run 'sudo bas
+  echo -e "  STATUS        : ${C_Y}[STABLE_WITH_WARNINGS]${C_0} Run 'sudo bash /root/setup_oracle_cloud.sh'."
+else
+  echo -e "  OVERALL SCORE : ${C_R}${SCORE}% UNSTABLE (${ISSUES_COUNT} Critical Issues Found!)${C_0}"
+  echo -e "  STATUS        : ${C_R}[INCOME_RISK_DETECTED]${C_0} Run 'sudo bash /root/setup_oracle_cloud.sh'!"
+fi
+echo -e "${C_B}=========================================================================="
+EOF_STATUS
+
+chmod +x /usr/local/bin/ii-status.sh
+ln -sf /usr/local/bin/ii-status.sh /usr/bin/ii-status.sh 2>/dev/null || true
+ln -sf /usr/local/bin/ii-status.sh /usr/bin/ii-status 2>/dev/null || true
+
+echo "============================= SETUP XONG (100% AUTO-PILOT OCI MASTER 2026 - FIX-ALL) =============================="
+/usr/local/bin/ii-status.sh || true
