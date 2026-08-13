@@ -1,7 +1,7 @@
 cat << 'MASTER_EOF' > ~/setup_vps.sh
 #!/usr/bin/env bash
 #============================================================================
-#  setup_vps.sh (100% AUTO-PILOT SET & FORGET MASTER 2026 - ULTIMATE EDITION)
+#  setup_vps.sh (100% AUTO-PILOT SET & FORGET MASTER 2026 - FINAL PERFECT)
 #============================================================================
 set -Eeuo pipefail
 
@@ -104,7 +104,7 @@ EOF_DOCKER_SVC
   systemctl enable --now docker >/dev/null 2>&1 || true
 fi
 
-log "Kich hoat KSM gop RAM ngam..."
+log "Kich hoat KSM (Kernel Samepage Merging) gop RAM ngam..."
 if [[ -f /sys/kernel/mm/ksm/run ]]; then
   echo 1 > /sys/kernel/mm/ksm/run 2>/dev/null || true
   echo 300 > /sys/kernel/mm/ksm/sleep_millisecs 2>/dev/null || true
@@ -112,6 +112,7 @@ if [[ -f /sys/kernel/mm/ksm/run ]]; then
   log "Da kich hoat KSM toi uu cao thanh cong!"
 fi
 
+# TẠO ZRAM BẰNG 100% RAM VẬT LÝ + SWAPPINESS 100 LIVE
 ZRAM_SIZE_BYTES=$(( MEM_MB * 1024 * 1024 ))
 log "Kich hoat ZRAM (${MEM_MB}MB - Nem RAM sieu toc LZ4)..."
 if ! swapon --show 2>/dev/null | grep -q "/dev/zram0"; then
@@ -197,11 +198,27 @@ log "Dang diet cac dich vu OS ngom RAM ngam (snapd, multipathd, udisks2, earlyoo
 if has_systemd; then
   systemctl stop snapd multipathd udisks2 accountsservice earlyoom 2>/dev/null || true
   systemctl disable snapd multipathd udisks2 accountsservice earlyoom 2>/dev/null || true
-  systemctl enable --now systemd-timesyncd 2>/dev/null || true
 fi
 apt-get purge -y snapd earlyoom 2>/dev/null || true
 rm -rf /var/cache/snapd/ /var/lib/snapd/ 2>/dev/null || true
 
+if command -v docker >/dev/null 2>&1; then
+  log "Dang don dep cac container Watchtower trung lap ngom RAM..."
+  docker ps -a --format '{{.Names}}' 2>/dev/null | grep "internetincomewatchtower" | xargs -r docker rm -f >/dev/null 2>&1 || true
+fi
+
+MAIN_IF=$(ip route 2>/dev/null | grep default | awk '{print $5}' | head -n1 || echo "")
+if [[ -f /etc/vnstat.conf ]]; then
+  if [[ -n "$MAIN_IF" ]]; then
+    sed -i "s/Interface \".*\"/Interface \"$MAIN_IF\"/" /etc/vnstat.conf
+  fi
+  grep -q 'ExcludeInterface' /etc/vnstat.conf || echo 'ExcludeInterface "veth* docker0 tun* tap*"' >> /etc/vnstat.conf
+  if has_systemd; then systemctl restart vnstat 2>/dev/null || true; fi
+fi
+
+if has_systemd; then
+  systemctl enable --now systemd-timesyncd 2>/dev/null || true
+fi
 timedatectl set-ntp true 2>/dev/null || true
 timedatectl set-timezone Asia/Ho_Chi_Minh 2>/dev/null || true
 
@@ -221,7 +238,6 @@ printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\nnameserver 222.252.2.2\nnameserv
 modprobe nf_conntrack 2>/dev/null || true
 modprobe tcp_bbr 2>/dev/null || true
 
-# MỞ IPTABLES FORWARD CHO TẤT CẢ LOẠI VPS (CHỐNG MẤT PACKET PROXY)
 iptables -P INPUT ACCEPT 2>/dev/null || true
 iptables -P FORWARD ACCEPT 2>/dev/null || true
 iptables -F FORWARD 2>/dev/null || true
@@ -232,9 +248,10 @@ fi
 echo never > /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || true
 echo never > /sys/kernel/mm/transparent_hugepage/defrag 2>/dev/null || true
 
-# TỰ ĐỘNG BẬT PROCFS IPV6 ĐỂ DOCKER 29 KHÔNG BỊ LỖI OCI RUNTIME
+# BẬT MỞ PROCFS IPV6 TRÊN HOST ĐỂ DOCKER 29 KHÔNG BAO GIỜ LỖI RUNC
 sysctl -w net.ipv6.conf.all.disable_ipv6=0 >/dev/null 2>&1 || true
 sysctl -w net.ipv6.conf.default.disable_ipv6=0 >/dev/null 2>&1 || true
+sysctl -w net.ipv6.conf.lo.disable_ipv6=0 >/dev/null 2>&1 || true
 
 SYSCTL_FILE=/etc/sysctl.d/99-internetincome.conf
 cat > "$SYSCTL_FILE" <<EOF_SYSCTL
@@ -270,6 +287,8 @@ net.netfilter.nf_conntrack_udp_timeout = 60
 net.netfilter.nf_conntrack_udp_timeout_stream = 180
 EOF_SYSCTL
 
+sed -i '/disable_ipv6/d' "$SYSCTL_FILE" 2>/dev/null || true
+
 while IFS= read -r line; do
   [[ "$line" =~ ^[[:space:]]*# ]] && continue
   [[ -z "${line//[[:space:]]/}" ]] && continue
@@ -298,7 +317,7 @@ EOF_JOURNAL
 if has_systemd; then systemctl restart systemd-journald 2>/dev/null || true; fi
 
 auto_patch_engageub_repo() {
-  log "Dang quet va PATCH RAM DOCKER + FIX LỖI IPV6 (Chung: ${CONTAINER_MEM_LIMIT} | Mystnodes: 250m | Wipter: 350m)..."
+  log "Dang quet va PATCH RAM DOCKER + FIX TẬN GỐC CỜ IPV6..."
   ROOTS=(/opt /root /home /srv /home/ubuntu /home/opc)
   if [[ -n "$BASE_DIR" ]]; then ROOTS+=("$BASE_DIR"); fi
 
@@ -312,7 +331,8 @@ auto_patch_engageub_repo() {
     if [[ -f "$sh_file" ]]; then
       cp -n "$sh_file" "${sh_file}.bak" 2>/dev/null || true
       
-      # TỰ ĐỘNG BỎ CỜ SYSCTL IPV6 GÂY LỖI RUNC TRÊN DOCKER 29
+      # TỰ ĐỘNG XÓA TOÀN BỘ CÁC BIỂU THỨC CỜ SYSCTL IPV6 TRONG INTERNETINCOME.SH
+      sed -i -E 's/--sysctl[ =]+net\.ipv6\.conf\.[a-zA-Z0-9_]+\.disable_ipv6=[0-9]//g' "$sh_file" 2>/dev/null || true
       sed -i 's/--sysctl net.ipv6.conf.[a-z0-9_]*.disable_ipv6=[0-9]//g' "$sh_file" 2>/dev/null || true
 
       if ! grep -q "\--restart" "$sh_file"; then
@@ -354,7 +374,6 @@ if command -v docker >/dev/null 2>&1; then
   fi
 fi
 
-# CỤM MIRRORS DỰ PHÒNG DOCKER CHỐNG NGHẼN TẢI IMAGE
 mkdir -p /etc/docker
 NEW_DAEMON="$(cat <<EOF_DAEMON
 {
@@ -380,6 +399,7 @@ else
     cp -f /etc/docker/daemon.json "/etc/docker/daemon.json.bak.$(date +%Y%m%d%H%M%S)"
   fi
   printf '%s\n' "$NEW_DAEMON" > /etc/docker/daemon.json
+  RUNNING_BEFORE=$(docker ps -q 2>/dev/null | wc -l)
   if has_systemd; then
     systemctl restart docker
   else
@@ -390,7 +410,6 @@ fi
 
 if has_systemd; then systemctl enable --now docker >/dev/null 2>&1 || true; fi
 
-# ĐẢM BẢO DOCKER DAEMON SẴN SÀNG TRƯỚC KHIN REVIVE
 while ! docker info >/dev/null 2>&1; do
   sleep 1
 done
@@ -435,6 +454,7 @@ HAVE_CTR=0; command -v ctr >/dev/null 2>&1 && HAVE_CTR=1
     d_path=$(dirname "$sh_f")
     [[ -f "${d_path}/properties.conf" ]] && sed -i "s/MAX_MEMORY=.*/MAX_MEMORY=${MEM_LIMIT}/" "${d_path}/properties.conf" 2>/dev/null || true
     if [[ -f "$sh_f" ]]; then
+      sed -i -E 's/--sysctl[ =]+net\.ipv6\.conf\.[a-zA-Z0-9_]+\.disable_ipv6=[0-9]//g' "$sh_f" 2>/dev/null || true
       sed -i 's/--sysctl net.ipv6.conf.[a-z0-9_]*.disable_ipv6=[0-9]//g' "$sh_f" 2>/dev/null || true
       grep -q "\--restart" "$sh_f" || sed -i "s/docker run -d/docker run -d --restart=unless-stopped/g" "$sh_f" 2>/dev/null || true
       grep -q "\--memory" "$sh_f" || sed -i "s/docker run -d/docker run -d --memory=\"${MEM_LIMIT}\" --memory-swap=\"${SWAP_LIMIT}\"/g" "$sh_f" 2>/dev/null || true
@@ -513,6 +533,7 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 15 4 * * 0 root /usr/local/bin/ii-restart-all.sh
 */15 * * * * root docker ps -aq -f status=exited 2>/dev/null | xargs -r -n1 docker start >/dev/null 2>&1
+*/15 * * * * root find /root /home /opt /srv /home/ubuntu /home/opc -name 'internetIncome.sh' -exec sed -i -E 's/--sysctl[ =]+net\.ipv6\.conf\.[a-zA-Z0-9_]+\.disable_ipv6=[0-9]//g' {} + >/dev/null 2>&1
 0 3 * * 0 root /usr/bin/docker network prune -f >/dev/null 2>&1
 15 3 * * 0 root /usr/bin/docker volume prune -f >/dev/null 2>&1
 30 5 * * 0 root /usr/bin/docker image prune -f >/dev/null 2>&1
@@ -795,7 +816,7 @@ EOF_DEEP
 chmod +x /usr/local/bin/ii-deep.sh
 ln -sf /usr/local/bin/ii-deep.sh /usr/bin/ii-deep 2>/dev/null || true
 
-echo "============================= SETUP XONG (100% AUTO-PILOT MASTER 2026 - ULTIMATE) =============================="
+echo "============================= SETUP XONG (100% AUTO-PILOT MASTER 2026 - FINAL PERFECT) =============================="
 /usr/local/bin/ii-status.sh || true
 MASTER_EOF
 chmod +x ~/setup_vps.sh
