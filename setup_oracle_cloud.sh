@@ -1,7 +1,11 @@
 cat << 'ORACLE_MASTER_EOF' > /root/setup_oracle_cloud.sh
 #!/usr/bin/env bash
 #============================================================================
-#  setup_oracle_cloud.sh (100% AUTO-PILOT OCI MASTER 2026)
+#  setup_oracle_cloud.sh (100% AUTO-PILOT OCI MASTER 2026 - OPTIMIZED)
+#
+#  TỐI ƯU ĐẶC TRỊ CHO ORACLE CLOUD FREE TIER:
+#   - AMD FREE TIER: 1 CPU / 1GB RAM
+#   - ARM AMPERE FREE TIER: 1 CPU / 6GB RAM (hoặc lên tới 24GB RAM)
 #============================================================================
 set -Eeuo pipefail
 
@@ -54,18 +58,22 @@ case "$VIRT" in lxc|lxc-libvirt|openvz) IS_CONTAINER=1 ;; esac
 MEM_MB=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
 CPU=$(nproc 2>/dev/null || echo 1)
 
-CONTAINER_MEM_LIMIT="50m"
-CONTAINER_SWAP_LIMIT="128m"
-if (( MEM_MB <= 1200 )); then
+# NHẬN DIỆN CẤU HÌNH ORACLE CLOUD FREE TIER ĐỂ PHÂN BỔ TÀI NGUYÊN
+if (( MEM_MB <= 1200 )); then           # OCI AMD 1GB RAM
   CONTAINER_MEM_LIMIT="35m"; CONTAINER_SWAP_LIMIT="90m"
-elif (( MEM_MB <= 2500 )); then
+  TARGET_SWAP_MB=1536
+elif (( MEM_MB <= 2500 )); then         # OCI AMD 2GB RAM
   CONTAINER_MEM_LIMIT="50m"; CONTAINER_SWAP_LIMIT="128m"
-elif (( MEM_MB <= 5000 )); then
+  TARGET_SWAP_MB=2048
+elif (( MEM_MB <= 7000 )); then         # OCI ARM 1 CPU / 6GB RAM
   CONTAINER_MEM_LIMIT="70m"; CONTAINER_SWAP_LIMIT="160m"
-elif (( MEM_MB <= 12000 )); then
+  TARGET_SWAP_MB=3072
+elif (( MEM_MB <= 13000 )); then        # OCI ARM 12GB RAM
   CONTAINER_MEM_LIMIT="100m"; CONTAINER_SWAP_LIMIT="256m"
-else
+  TARGET_SWAP_MB=4096
+else                                    # OCI ARM 24GB RAM
   CONTAINER_MEM_LIMIT="150m"; CONTAINER_SWAP_LIMIT="512m"
+  TARGET_SWAP_MB=4096
 fi
 
 clear_apt_locks() {
@@ -85,11 +93,11 @@ log "apt update & install cac goi phu thuoc OCI..."
 apt-get update -y -qq || { clear_apt_locks; apt-get update -y -qq; }
 apt-get install -y -qq --no-install-recommends \
   -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
-  curl wget git unzip jq bc ca-certificates uuid-runtime cron logrotate net-tools earlyoom \
-  iptables-persistent netfilter-persistent vnstat nload speedtest-cli || true
+  curl wget git unzip jq bc ca-certificates uuid-runtime cron logrotate net-tools \
+  iptables-persistent netfilter-persistent systemd-timesyncd vnstat nload speedtest-cli dnsutils || true
 
 if ! command -v docker >/dev/null 2>&1; then
-  log "ORACLE CLOUD: Dang tu dong cai dat Docker offical (Arch: ${ARCH})..."
+  log "ORACLE CLOUD: Dang tu dong cai dat Docker official (Arch: ${ARCH})..."
   curl -fsSL https://get.docker.com | sh || apt-get install -y -qq docker.io
   log "Cai dat Docker cho Oracle Cloud thanh cong!"
 else
@@ -110,33 +118,27 @@ fi
 log "Kich hoat KSM (Kernel Samepage Merging) gop RAM ngam..."
 if [[ -f /sys/kernel/mm/ksm/run ]]; then
   echo 1 > /sys/kernel/mm/ksm/run 2>/dev/null || true
-  echo 500 > /sys/kernel/mm/ksm/sleep_millisecs 2>/dev/null || true
-  echo 1000 > /sys/kernel/mm/ksm/pages_to_scan 2>/dev/null || true
+  echo 300 > /sys/kernel/mm/ksm/sleep_millisecs 2>/dev/null || true
+  echo 1250 > /sys/kernel/mm/ksm/pages_to_scan 2>/dev/null || true
   log "Da kich hoat KSM thanh cong!"
 fi
 
-log "Kich hoat ZRAM 1GB (Nem RAM lz4 sieu toc)..."
+# TẠO ZRAM BẰNG 100% RAM VẬT LÝ DÀNH RIÊNG CHO ORACLE CLOUD
+ZRAM_SIZE_BYTES=$(( MEM_MB * 1024 * 1024 ))
+log "Kich hoat ZRAM ${MEM_MB}MB cho OCI (Nem RAM LZ4 sieu toc)..."
 if ! swapon --show 2>/dev/null | grep -q "/dev/zram0"; then
   modprobe zram num_devices=1 2>/dev/null || true
   if [[ -b /dev/zram0 ]]; then
     swapoff /dev/zram0 2>/dev/null || true
     echo lz4 > /sys/block/zram0/comp_algorithm 2>/dev/null || true
-    echo 1073741824 > /sys/block/zram0/disksize 2>/dev/null || true
+    echo "$ZRAM_SIZE_BYTES" > /sys/block/zram0/disksize 2>/dev/null || true
     mkswap /dev/zram0 >/dev/null 2>&1
     swapon -p 10 /dev/zram0 2>/dev/null || true
-    log "Da kich hoat ZRAM 1GB (Priority 10) thanh cong!"
+    log "Da kich hoat ZRAM ${MEM_MB}MB (Priority 10) thanh cong!"
   fi
 fi
 
-if (( MEM_MB <= 1200 )); then          # AMD 1GB
-  TARGET_SWAP_MB=1536; SWAPPINESS=20
-elif (( MEM_MB <= 2500 )); then        # AMD 2GB
-  TARGET_SWAP_MB=2048; SWAPPINESS=20
-elif (( MEM_MB <= 5000 )); then        # 4GB RAM
-  TARGET_SWAP_MB=3072; SWAPPINESS=20
-else                                   # ARM 24GB RAM
-  TARGET_SWAP_MB=4096; SWAPPINESS=10
-fi
+SWAPPINESS=100
 
 DISK_FREE_MB=$(df -m / | awk 'NR==2 {print $4}')
 MAX_SAFE_SWAP=$(( DISK_FREE_MB - 2048 ))
@@ -155,7 +157,7 @@ fi
 
 echo "=============================================================="
 echo "  ORACLE CLOUD VPS $(hostname) | RAM ${MEM_MB}MB | ${CPU} CPU (${ARCH})"
-echo "  Swap target=${TARGET_SWAP_MB}MB | Swappiness=${SWAPPINESS} | Limit=${CONTAINER_MEM_LIMIT}/${CONTAINER_SWAP_LIMIT}"
+echo "  Swap target=${TARGET_SWAP_MB}MB | Swappiness=${SWAPPINESS} (ZRAM Mode) | Limit=${CONTAINER_MEM_LIMIT}/${CONTAINER_SWAP_LIMIT}"
 echo "=============================================================="
 
 CURR_SWAP_MB=$(free -m 2>/dev/null | awk '/^Swap:/{print $2}' || echo 0)
@@ -201,12 +203,12 @@ else
   fi
 fi
 
-log "Dang diet cac dich vu OS ngom RAM ngam (snapd, multipathd, udisks2)..."
+log "Dang diet cac dich vu OS ngom RAM ngam (snapd, multipathd, udisks2, earlyoom)..."
 if has_systemd; then
-  systemctl stop snapd multipathd udisks2 accountsservice 2>/dev/null || true
-  systemctl disable snapd multipathd udisks2 accountsservice 2>/dev/null || true
+  systemctl stop snapd multipathd udisks2 accountsservice earlyoom 2>/dev/null || true
+  systemctl disable snapd multipathd udisks2 accountsservice earlyoom 2>/dev/null || true
 fi
-apt-get purge -y snapd 2>/dev/null || true
+apt-get purge -y snapd earlyoom 2>/dev/null || true
 rm -rf /var/cache/snapd/ /var/lib/snapd/ 2>/dev/null || true
 
 if command -v docker >/dev/null 2>&1; then
@@ -223,13 +225,10 @@ if [[ -f /etc/vnstat.conf ]]; then
   if has_systemd; then systemctl restart vnstat 2>/dev/null || true; fi
 fi
 
-if [[ -f /etc/default/earlyoom ]]; then
-  cat > /etc/default/earlyoom <<'EOF_EARLYOOM'
-EARLYOOM_ARGS="-m 3 -s 5 --avoid '^(sshd|systemd|cron)$'"
-EOF_EARLYOOM
+# ĐỒNG BỘ THỜI GIAN NTP SIÊU CHUẨN CHO ORACLE CLOUD
+if has_systemd; then
+  systemctl enable --now systemd-timesyncd 2>/dev/null || true
 fi
-if has_systemd; then systemctl enable --now earlyoom >/dev/null 2>&1 || true; fi
-
 timedatectl set-ntp true 2>/dev/null || true
 timedatectl set-timezone Asia/Ho_Chi_Minh 2>/dev/null || true
 
@@ -248,7 +247,8 @@ printf 'nameserver 8.8.8.8\nnameserver 1.1.1.1\nnameserver 9.9.9.9\nnameserver 1
 modprobe nf_conntrack 2>/dev/null || true
 modprobe tcp_bbr 2>/dev/null || true
 
-log "Mo firewall FORWARD chuot cho Oracle Cloud..."
+log "Mo firewall IPTables CHUẨN CHO ORACLE CLOUD (Fix Routing/Proxy)..."
+iptables -P INPUT ACCEPT 2>/dev/null || true
 iptables -P FORWARD ACCEPT 2>/dev/null || true
 iptables -F FORWARD 2>/dev/null || true
 if command -v netfilter-persistent >/dev/null 2>&1; then
@@ -269,7 +269,7 @@ vm.min_free_kbytes = 65536
 vm.page-cluster = 0
 vm.overcommit_memory = 1
 vm.swappiness = ${SWAPPINESS}
-vm.vfs_cache_pressure = 125
+vm.vfs_cache_pressure = 100
 vm.dirty_background_ratio = 3
 vm.dirty_ratio = 8
 fs.file-max = 2097152
@@ -300,7 +300,7 @@ while IFS= read -r line; do
   [[ -z "${line//[[:space:]]/}" ]] && continue
   sysctl -w "$line" >/dev/null 2>&1 || true
 done < "$SYSCTL_FILE"
-log "Kernel Tuning Safe Mode xong"
+log "Kernel Tuning Safe Mode cho OCI xong"
 
 if [[ -f /etc/sysctl.d/99-vps-optimize.conf ]]; then
   rm -f /etc/sysctl.d/99-vps-optimize.conf
@@ -323,7 +323,7 @@ EOF_JOURNAL
 if has_systemd; then systemctl restart systemd-journald 2>/dev/null || true; fi
 
 auto_patch_engageub_repo() {
-  log "Dang quet va KHÓA RAM AN TOÀN (${CONTAINER_MEM_LIMIT}/${CONTAINER_SWAP_LIMIT}) + RESTART CỜ..."
+  log "Dang quet va PATCH RAM DOCKER OCI (Chung: ${CONTAINER_MEM_LIMIT} | Mystnodes: 250m | Wipter: 350m)..."
   ROOTS=(/opt /root /home /srv)
   if [[ -n "$BASE_DIR" ]]; then ROOTS+=("$BASE_DIR"); fi
 
@@ -336,8 +336,6 @@ auto_patch_engageub_repo() {
 
     if [[ -f "$sh_file" ]]; then
       cp -n "$sh_file" "${sh_file}.bak" 2>/dev/null || true
-      sed -i "s/--memory=\"[0-9]*[a-z]*\"/--memory=\"${CONTAINER_MEM_LIMIT}\"/g" "$sh_file" 2>/dev/null || true
-      sed -i "s/--memory-swap=\"[0-9]*[a-z]*\"/--memory-swap=\"${CONTAINER_SWAP_LIMIT}\"/g" "$sh_file" 2>/dev/null || true
       
       if ! grep -q "\--restart" "$sh_file"; then
         sed -i "s/docker run -d/docker run -d --restart=unless-stopped/g" "$sh_file" 2>/dev/null || true
@@ -346,6 +344,15 @@ auto_patch_engageub_repo() {
       if ! grep -q "\--memory" "$sh_file"; then
         sed -i "s/docker run -d/docker run -d --memory=\"${CONTAINER_MEM_LIMIT}\" --memory-swap=\"${CONTAINER_SWAP_LIMIT}\"/g" "$sh_file"
       fi
+
+      sed -i "s/--memory=\"[0-9]*[a-z]*\"/--memory=\"${CONTAINER_MEM_LIMIT}\"/g" "$sh_file" 2>/dev/null || true
+      sed -i "s/--memory-swap=\"[0-9]*[a-z]*\"/--memory-swap=\"${CONTAINER_SWAP_LIMIT}\"/g" "$sh_file" 2>/dev/null || true
+
+      sed -i -E '/mysterium|myst/I s/--memory="[0-9]+[a-zA-Z]+"/--memory="250m"/g' "$sh_file" 2>/dev/null || true
+      sed -i -E '/mysterium|myst/I s/--memory-swap="[0-9]+[a-zA-Z]+"/--memory-swap="500m"/g' "$sh_file" 2>/dev/null || true
+
+      sed -i -E '/wipter/I s/--memory="[0-9]+[a-zA-Z]+"/--memory="350m"/g' "$sh_file" 2>/dev/null || true
+      sed -i -E '/wipter/I s/--memory-swap="[0-9]+[a-zA-Z]+"/--memory-swap="600m"/g' "$sh_file" 2>/dev/null || true
     fi
   done < <(find "${ROOTS[@]}" -maxdepth 4 -name internetIncome.sh -type f 2>/dev/null | sort -u)
 }
@@ -355,7 +362,17 @@ if command -v docker >/dev/null 2>&1; then
   CTRS=$(docker ps -aq 2>/dev/null || true)
   if [[ -n "$CTRS" ]]; then
     docker update --restart=unless-stopped $CTRS >/dev/null 2>&1 || true
-    log "Da tu dong cai co --restart=unless-stopped cho tat ca $(echo "$CTRS" | wc -w) container!"
+    
+    for cid in $CTRS; do
+      c_img=$(docker inspect -f '{{.Config.Image}}' "$cid" 2>/dev/null || true)
+      c_name=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null || true)
+      if [[ "$c_img" =~ mysterium|myst ]] || [[ "$c_name" =~ mysterium|myst ]]; then
+        docker update --memory="250m" --memory-swap="500m" "$cid" >/dev/null 2>&1 || true
+      elif [[ "$c_img" =~ wipter ]] || [[ "$c_name" =~ wipter ]]; then
+        docker update --memory="350m" --memory-swap="600m" "$cid" >/dev/null 2>&1 || true
+      fi
+    done
+    log "Da tu dong cai co --restart=unless-stopped va RAM Limit cho tat ca $(echo "$CTRS" | wc -w) container!"
   fi
 fi
 
@@ -437,6 +454,15 @@ HAVE_CTR=0; command -v ctr >/dev/null 2>&1 && HAVE_CTR=1
     if [[ -f "$sh_f" ]]; then
       grep -q "\--restart" "$sh_f" || sed -i "s/docker run -d/docker run -d --restart=unless-stopped/g" "$sh_f" 2>/dev/null || true
       grep -q "\--memory" "$sh_f" || sed -i "s/docker run -d/docker run -d --memory=\"${MEM_LIMIT}\" --memory-swap=\"${SWAP_LIMIT}\"/g" "$sh_f" 2>/dev/null || true
+
+      sed -i "s/--memory=\"[0-9]*[a-z]*\"/--memory=\"${MEM_LIMIT}\"/g" "$sh_f" 2>/dev/null || true
+      sed -i "s/--memory-swap=\"[0-9]*[a-z]*\"/--memory-swap=\"${SWAP_LIMIT}\"/g" "$sh_f" 2>/dev/null || true
+
+      sed -i -E '/mysterium|myst/I s/--memory="[0-9]+[a-zA-Z]+"/--memory="250m"/g' "$sh_f" 2>/dev/null || true
+      sed -i -E '/mysterium|myst/I s/--memory-swap="[0-9]+[a-zA-Z]+"/--memory-swap="500m"/g' "$sh_f" 2>/dev/null || true
+
+      sed -i -E '/wipter/I s/--memory="[0-9]+[a-zA-Z]+"/--memory="350m"/g' "$sh_f" 2>/dev/null || true
+      sed -i -E '/wipter/I s/--memory-swap="[0-9]+[a-zA-Z]+"/--memory-swap="600m"/g' "$sh_f" 2>/dev/null || true
     fi
   done < <(find "${ROOTS[@]}" -maxdepth 4 -name internetIncome.sh -type f 2>/dev/null | sort -u)
 
@@ -475,9 +501,16 @@ HAVE_CTR=0; command -v ctr >/dev/null 2>&1 && HAVE_CTR=1
     done < <(cat "${FILES[@]}" 2>/dev/null | sort -u)
 
     docker update --restart=unless-stopped $(docker ps -aq 2>/dev/null || true) >/dev/null 2>&1 || true
+    for cid in $(docker ps -aq 2>/dev/null); do
+      c_img=$(docker inspect -f '{{.Config.Image}}' "$cid" 2>/dev/null || true)
+      c_name=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null || true)
+      if [[ "$c_img" =~ mysterium|myst ]] || [[ "$c_name" =~ mysterium|myst ]]; then
+        docker update --memory="250m" --memory-swap="500m" "$cid" >/dev/null 2>&1 || true
+      elif [[ "$c_img" =~ wipter ]] || [[ "$c_name" =~ wipter ]]; then
+        docker update --memory="350m" --memory-swap="600m" "$cid" >/dev/null 2>&1 || true
+      fi
+    done
 
-    sync && echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
-    echo "[$(ts)] da xa cache RAM rac (drop_caches)"
     STILL=$(docker ps -aq -f status=exited 2>/dev/null | wc -l)
     echo "[$(ts)] xong: ${TOTAL} container | con Exited: ${STILL}"
   fi
@@ -494,9 +527,10 @@ EOF_RESTART
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-15 4 * * * root /usr/local/bin/ii-restart-all.sh
-15 16 * * * root sync && echo 3 > /proc/sys/vm/drop_caches >/dev/null 2>&1
+15 4 * * 0 root /usr/local/bin/ii-restart-all.sh
 */15 * * * * root docker ps -aq -f status=exited 2>/dev/null | xargs -r -n1 docker start >/dev/null 2>&1
+0 3 * * 0 root /usr/bin/docker network prune -f >/dev/null 2>&1
+15 3 * * 0 root /usr/bin/docker volume prune -f >/dev/null 2>&1
 30 5 * * 0 root /usr/bin/docker image prune -f >/dev/null 2>&1
 EOF_CRON
   chmod 644 /etc/cron.d/internetincome
@@ -514,94 +548,165 @@ fi
 
 cat > /usr/local/bin/ii-status.sh <<'EOF_STATUS'
 #!/usr/bin/env bash
-ROOTS=("$@")
-if (( ${#ROOTS[@]} == 0 )); then ROOTS=(/opt /root /home /srv); fi
+set -u
 
-echo "==================== [ORACLE CLOUD AI-DIAGNOSTIC REPORT] ===================="
+if [[ -t 1 ]]; then
+  C_G='\033[1;32m'; C_Y='\033[1;33m'; C_R='\033[1;31m'; C_B='\033[1;34m'; C_C='\033[1;36m'; C_0='\033[0m'
+else
+  C_G=''; C_Y=''; C_R=''; C_B=''; C_C=''; C_0=''
+fi
+
+echo -e "${C_B}==================== [ORACLE CLOUD 24/7 QUALITY DIAGNOSTIC] ====================${C_0}"
 echo "TIMESTAMP    : $(date '+%Y-%m-%d %H:%M:%S %Z')"
 echo "HOSTNAME     : $(hostname)"
 echo "UPTIME       : $(uptime -p 2>/dev/null || uptime)"
 echo "KERNEL/ARCH  : $(uname -r) ($(uname -m))"
 
-echo -e "\n--- [1. INTERNETINCOME FOLDERS & CONTAINERS] ---"
+ISSUES_COUNT=0
+WARNINGS_COUNT=0
+
+# --- 1. DOCKER CONTAINERS & RAM AUDIT ---
+echo -e "\n${C_C}--- [1. NODE CONTAINERS & RAM LIMIT AUDIT] ---${C_0}"
+ROOTS=("$@")
+if (( ${#ROOTS[@]} == 0 )); then ROOTS=(/opt /root /home /srv); fi
+
 found=0
 while IFS= read -r cn; do
   d=$(dirname "$cn")
   [[ -f "${d}/internetIncome.sh" ]] || continue
   found=1
-  total=0
-  running=0
-  stopped=0
+  total=0; running=0; stopped=0; oom_cnt=0; high_restart=0
   while IFS= read -r c; do
     [[ -z "$c" ]] && continue
     state=$(docker inspect -f '{{.State.Running}}' "$c" 2>/dev/null || echo "not_found")
     if [[ "$state" == "true" ]]; then
       running=$((running+1))
       total=$((total+1))
+      oom=$(docker inspect -f '{{.State.OOMKilled}}' "$c" 2>/dev/null || echo "false")
+      rc=$(docker inspect -f '{{.RestartCount}}' "$c" 2>/dev/null || echo "0")
+      [[ "$oom" == "true" ]] && oom_cnt=$((oom_cnt+1))
+      (( rc > 10 )) && high_restart=$((high_restart+1))
     elif [[ "$state" == "false" ]]; then
       stopped=$((stopped+1))
       total=$((total+1))
     fi
   done < "$cn"
+
   mark=""
-  (( stopped > 0 )) && mark=" <-- \033[1;31m[WARNING: ${stopped} CONTAINERS STOPPED]\033[0m"
-  printf "  %-46s %4s/%-4s running%s\n" "$d" "$running" "$total" "$mark"
+  if (( stopped > 0 )); then
+    mark="${mark} ${C_R}[${stopped} STOPPED]${C_0}"
+    ISSUES_COUNT=$((ISSUES_COUNT+stopped))
+  fi
+  if (( oom_cnt > 0 )); then
+    mark="${mark} ${C_R}[${oom_cnt} OOM KILLED]${C_0}"
+    ISSUES_COUNT=$((ISSUES_COUNT+oom_cnt))
+  fi
+  if (( high_restart > 0 )); then
+    mark="${mark} ${C_Y}[${high_restart} UNSTABLE RESTARTS]${C_0}"
+    WARNINGS_COUNT=$((WARNINGS_COUNT+high_restart))
+  fi
+  (( total > 0 && stopped == 0 && oom_cnt == 0 && high_restart == 0 )) && mark="${C_G}[100% HEALTHY]${C_0}"
+
+  printf "  %-42s %3s/%-3s running  %b\n" "$d" "$running" "$total" "$mark"
 done < <(find "${ROOTS[@]}" -maxdepth 4 -name containernames.txt -type f 2>/dev/null | sort -u)
+
 if (( found == 0 )); then echo "  (No InternetIncome folders found)"; fi
 
 RUNNING_CTRS=$(docker ps -q 2>/dev/null | wc -l)
 TOTAL_CTRS=$(docker ps -aq 2>/dev/null | wc -l)
 EXITED_CTRS=$(docker ps -aq -f status=exited 2>/dev/null | wc -l)
-echo "  TOTAL DOCKER SUMMARY: ${RUNNING_CTRS} running / ${TOTAL_CTRS} total (Exited: ${EXITED_CTRS})"
+echo "  TOTAL SUMMARY: ${RUNNING_CTRS} running / ${TOTAL_CTRS} total (Exited: ${EXITED_CTRS})"
 
-echo -e "\n--- [2. CPU LOAD & DISK I/O WAIT (wa)] ---"
-echo "  Load Average : $(cat /proc/loadavg 2>/dev/null || echo '?')"
-top -bn1 2>/dev/null | grep "%Cpu" | awk '{print "  " $0}' || true
-
-echo -e "\n--- [3. RAM, ZRAM & SWAP ALLOCATION] ---"
-free -h | awk '/^Mem:/{printf "  RAM  : Total %s | Used %s | Free %s | Avail %s\n",$2,$3,$4,$7} /^Swap:/{printf "  Swap : Total %s | Used %s | Free %s\n",$2,$3,$4}'
-echo "  Active Swap Devices:"
-swapon --show 2>/dev/null | awk 'NR>1{printf "    - %s (%s, Priority %s, Used %s)\n",$1,$3,$5,$4}' || true
-
-echo -e "\n--- [4. SWAP PAGING (si/so), RUN QUEUE (r) & CONTEXT SWITCHES (cs)] ---"
-vmstat 1 2 2>/dev/null | tail -n 1 | awk '{printf "  r=%s (runqueue) | b=%s (blocked) | si=%s KB/s (swap-in) | so=%s KB/s (swap-out) | cs=%s/s (context-switches) | wa=%s%%\n", $1, $2, $7, $8, $12, $16}'
-
-echo -e "\n--- [5. MEMORY PRESSURE STALLS (PSI)] ---"
-if [[ -f /proc/pressure/memory ]]; then
-  cat /proc/pressure/memory | awk '{print "  " $0}'
+# --- 2. NETWORK, PROXY & ROUTING HEALTH ---
+echo -e "\n${C_C}--- [2. NETWORK, PROXY & ROUTING HEALTH] ---${C_0}"
+IP_FWD=$(sysctl -n net.ipv4.ip_forward 2>/dev/null || echo 0)
+if [[ "$IP_FWD" == "1" ]]; then
+  echo -e "  IP Forwarding (Routing)  : ${C_G}ENABLED (1)${C_0}"
 else
-  echo "  (PSI memory pressure not supported by kernel)"
+  echo -e "  IP Forwarding (Routing)  : ${C_R}DISABLED (0) <-- CRITICAL!${C_0}"
+  ISSUES_COUNT=$((ISSUES_COUNT+1))
 fi
 
-echo -e "\n--- [6. NETWORK SOCKETS & CONNTRACK TABLE] ---"
-ss -s 2>/dev/null | grep -E "TCP:|estab" | awk '{print "  " $0}' || true
+NTP_STAT=$(timedatectl status 2>/dev/null | grep "NTP service" | awk '{print $3}' || echo "unknown")
+if [[ "$NTP_STAT" == "active" || "$NTP_STAT" == "yes" ]]; then
+  echo -e "  NTP Time Sync Status    : ${C_G}ACTIVE (Strict millisecond accuracy)${C_0}"
+else
+  echo -e "  NTP Time Sync Status    : ${C_Y}INACTIVE (${NTP_STAT})${C_0}"
+  WARNINGS_COUNT=$((WARNINGS_COUNT+1))
+fi
+
+DNS_START=$(date +%s%N 2>/dev/null || echo 0)
+DNS_RES=$(host -w 2 google.com 8.8.8.8 2>/dev/null | grep "has address" | head -n1 || echo "")
+DNS_END=$(date +%s%N 2>/dev/null || echo 0)
+if [[ -n "$DNS_RES" ]]; then
+  DNS_MS=$(( (DNS_END - DNS_START) / 1000000 ))
+  echo -e "  DNS Resolution (Google) : ${C_G}OK (${DNS_MS}ms)${C_0}"
+else
+  echo -e "  DNS Resolution (Google) : ${C_R}FAILED / SLOW (Check /etc/resolv.conf)${C_0}"
+  ISSUES_COUNT=$((ISSUES_COUNT+1))
+fi
+
 CONN_COUNT=$(cat /proc/sys/net/netfilter/nf_conntrack_count 2>/dev/null || echo 0)
 CONN_MAX=$(cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null || echo 524288)
-echo "  Conntrack Streams Active : ${CONN_COUNT} / ${CONN_MAX}"
+CONN_PCT=$(( CONN_COUNT * 100 / CONN_MAX ))
+echo "  Conntrack Active Streams: ${CONN_COUNT} / ${CONN_MAX} (${CONN_PCT}% max)"
 
-echo -e "\n--- [7. STORAGE & INOTIFY WATCHES] ---"
-df -h / | awk 'NR==2{printf "  Disk Root / : %s used / %s total (%s full, %s free)\n",$3,$2,$5,$4}'
-WATCHES=$(sysctl -n fs.inotify.max_user_watches 2>/dev/null || echo '?')
-echo "  Inotify Max User Watches : ${WATCHES}"
+# --- 3. SYSTEM RAM, SWAP & ZRAM HEALTH ---
+echo -e "\n${C_C}--- [3. SYSTEM RAM, SWAP & ZRAM ALLOCATION] ---${C_0}"
+RAM_TOTAL=$(free -m | awk '/^Mem:/{print $2}')
+RAM_USED=$(free -m | awk '/^Mem:/{print $3}')
+RAM_AVAIL=$(free -m | awk '/^Mem:/{print $7}')
+SWAP_TOTAL=$(free -m | awk '/^Swap:/{print $2}')
+SWAP_USED=$(free -m | awk '/^Swap:/{print $3}')
+SWAP_VAL=$(cat /proc/sys/vm/swappiness 2>/dev/null || echo 0)
 
-echo -e "\n---------------- [AI SYSTEM DIAGNOSTIC SUMMARY] ----------------"
-RAM_AVAIL_MB=$(free -m 2>/dev/null | awk '/^Mem:/{print $7}' || echo 999)
-SWAP_FREE_MB=$(free -m 2>/dev/null | awk '/^Swap:/{print $4}' || echo 999)
-PSI_FULL_10=$(cat /proc/pressure/memory 2>/dev/null | grep "full" | awk '{print $2}' | cut -d= -f2 || echo 0)
-PSI_INT=${PSI_FULL_10%.*}
+echo "  RAM  : Total ${RAM_TOTAL}MB | Used ${RAM_USED}MB | Avail ${RAM_AVAIL}MB"
+echo "  Swap : Total ${SWAP_TOTAL}MB | Used ${SWAP_USED}MB | Swappiness ${SWAP_VAL}"
 
-if (( RAM_AVAIL_MB < 30 )) && (( SWAP_FREE_MB < 100 )); then
-  echo "  STATUS: [CRITICAL_MEMORY_EXHAUSTION] Virtual memory near zero! Risk of crash!"
-elif (( EXITED_CTRS > 0 )); then
-  echo "  STATUS: [CONTAINERS_EXITED] Some containers have stopped. Check docker ps -a."
-elif (( PSI_INT >= 15 )); then
-  echo "  STATUS: [SILENT_MEMORY_THRASHING] PSI Full Memory Pressure is ${PSI_FULL_10}% (>15%)."
+if swapon --show 2>/dev/null | grep -q "/dev/zram0"; then
+  ZRAM_SIZE=$(swapon --show 2>/dev/null | grep "/dev/zram0" | awk '{print $3}')
+  echo -e "  ZRAM : ${C_G}ACTIVE (${ZRAM_SIZE} LZ4 Priority 10)${C_0}"
 else
-  echo "  STATUS: [HEALTHY_OPTIMIZED] Oracle Cloud VPS is running smoothly with clean KSM memory and low PSI."
+  echo -e "  ZRAM : ${C_Y}NOT ACTIVE (Performance penalty)${C_0}"
+  WARNINGS_COUNT=$((WARNINGS_COUNT+1))
 fi
-echo "=========================================================================="
+
+# --- 4. CPU LOAD & DISK / FILESYSTEM HEALTH ---
+echo -e "\n${C_C}--- [4. CPU, DISK I/O & FILESYSTEM HEALTH] ---${C_0}"
+LOAD_1=$(cat /proc/loadavg | awk '{print $1}')
+CPUS=$(nproc 2>/dev/null || echo 1)
+echo "  CPU Cores: ${CPUS} | Load Avg (1m): ${LOAD_1}"
+
+DISK_USE_PCT=$(df / | awk 'NR==2{print $5}' | tr -d '%')
+if (( DISK_USE_PCT > 90 )); then
+  echo -e "  Disk Storage Usage     : ${C_R}${DISK_USE_PCT}% used (FULL RISK!)${C_0}"
+  ISSUES_COUNT=$((ISSUES_COUNT+1))
+else
+  echo -e "  Disk Storage Usage     : ${C_G}${DISK_USE_PCT}% used${C_0}"
+fi
+
+# --- 5. 24/7 INCOME STABILITY SUMMARY ---
+echo -e "\n${C_B}---------------- [OCI INCOME DIAGNOSTIC SUMMARY] ----------------${C_0}"
+SCORE=100
+SCORE=$(( SCORE - (ISSUES_COUNT * 20) - (WARNINGS_COUNT * 5) ))
+if (( SCORE < 0 )); then SCORE=0; fi
+
+if (( ISSUES_COUNT == 0 && WARNINGS_COUNT == 0 )); then
+  echo -e "  OVERALL SCORE : ${C_G}100% PERFECT${C_0} - Oracle Cloud VPS is 100% optimal!"
+  echo -e "  STATUS        : ${C_G}[HEALTHY_SMOOTH_24_7]${C_0} No action required."
+elif (( ISSUES_COUNT == 0 )); then
+  echo -e "  OVERALL SCORE : ${C_Y}${SCORE}% GOOD${C_0} - System running fine with minor warnings."
+  echo -e "  STATUS        : ${C_Y}[STABLE_WITH_WARNINGS]${C_0} Run 'sudo bash /root/setup_oracle_cloud.sh'."
+else
+  echo -e "  OVERALL SCORE : ${C_R}${SCORE}% UNSTABLE (${ISSUES_COUNT} Critical Issues Found!)${C_0}"
+  echo -e "  STATUS        : ${C_R}[INCOME_RISK_DETECTED]${C_0} Run 'sudo bash /root/setup_oracle_cloud.sh'!"
+fi
+echo -e "${C_B}=========================================================================="
 EOF_STATUS
+
 chmod +x /usr/local/bin/ii-status.sh
+ln -sf /usr/local/bin/ii-status.sh /usr/bin/ii-status.sh 2>/dev/null || true
+ln -sf /usr/local/bin/ii-status.sh /usr/bin/ii-status 2>/dev/null || true
 
 echo "============================= SETUP XONG (100% AUTO-PILOT OCI MASTER 2026) =============================="
 /usr/local/bin/ii-status.sh || true
