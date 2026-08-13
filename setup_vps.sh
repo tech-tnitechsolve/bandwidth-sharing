@@ -1,7 +1,7 @@
 cat << 'MASTER_EOF' > ~/setup_vps.sh
 #!/usr/bin/env bash
 #============================================================================
-#  setup_vps.sh (100% AUTO-PILOT SET & FORGET MASTER 2026 - FINAL PERFECT)
+#  setup_vps.sh (DYNAMIC TIER MATRIX 2026 - 2GB / 4GB / 8GB / 12GB+ WIPTER)
 #============================================================================
 set -Eeuo pipefail
 
@@ -53,16 +53,20 @@ case "$VIRT" in lxc|lxc-libvirt|openvz) IS_CONTAINER=1 ;; esac
 MEM_MB=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
 CPU=$(nproc 2>/dev/null || echo 1)
 
-CONTAINER_MEM_LIMIT="50m"
-CONTAINER_SWAP_LIMIT="128m"
-if (( MEM_MB <= 1200 )); then
-  CONTAINER_MEM_LIMIT="35m"; CONTAINER_SWAP_LIMIT="90m"
-elif (( MEM_MB <= 2500 )); then
-  CONTAINER_MEM_LIMIT="50m"; CONTAINER_SWAP_LIMIT="128m"
+# --- PHÂN BỔ DYNAMIC TIER THEO ĐÚNG YÊU CẦU ---
+TIER_NAME=""
+if (( MEM_MB <= 2500 )); then
+  TIER_NAME="TIER 1 (1-2 CPU / 2GB RAM - LIGHTWEIGHT PROXIES)"
+  CONTAINER_MEM_LIMIT="35m"; CONTAINER_SWAP_LIMIT="90m"; TARGET_SWAP_MB=2048
 elif (( MEM_MB <= 5000 )); then
-  CONTAINER_MEM_LIMIT="70m"; CONTAINER_SWAP_LIMIT="160m"
+  TIER_NAME="TIER 2 (2 CPU / 4GB RAM - BALANCED PROXIES)"
+  CONTAINER_MEM_LIMIT="50m"; CONTAINER_SWAP_LIMIT="128m"; TARGET_SWAP_MB=3072
+elif (( MEM_MB <= 9000 )); then
+  TIER_NAME="TIER 3 (2 CPU / 8GB RAM - HIGH DENSITY PROXIES)"
+  CONTAINER_MEM_LIMIT="70m"; CONTAINER_SWAP_LIMIT="160m"; TARGET_SWAP_MB=4096
 else
-  CONTAINER_MEM_LIMIT="100m"; CONTAINER_SWAP_LIMIT="256m"
+  TIER_NAME="TIER 4 (2+ CPU / 12GB+ RAM - DEDICATED WIPTER / HEAVY APPS)"
+  CONTAINER_MEM_LIMIT="100m"; CONTAINER_SWAP_LIMIT="256m"; TARGET_SWAP_MB=4096
 fi
 
 clear_apt_locks() {
@@ -112,24 +116,29 @@ if [[ -f /sys/kernel/mm/ksm/run ]]; then
   log "Da kich hoat KSM toi uu cao thanh cong!"
 fi
 
-# TẠO ZRAM BẰNG 100% RAM VẬT LÝ + SWAPPINESS 100 LIVE
+# TẠO ZRAM BẰNG 100% RAM VẬT LÝ VỚI ZSTD (HOẶC LZ4 FALLBACK)
 ZRAM_SIZE_BYTES=$(( MEM_MB * 1024 * 1024 ))
-log "Kich hoat ZRAM (${MEM_MB}MB - Nem RAM sieu toc LZ4)..."
-if ! swapon --show 2>/dev/null | grep -q "/dev/zram0"; then
-  modprobe zram num_devices=1 2>/dev/null || true
-  if [[ -b /dev/zram0 ]]; then
-    swapoff /dev/zram0 2>/dev/null || true
+log "Kich hoat ZRAM (${MEM_MB}MB)..."
+modprobe zram num_devices=1 2>/dev/null || true
+if [[ -b /dev/zram0 ]]; then
+  swapon --show 2>/dev/null | grep -q "/dev/zram0" && swapoff /dev/zram0 2>/dev/null || true
+  
+  SELECTED_ALGO="lz4"
+  if grep -q "zstd" /sys/block/zram0/comp_algorithm 2>/dev/null; then
+    echo zstd > /sys/block/zram0/comp_algorithm 2>/dev/null || true
+    SELECTED_ALGO="zstd"
+  else
     echo lz4 > /sys/block/zram0/comp_algorithm 2>/dev/null || true
-    echo "$ZRAM_SIZE_BYTES" > /sys/block/zram0/disksize 2>/dev/null || true
-    mkswap /dev/zram0 >/dev/null 2>&1
-    swapon -p 10 /dev/zram0 2>/dev/null || true
-    log "Da kich hoat ZRAM ${MEM_MB}MB (Priority 10) thanh cong!"
   fi
+  
+  echo "$ZRAM_SIZE_BYTES" > /sys/block/zram0/disksize 2>/dev/null || true
+  mkswap /dev/zram0 >/dev/null 2>&1
+  swapon -p 10 /dev/zram0 2>/dev/null || true
+  log "Da kich hoat ZRAM ${MEM_MB}MB (${SELECTED_ALGO^^} Priority 10) thanh cong!"
 fi
 
 SWAPPINESS=100
 sysctl -w vm.swappiness=100 >/dev/null 2>&1 || true
-TARGET_SWAP_MB=2048
 
 DISK_FREE_MB=$(df -m / | awk 'NR==2 {print $4}')
 MAX_SAFE_SWAP=$(( DISK_FREE_MB - 2048 ))
@@ -147,8 +156,10 @@ else
 fi
 
 echo "=============================================================="
-echo "  VPS $(hostname) | RAM ${MEM_MB}MB | ${CPU} CPU | AUTO-PILOT MASTER 2026"
-echo "  Swap target=${TARGET_SWAP_MB}MB | Swappiness=${SWAPPINESS} (ZRAM Mode) | Limit default=${CONTAINER_MEM_LIMIT}/${CONTAINER_SWAP_LIMIT}"
+echo "  VPS $(hostname) | RAM ${MEM_MB}MB | ${CPU} CPU"
+echo "  DETECTED PROFILE : ${TIER_NAME}"
+echo "  Swap target=${TARGET_SWAP_MB}MB | Standard Limit=${CONTAINER_MEM_LIMIT}/${CONTAINER_SWAP_LIMIT}"
+echo "  Wipter Dedicated Limit=350m/600m | Mystnodes Limit=250m/500m"
 echo "=============================================================="
 
 CURR_SWAP_MB=$(free -m 2>/dev/null | awk '/^Swap:/{print $2}' || echo 0)
@@ -248,7 +259,6 @@ fi
 echo never > /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || true
 echo never > /sys/kernel/mm/transparent_hugepage/defrag 2>/dev/null || true
 
-# BẬT MỞ PROCFS IPV6 TRÊN HOST ĐỂ DOCKER 29 KHÔNG BAO GIỜ LỖI RUNC
 sysctl -w net.ipv6.conf.all.disable_ipv6=0 >/dev/null 2>&1 || true
 sysctl -w net.ipv6.conf.default.disable_ipv6=0 >/dev/null 2>&1 || true
 sysctl -w net.ipv6.conf.lo.disable_ipv6=0 >/dev/null 2>&1 || true
@@ -264,7 +274,7 @@ vm.min_free_kbytes = 65536
 vm.page-cluster = 0
 vm.overcommit_memory = 1
 vm.swappiness = ${SWAPPINESS}
-vm.vfs_cache_pressure = 100
+vm.vfs_cache_pressure = 300
 vm.dirty_background_ratio = 3
 vm.dirty_ratio = 8
 fs.file-max = 2097152
@@ -294,7 +304,7 @@ while IFS= read -r line; do
   [[ -z "${line//[[:space:]]/}" ]] && continue
   sysctl -w "$line" >/dev/null 2>&1 || true
 done < "$SYSCTL_FILE"
-log "Kernel Tuning Safe Mode xong"
+log "Kernel Tuning Safe Mode (Cache Pressure 300) xong"
 
 if [[ -f /etc/sysctl.d/99-vps-optimize.conf ]]; then
   rm -f /etc/sysctl.d/99-vps-optimize.conf
@@ -331,7 +341,6 @@ auto_patch_engageub_repo() {
     if [[ -f "$sh_file" ]]; then
       cp -n "$sh_file" "${sh_file}.bak" 2>/dev/null || true
       
-      # TỰ ĐỘNG XÓA TOÀN BỘ CÁC BIỂU THỨC CỜ SYSCTL IPV6 TRONG INTERNETINCOME.SH
       sed -i -E 's/--sysctl[ =]+net\.ipv6\.conf\.[a-zA-Z0-9_]+\.disable_ipv6=[0-9]//g' "$sh_file" 2>/dev/null || true
       sed -i 's/--sysctl net.ipv6.conf.[a-z0-9_]*.disable_ipv6=[0-9]//g' "$sh_file" 2>/dev/null || true
 
@@ -346,6 +355,7 @@ auto_patch_engageub_repo() {
       sed -i "s/--memory=\"[0-9]*[a-z]*\"/--memory=\"${CONTAINER_MEM_LIMIT}\"/g" "$sh_file" 2>/dev/null || true
       sed -i "s/--memory-swap=\"[0-9]*[a-z]*\"/--memory-swap=\"${CONTAINER_SWAP_LIMIT}\"/g" "$sh_file" 2>/dev/null || true
 
+      # DEDICATED OVERRIDES FOR WIPTER & MYSTNODES
       sed -i -E '/mysterium|myst/I s/--memory="[0-9]+[a-zA-Z]+"/--memory="250m"/g' "$sh_file" 2>/dev/null || true
       sed -i -E '/mysterium|myst/I s/--memory-swap="[0-9]+[a-zA-Z]+"/--memory-swap="500m"/g' "$sh_file" 2>/dev/null || true
 
@@ -356,9 +366,12 @@ auto_patch_engageub_repo() {
 }
 auto_patch_engageub_repo
 
+# CẬP NHẬT LIVE ĐO BẰNG DOCKER UPDATE (PHÂN BIỆT RÕ LÍM T W I P T E R VÀ MYST)
 if command -v docker >/dev/null 2>&1; then
-  CTRS=$(docker ps -aq 2>/dev/null || true)
+  CTRS=$(docker ps -q 2>/dev/null || true)
   if [[ -n "$CTRS" ]]; then
+    log "Cap nhat LIVE Memory Limit cho toan bo Container dang chay..."
+    docker update --memory="${CONTAINER_MEM_LIMIT}" --memory-swap="${CONTAINER_SWAP_LIMIT}" $CTRS >/dev/null 2>&1 || true
     docker update --restart=unless-stopped $CTRS >/dev/null 2>&1 || true
     
     for cid in $CTRS; do
@@ -370,7 +383,7 @@ if command -v docker >/dev/null 2>&1; then
         docker update --memory="350m" --memory-swap="600m" "$cid" >/dev/null 2>&1 || true
       fi
     done
-    log "Da kiem tra va cap nhat co --restart va RAM Limit cho tat ca container!"
+    log "Da kiem tra va cap nhat LIVE RAM Limit theo Tier thanh cong!"
   fi
 fi
 
@@ -393,13 +406,12 @@ EOF_DAEMON
 
 DOCKER_RESTARTED=0
 if [[ -f /etc/docker/daemon.json ]] && printf '%s\n' "$NEW_DAEMON" | cmp -s - /etc/docker/daemon.json; then
-  log "daemon.json khong thay doi -> KHONG DUNG DOCKER"
+  log "daemon.json khong thay doi -> KHONG KHIEN DOCKER RESTART (Thong suot 100%)"
 else
   if [[ -f /etc/docker/daemon.json ]]; then
     cp -f /etc/docker/daemon.json "/etc/docker/daemon.json.bak.$(date +%Y%m%d%H%M%S)"
   fi
   printf '%s\n' "$NEW_DAEMON" > /etc/docker/daemon.json
-  RUNNING_BEFORE=$(docker ps -q 2>/dev/null | wc -l)
   if has_systemd; then
     systemctl restart docker
   else
@@ -449,7 +461,17 @@ HAVE_CTR=0; command -v ctr >/dev/null 2>&1 && HAVE_CTR=1
 
 {
   echo "[$(ts)] ==================== ii-restart-all ===================="
-  MEM_LIMIT="50m"; SWAP_LIMIT="128m"
+  MEM_MB=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
+  if (( MEM_MB <= 2500 )); then
+    MEM_LIMIT="35m"; SWAP_LIMIT="90m"
+  elif (( MEM_MB <= 5000 )); then
+    MEM_LIMIT="50m"; SWAP_LIMIT="128m"
+  elif (( MEM_MB <= 9000 )); then
+    MEM_LIMIT="70m"; SWAP_LIMIT="160m"
+  else
+    MEM_LIMIT="100m"; SWAP_LIMIT="256m"
+  fi
+
   while IFS= read -r sh_f; do
     d_path=$(dirname "$sh_f")
     [[ -f "${d_path}/properties.conf" ]] && sed -i "s/MAX_MEMORY=.*/MAX_MEMORY=${MEM_LIMIT}/" "${d_path}/properties.conf" 2>/dev/null || true
@@ -567,6 +589,17 @@ echo "HOSTNAME     : $(hostname)"
 echo "UPTIME       : $(uptime -p 2>/dev/null || uptime)"
 echo "KERNEL/VIRT  : $(uname -r) ($(systemd-detect-virt 2>/dev/null || echo 'unknown'))"
 
+MEM_MB=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
+if (( MEM_MB <= 2500 )); then
+  echo -e "HARDWARE TIER: ${C_B}[TIER 1: 1-2 CPU / 2GB RAM - LIGHTWEIGHT PROXIES]${C_0}"
+elif (( MEM_MB <= 5000 )); then
+  echo -e "HARDWARE TIER: ${C_B}[TIER 2: 2 CPU / 4GB RAM - BALANCED PROXIES]${C_0}"
+elif (( MEM_MB <= 9000 )); then
+  echo -e "HARDWARE TIER: ${C_B}[TIER 3: 2 CPU / 8GB RAM - HIGH DENSITY PROXIES]${C_0}"
+else
+  echo -e "HARDWARE TIER: ${C_B}[TIER 4: 2+ CPU / 12GB+ RAM - DEDICATED WIPTER / HEAVY APPS]${C_0}"
+fi
+
 ISSUES_COUNT=0
 WARNINGS_COUNT=0
 
@@ -642,9 +675,9 @@ while IFS= read -r cid; do
   elif [[ "$c_img" =~ wipter ]] || [[ "$c_name" =~ wipter ]]; then
     wipter_found=1
     if (( c_mem_mb >= 300 )); then
-      echo -e "    - Wipter ($c_name): ${C_G}${c_mem_mb}MB RAM Limit (PASSED)${C_0}"
+      echo -e "    - Wipter ($c_name): ${C_G}${c_mem_mb}MB RAM Limit (PASSED - Dedicated 350M Limit)${C_0}"
     else
-      echo -e "    - Wipter ($c_name): ${C_R}${c_mem_mb}MB RAM Limit (FAIL - TOO LOW! Will OOM)${C_0}"
+      echo -e "    - Wipter ($c_name): ${C_R}${c_mem_mb}MB RAM Limit (FAIL - TOO LOW! Needs 350M+)${C_0}"
       ISSUES_COUNT=$((ISSUES_COUNT+1))
     fi
   fi
@@ -713,7 +746,8 @@ echo "  Swap : Total ${SWAP_TOTAL}MB | Used ${SWAP_USED}MB | Swappiness ${SWAP_V
 
 if swapon --show 2>/dev/null | grep -q "/dev/zram0"; then
   ZRAM_SIZE=$(swapon --show 2>/dev/null | grep "/dev/zram0" | awk '{print $3}')
-  echo -e "  ZRAM : ${C_G}ACTIVE (${ZRAM_SIZE} LZ4 Priority 10)${C_0}"
+  ZRAM_ALGO=$(cat /sys/block/zram0/comp_algorithm 2>/dev/null | grep -o '\[.*\]' | tr -d '[]' || echo "active")
+  echo -e "  ZRAM : ${C_G}ACTIVE (${ZRAM_SIZE} ${ZRAM_ALGO^^} Priority 10)${C_0}"
 else
   echo -e "  ZRAM : ${C_Y}NOT ACTIVE (Performance penalty)${C_0}"
   WARNINGS_COUNT=$((WARNINGS_COUNT+1))
@@ -816,7 +850,7 @@ EOF_DEEP
 chmod +x /usr/local/bin/ii-deep.sh
 ln -sf /usr/local/bin/ii-deep.sh /usr/bin/ii-deep 2>/dev/null || true
 
-echo "============================= SETUP XONG (100% AUTO-PILOT MASTER 2026 - FINAL PERFECT) =============================="
+echo "============================= SETUP XONG (DYNAMIC TIER MATRIX 2026) =============================="
 /usr/local/bin/ii-status.sh || true
 MASTER_EOF
 chmod +x ~/setup_vps.sh
