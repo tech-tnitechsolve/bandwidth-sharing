@@ -1,15 +1,7 @@
 cat << 'MASTER_EOF' > ~/setup_vps.sh
 #!/usr/bin/env bash
 #============================================================================
-#  setup_vps.sh (100% AUTO-PILOT SET & FORGET MASTER 2026 - FINAL EDITION)
-#
-#  CÀI 1 LẦN DUY NHẤT - TỰ ĐỘNG TỐI ƯU 100% CHO CẢ VPS THƯỜNG VÀ VPS NAT
-#   - UNIVERSAL NETWORK TEST: Test 'http://1.1.1.1' fallback 'google.com', 100% khong bao ao.
-#   - MULTI-DNS RESOLVER: Tich hop Cloudflare (1.1.1.1), Google (8.8.8.8) va VNPT.
-#   - DOCKER MIRRORS: Registry Mirror chong loi TLS handshake timeout.
-#   - DYNAMIC ZRAM & SWAPPINESS: ZRAM = 100% RAM thuc, Swappiness = 100 live.
-#   - DOCKER PRUNE STACK: Tu dong don mang rac & volume ngam hang tuan.
-#   - PRO DIAGNOSTICS: Tich hop ca 'sudo ii-status' va 'sudo ii-deep'.
+#  setup_vps.sh (100% AUTO-PILOT SET & FORGET MASTER 2026 - ULTIMATE EDITION)
 #============================================================================
 set -Eeuo pipefail
 
@@ -91,7 +83,7 @@ apt-get update -y -qq || { clear_apt_locks; apt-get update -y -qq; }
 apt-get install -y -qq --no-install-recommends \
   -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
   curl wget git unzip jq bc ca-certificates uuid-runtime cron logrotate net-tools \
-  systemd-timesyncd vnstat nload speedtest-cli dnsutils || true
+  iptables-persistent netfilter-persistent systemd-timesyncd vnstat nload speedtest-cli dnsutils || true
 
 if ! command -v docker >/dev/null 2>&1; then
   log "VPS MOI: Dang tu dong cai dat Docker official..."
@@ -112,7 +104,7 @@ EOF_DOCKER_SVC
   systemctl enable --now docker >/dev/null 2>&1 || true
 fi
 
-log "Kich hoat KSM (Kernel Samepage Merging) gop RAM ngam..."
+log "Kich hoat KSM gop RAM ngam..."
 if [[ -f /sys/kernel/mm/ksm/run ]]; then
   echo 1 > /sys/kernel/mm/ksm/run 2>/dev/null || true
   echo 300 > /sys/kernel/mm/ksm/sleep_millisecs 2>/dev/null || true
@@ -120,7 +112,6 @@ if [[ -f /sys/kernel/mm/ksm/run ]]; then
   log "Da kich hoat KSM toi uu cao thanh cong!"
 fi
 
-# TẠO ZRAM BẰNG 100% RAM VẬT LÝ + SWAPPINESS 100 LIVE
 ZRAM_SIZE_BYTES=$(( MEM_MB * 1024 * 1024 ))
 log "Kich hoat ZRAM (${MEM_MB}MB - Nem RAM sieu toc LZ4)..."
 if ! swapon --show 2>/dev/null | grep -q "/dev/zram0"; then
@@ -206,27 +197,11 @@ log "Dang diet cac dich vu OS ngom RAM ngam (snapd, multipathd, udisks2, earlyoo
 if has_systemd; then
   systemctl stop snapd multipathd udisks2 accountsservice earlyoom 2>/dev/null || true
   systemctl disable snapd multipathd udisks2 accountsservice earlyoom 2>/dev/null || true
+  systemctl enable --now systemd-timesyncd 2>/dev/null || true
 fi
 apt-get purge -y snapd earlyoom 2>/dev/null || true
 rm -rf /var/cache/snapd/ /var/lib/snapd/ 2>/dev/null || true
 
-if command -v docker >/dev/null 2>&1; then
-  log "Dang don dep cac container Watchtower trung lap ngom RAM..."
-  docker ps -a --format '{{.Names}}' 2>/dev/null | grep "internetincomewatchtower" | xargs -r docker rm -f >/dev/null 2>&1 || true
-fi
-
-MAIN_IF=$(ip route 2>/dev/null | grep default | awk '{print $5}' | head -n1 || echo "")
-if [[ -f /etc/vnstat.conf ]]; then
-  if [[ -n "$MAIN_IF" ]]; then
-    sed -i "s/Interface \".*\"/Interface \"$MAIN_IF\"/" /etc/vnstat.conf
-  fi
-  grep -q 'ExcludeInterface' /etc/vnstat.conf || echo 'ExcludeInterface "veth* docker0 tun* tap*"' >> /etc/vnstat.conf
-  if has_systemd; then systemctl restart vnstat 2>/dev/null || true; fi
-fi
-
-if has_systemd; then
-  systemctl enable --now systemd-timesyncd 2>/dev/null || true
-fi
 timedatectl set-ntp true 2>/dev/null || true
 timedatectl set-timezone Asia/Ho_Chi_Minh 2>/dev/null || true
 
@@ -240,15 +215,26 @@ if has_systemd && systemctl list-unit-files 2>/dev/null | grep -q '^systemd-reso
   systemctl disable --now systemd-resolved >/dev/null 2>&1 || true
 fi
 
-# MULTI-DNS DỮ TRỮ CHUẨN CẢ CHO VPS THƯỜNG VÀ VPS NAT
 rm -f /etc/resolv.conf
 printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\nnameserver 222.252.2.2\nnameserver 203.162.4.190\nnameserver 9.9.9.9\n' > /etc/resolv.conf
 
 modprobe nf_conntrack 2>/dev/null || true
 modprobe tcp_bbr 2>/dev/null || true
 
+# MỞ IPTABLES FORWARD CHO TẤT CẢ LOẠI VPS (CHỐNG MẤT PACKET PROXY)
+iptables -P INPUT ACCEPT 2>/dev/null || true
+iptables -P FORWARD ACCEPT 2>/dev/null || true
+iptables -F FORWARD 2>/dev/null || true
+if command -v netfilter-persistent >/dev/null 2>&1; then
+  netfilter-persistent save 2>/dev/null || true
+fi
+
 echo never > /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || true
 echo never > /sys/kernel/mm/transparent_hugepage/defrag 2>/dev/null || true
+
+# TỰ ĐỘNG BẬT PROCFS IPV6 ĐỂ DOCKER 29 KHÔNG BỊ LỖI OCI RUNTIME
+sysctl -w net.ipv6.conf.all.disable_ipv6=0 >/dev/null 2>&1 || true
+sysctl -w net.ipv6.conf.default.disable_ipv6=0 >/dev/null 2>&1 || true
 
 SYSCTL_FILE=/etc/sysctl.d/99-internetincome.conf
 cat > "$SYSCTL_FILE" <<EOF_SYSCTL
@@ -282,9 +268,6 @@ net.ipv4.tcp_slow_start_after_idle = 0
 net.netfilter.nf_conntrack_max = 524288
 net.netfilter.nf_conntrack_udp_timeout = 60
 net.netfilter.nf_conntrack_udp_timeout_stream = 180
-net.ipv6.conf.all.disable_ipv6 = 1
-net.ipv6.conf.default.disable_ipv6 = 1
-net.ipv6.conf.lo.disable_ipv6 = 1
 EOF_SYSCTL
 
 while IFS= read -r line; do
@@ -315,7 +298,7 @@ EOF_JOURNAL
 if has_systemd; then systemctl restart systemd-journald 2>/dev/null || true; fi
 
 auto_patch_engageub_repo() {
-  log "Dang quet va PATCH RAM DOCKER (Chung: ${CONTAINER_MEM_LIMIT} | Mystnodes: 250m | Wipter: 350m)..."
+  log "Dang quet va PATCH RAM DOCKER + FIX LỖI IPV6 (Chung: ${CONTAINER_MEM_LIMIT} | Mystnodes: 250m | Wipter: 350m)..."
   ROOTS=(/opt /root /home /srv /home/ubuntu /home/opc)
   if [[ -n "$BASE_DIR" ]]; then ROOTS+=("$BASE_DIR"); fi
 
@@ -329,6 +312,9 @@ auto_patch_engageub_repo() {
     if [[ -f "$sh_file" ]]; then
       cp -n "$sh_file" "${sh_file}.bak" 2>/dev/null || true
       
+      # TỰ ĐỘNG BỎ CỜ SYSCTL IPV6 GÂY LỖI RUNC TRÊN DOCKER 29
+      sed -i 's/--sysctl net.ipv6.conf.[a-z0-9_]*.disable_ipv6=[0-9]//g' "$sh_file" 2>/dev/null || true
+
       if ! grep -q "\--restart" "$sh_file"; then
         sed -i "s/docker run -d/docker run -d --restart=unless-stopped/g" "$sh_file" 2>/dev/null || true
       fi
@@ -368,14 +354,14 @@ if command -v docker >/dev/null 2>&1; then
   fi
 fi
 
-# DOCKER DAEMON CONFIG VỚI DOCKER REGISTRY MIRRORS DỰ PHÒNG CHỐNG TIMEOUT
+# CỤM MIRRORS DỰ PHÒNG DOCKER CHỐNG NGHẼN TẢI IMAGE
 mkdir -p /etc/docker
 NEW_DAEMON="$(cat <<EOF_DAEMON
 {
   "log-driver": "json-file",
   "log-opts": { "max-size": "2m", "max-file": "2" },
   "dns": ["8.8.8.8", "1.1.1.1", "9.9.9.9"],
-  "registry-mirrors": ["https://mirror.gcr.io"],
+  "registry-mirrors": ["https://mirror.gcr.io", "https://docker.m.daocloud.io"],
   "max-concurrent-downloads": ${CONCURRENT_DOWNLOADS},
   "live-restore": true,
   "userland-proxy": false,
@@ -394,7 +380,6 @@ else
     cp -f /etc/docker/daemon.json "/etc/docker/daemon.json.bak.$(date +%Y%m%d%H%M%S)"
   fi
   printf '%s\n' "$NEW_DAEMON" > /etc/docker/daemon.json
-  RUNNING_BEFORE=$(docker ps -q 2>/dev/null | wc -l)
   if has_systemd; then
     systemctl restart docker
   else
@@ -405,8 +390,12 @@ fi
 
 if has_systemd; then systemctl enable --now docker >/dev/null 2>&1 || true; fi
 
+# ĐẢM BẢO DOCKER DAEMON SẴN SÀNG TRƯỚC KHIN REVIVE
+while ! docker info >/dev/null 2>&1; do
+  sleep 1
+done
+
 if (( DOCKER_RESTARTED == 1 )); then
-  sleep 10
   log "Dang bat lai cac container engageub TU TU..."
   
   while IFS= read -r cid; do
@@ -446,6 +435,7 @@ HAVE_CTR=0; command -v ctr >/dev/null 2>&1 && HAVE_CTR=1
     d_path=$(dirname "$sh_f")
     [[ -f "${d_path}/properties.conf" ]] && sed -i "s/MAX_MEMORY=.*/MAX_MEMORY=${MEM_LIMIT}/" "${d_path}/properties.conf" 2>/dev/null || true
     if [[ -f "$sh_f" ]]; then
+      sed -i 's/--sysctl net.ipv6.conf.[a-z0-9_]*.disable_ipv6=[0-9]//g' "$sh_f" 2>/dev/null || true
       grep -q "\--restart" "$sh_f" || sed -i "s/docker run -d/docker run -d --restart=unless-stopped/g" "$sh_f" 2>/dev/null || true
       grep -q "\--memory" "$sh_f" || sed -i "s/docker run -d/docker run -d --memory=\"${MEM_LIMIT}\" --memory-swap=\"${SWAP_LIMIT}\"/g" "$sh_f" 2>/dev/null || true
 
@@ -540,9 +530,6 @@ if (( DO_CRON == 1 )); then
   install_cron_stack
 fi
 
-# ============================================================================
-# TAO FILE COMMAND 'sudo ii-status' CHECK CHAT LUONG VPS 24/7 ULTRA PRO
-# ============================================================================
 cat > /usr/local/bin/ii-status.sh <<'EOF_STATUS'
 #!/usr/bin/env bash
 set -u
@@ -649,7 +636,7 @@ IP_FWD=$(sysctl -n net.ipv4.ip_forward 2>/dev/null || echo 0)
 if [[ "$IP_FWD" == "1" ]]; then
   echo -e "  IP Forwarding (Routing)  : ${C_G}ENABLED (1)${C_0}"
 else
-  echo -e "  IP Forwarding (Routing)  : ${C_R}DISABLED (0) <-- CRITICAL: Mystnodes proxy will fail!${C_0}"
+  echo -e "  IP Forwarding (Routing)  : ${C_R}DISABLED (0) <-- CRITICAL!${C_0}"
   ISSUES_COUNT=$((ISSUES_COUNT+1))
 fi
 
@@ -671,7 +658,6 @@ else
   echo -e "  DNS Resolution (Google) : ${C_Y}CHECK_TIMEOUT (Fallback active)${C_0}"
 fi
 
-# CÂU LỆNH TEST CHUẨN UNIVERSAL THỔI BAY BÁO ẢO LỖI MẠNG TRÊN MỌI VPS NAT
 HTTP_CODE=$(curl -o /dev/null -s -w "%{http_code}\t%{time_total}" --connect-timeout 2 --max-time 3 http://1.1.1.1 2>/dev/null || curl -o /dev/null -s -w "%{http_code}\t%{time_total}" --connect-timeout 2 --max-time 3 -k https://google.com 2>/dev/null || echo "000 0")
 CODE=$(echo "$HTTP_CODE" | awk '{print $1}')
 TIME=$(echo "$HTTP_CODE" | awk '{print $2}')
@@ -778,7 +764,6 @@ chmod +x /usr/local/bin/ii-status.sh
 ln -sf /usr/local/bin/ii-status.sh /usr/bin/ii-status.sh 2>/dev/null || true
 ln -sf /usr/local/bin/ii-status.sh /usr/bin/ii-status 2>/dev/null || true
 
-# TẠO FILE TÌM HIỂU CHUYÊN SÂU 'sudo ii-deep' TRONG SCRIPT MASTER
 cat > /usr/local/bin/ii-deep.sh <<'EOF_DEEP'
 #!/usr/bin/env bash
 echo "==================== [PRO DEEP STABILITY DIAGNOSTIC] ===================="
@@ -810,7 +795,7 @@ EOF_DEEP
 chmod +x /usr/local/bin/ii-deep.sh
 ln -sf /usr/local/bin/ii-deep.sh /usr/bin/ii-deep 2>/dev/null || true
 
-echo "============================= SETUP XONG (100% AUTO-PILOT MASTER 2026 - FINAL EDITION) =============================="
-sudo ii-status.sh || true
+echo "============================= SETUP XONG (100% AUTO-PILOT MASTER 2026 - ULTIMATE) =============================="
+/usr/local/bin/ii-status.sh || true
 MASTER_EOF
 chmod +x ~/setup_vps.sh
