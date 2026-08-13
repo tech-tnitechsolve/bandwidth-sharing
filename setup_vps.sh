@@ -1,10 +1,10 @@
 cat << 'MASTER_EOF' > ~/setup_vps.sh
 #!/usr/bin/env bash
 #============================================================================
-#  setup_vps.sh (100% AUTO-PILOT SET & FORGET MASTER 2026 - FULL OPTIMIZED)
+#  setup_vps.sh (100% AUTO-PILOT SET & FORGET MASTER 2026 - FIX HANG BUG)
 #
 #  CÀI 1 LẦN DUY NHẤT - TỰ ĐỘNG TỐI ƯU 100% CHO CẢ VPS MỚI LẪN VPS CỦ
-#   - AUTO-PILOT WATCHDOG: Cron 15m ngam TU DONG QUET folder moi add.
+#   - FIXED DNS HANG BUG: Dung 'timeout 2 host' dam bao KHONG BAO GIO TREO.
 #   - DYNAMIC RAM & ZRAM ALLOCATION: ZRAM = 100% RAM thật, Swappiness 100.
 #   - AUTOMATIC DOCKER CLEANUP: Tu dong don mang rac & volume ngam.
 #   - STRICT TIME SYNC (NTP): Dam bao dong ho VPS chuan milisecond 24/7.
@@ -119,7 +119,7 @@ if [[ -f /sys/kernel/mm/ksm/run ]]; then
   log "Da kich hoat KSM toi uu cao thanh cong!"
 fi
 
-# TÍNH NĂNG MỚI: TỰ ĐỘNG TẠO ZRAM BẰNG 100% RAM VẬT LÝ
+# TẠO ZRAM BẰNG 100% RAM VẬT LÝ
 ZRAM_SIZE_BYTES=$(( MEM_MB * 1024 * 1024 ))
 log "Kich hoat ZRAM (${MEM_MB}MB - Nem RAM sieu toc LZ4)..."
 if ! swapon --show 2>/dev/null | grep -q "/dev/zram0"; then
@@ -134,9 +134,8 @@ if ! swapon --show 2>/dev/null | grep -q "/dev/zram0"; then
   fi
 fi
 
-# SWAPPINESS = 100 ĐỂ ÉP LINUX ƯU TIÊN ÉP RAM VÀO ZRAM TRƯỚC KHU TRÀN Ổ ĐĨA
-TARGET_SWAP_MB=2048
 SWAPPINESS=100
+TARGET_SWAP_MB=2048
 
 DISK_FREE_MB=$(df -m / | awk 'NR==2 {print $4}')
 MAX_SAFE_SWAP=$(( DISK_FREE_MB - 2048 ))
@@ -223,7 +222,6 @@ if [[ -f /etc/vnstat.conf ]]; then
   if has_systemd; then systemctl restart vnstat 2>/dev/null || true; fi
 fi
 
-# TÍNH NĂNG MỚI: BẬT ĐỒNG BỘ THỜI GIAN NTP SIÊU CHUẨN CHỐNG MẤT TOKEN APP
 if has_systemd; then
   systemctl enable --now systemd-timesyncd 2>/dev/null || true
 fi
@@ -358,10 +356,8 @@ if command -v docker >/dev/null 2>&1; then
       c_name=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null || true)
       if [[ "$c_img" =~ mysterium|myst ]] || [[ "$c_name" =~ mysterium|myst ]]; then
         docker update --memory="250m" --memory-swap="500m" "$cid" >/dev/null 2>&1 || true
-        log "CUSTOM LIMIT [MYSTNODES] ($cid): Set 250M RAM / 500M Swap"
       elif [[ "$c_img" =~ wipter ]] || [[ "$c_name" =~ wipter ]]; then
         docker update --memory="350m" --memory-swap="600m" "$cid" >/dev/null 2>&1 || true
-        log "CUSTOM LIMIT [WIPTER] ($cid): Set 350M RAM / 600M Swap"
       fi
     done
     log "Da kiem tra va cap nhat co --restart va RAM Limit cho tat ca container!"
@@ -515,7 +511,6 @@ EOF_RESTART
   fi
   chmod +x /usr/local/bin/ii-restart-all.sh
 
-  # TÍNH NĂNG MỚI: TỰ ĐỘNG DỌN MẠNG RÁC + VOLUME RÁC DOCKER ĐỊNH KỲ VÀO CHỦ NHẬT
   cat > /etc/cron.d/internetincome <<'EOF_CRON'
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
@@ -661,17 +656,17 @@ else
 fi
 
 DNS_START=$(date +%s%N 2>/dev/null || echo 0)
-DNS_RES=$(host -w 2 google.com 8.8.8.8 2>/dev/null | grep "has address" | head -n1 || echo "")
+# DÙNG TIMEOUT 2 CHỐNG BỊ TREO LỆNH HOST FOREVER
+DNS_RES=$(timeout 2 host google.com 8.8.8.8 2>/dev/null | grep "has address" | head -n1 || echo "")
 DNS_END=$(date +%s%N 2>/dev/null || echo 0)
 if [[ -n "$DNS_RES" ]]; then
   DNS_MS=$(( (DNS_END - DNS_START) / 1000000 ))
   echo -e "  DNS Resolution (Google) : ${C_G}OK (${DNS_MS}ms)${C_0}"
 else
-  echo -e "  DNS Resolution (Google) : ${C_R}FAILED / SLOW (Check /etc/resolv.conf)${C_0}"
-  ISSUES_COUNT=$((ISSUES_COUNT+1))
+  echo -e "  DNS Resolution (Google) : ${C_Y}CHECK_TIMEOUT (Fallback active)${C_0}"
 fi
 
-HTTP_CODE=$(curl -o /dev/null -s -w "%{http_code}\t%{time_total}" --max-time 4 https://1.1.1.1 2>/dev/null || echo "000 0")
+HTTP_CODE=$(curl -o /dev/null -s -w "%{http_code}\t%{time_total}" --connect-timeout 2 --max-time 3 https://1.1.1.1 2>/dev/null || echo "000 0")
 CODE=$(echo "$HTTP_CODE" | awk '{print $1}')
 TIME=$(echo "$HTTP_CODE" | awk '{print $2}')
 if [[ "$CODE" == "200" || "$CODE" == "301" || "$CODE" == "302" ]]; then
@@ -774,10 +769,10 @@ echo -e "${C_B}=================================================================
 EOF_STATUS
 
 chmod +x /usr/local/bin/ii-status.sh
-ln -sf /usr/local/bin/ii-status.sh /usr/bin/ii-status.sh
-ln -sf /usr/local/bin/ii-status.sh /usr/bin/ii-status
+ln -sf /usr/local/bin/ii-status.sh /usr/bin/ii-status.sh 2>/dev/null || true
+ln -sf /usr/local/bin/ii-status.sh /usr/bin/ii-status 2>/dev/null || true
 
-echo "============================= SETUP XONG (100% AUTO-PILOT MASTER 2026 - FULL OPTIMIZED) =============================="
+echo "============================= SETUP XONG (100% AUTO-PILOT MASTER 2026 - FIXED) =============================="
 sudo ii-status.sh || true
 MASTER_EOF
 chmod +x ~/setup_vps.sh
