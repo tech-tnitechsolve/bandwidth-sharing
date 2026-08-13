@@ -1,14 +1,15 @@
 cat << 'MASTER_EOF' > ~/setup_vps.sh
 #!/usr/bin/env bash
 #============================================================================
-#  setup_vps.sh (100% AUTO-PILOT SET & FORGET MASTER 2026 - FIX HANG BUG)
+#  setup_vps.sh (100% AUTO-PILOT SET & FORGET MASTER 2026 - OFFICIAL FIX-ALL)
 #
 #  CÀI 1 LẦN DUY NHẤT - TỰ ĐỘNG TỐI ƯU 100% CHO CẢ VPS MỚI LẪN VPS CỦ
-#   - FIXED DNS HANG BUG: Dung 'timeout 2 host' dam bao KHONG BAO GIO TREO.
-#   - DYNAMIC RAM & ZRAM ALLOCATION: ZRAM = 100% RAM thật, Swappiness 100.
-#   - AUTOMATIC DOCKER CLEANUP: Tu dong don mang rac & volume ngam.
+#   - FIXED NAT VPS TEST BUG: Test HTTP '-k https://google.com' khong bao gio bao ao.
+#   - DOCKER MIRRORS: Tich hop Mirror du phong chong loi TLS handshake timeout.
+#   - DYNAMIC RAM & ZRAM ALLOCATION: ZRAM = 100% RAM thuc, Swappiness 100.
+#   - DOCKER PRUNE STACK: Tu dong don mang rac & volume ngam hang tuan.
 #   - STRICT TIME SYNC (NTP): Dam bao dong ho VPS chuan milisecond 24/7.
-#   - 24/7 INCOME DIAGNOSTIC: Lenh 'sudo ii-status.sh' kiem tra toan dien VPS.
+#   - PRO DIAGNOSTICS: Tich hop ca 'sudo ii-status' va 'sudo ii-deep'.
 #============================================================================
 set -Eeuo pipefail
 
@@ -135,6 +136,7 @@ if ! swapon --show 2>/dev/null | grep -q "/dev/zram0"; then
 fi
 
 SWAPPINESS=100
+sysctl -w vm.swappiness=100 >/dev/null 2>&1 || true
 TARGET_SWAP_MB=2048
 
 DISK_FREE_MB=$(df -m / | awk 'NR==2 {print $4}')
@@ -312,7 +314,7 @@ if has_systemd; then systemctl restart systemd-journald 2>/dev/null || true; fi
 
 auto_patch_engageub_repo() {
   log "Dang quet va PATCH RAM DOCKER (Chung: ${CONTAINER_MEM_LIMIT} | Mystnodes: 250m | Wipter: 350m)..."
-  ROOTS=(/opt /root /home /srv)
+  ROOTS=(/opt /root /home /srv /home/ubuntu /home/opc)
   if [[ -n "$BASE_DIR" ]]; then ROOTS+=("$BASE_DIR"); fi
 
   while IFS= read -r sh_file; do
@@ -364,12 +366,14 @@ if command -v docker >/dev/null 2>&1; then
   fi
 fi
 
+# DOCKER DAEMON CONFIG VỚI DOCKER REGISTRY MIRRORS DỰ PHÒNG CHỐNG TIMEOUT
 mkdir -p /etc/docker
 NEW_DAEMON="$(cat <<EOF_DAEMON
 {
   "log-driver": "json-file",
   "log-opts": { "max-size": "2m", "max-file": "2" },
   "dns": ["8.8.8.8", "1.1.1.1", "9.9.9.9"],
+  "registry-mirrors": ["https://mirror.gcr.io"],
   "max-concurrent-downloads": ${CONCURRENT_DOWNLOADS},
   "live-restore": true,
   "userland-proxy": false,
@@ -407,7 +411,7 @@ if (( DOCKER_RESTARTED == 1 )); then
     [[ -n "$cid" ]] || continue
     docker start "$cid" >/dev/null 2>&1 || true
     sleep 1.5
-  done < <(find /opt /root /home /srv -maxdepth 4 -name containernames.txt -type f -exec cat {} + 2>/dev/null | sort -u)
+  done < <(find /opt /root /home /srv /home/ubuntu /home/opc -maxdepth 4 -name containernames.txt -type f -exec cat {} + 2>/dev/null | sort -u)
 
   if command -v ctr >/dev/null 2>&1; then
     for cid in $(docker ps -aq --no-trunc -f status=exited 2>/dev/null); do
@@ -429,7 +433,7 @@ install_cron_stack() {
   cat > /usr/local/bin/ii-restart-all.sh <<'EOF_RESTART'
 #!/usr/bin/env bash
 LOG=/var/log/ii-restart.log
-ROOTS=(/opt /root /home /srv __EXTRA__)
+ROOTS=(/opt /root /home /srv /home/ubuntu /home/opc __EXTRA__)
 ts() { date '+%F %T'; }
 HAVE_CTR=0; command -v ctr >/dev/null 2>&1 && HAVE_CTR=1
 
@@ -559,7 +563,7 @@ WARNINGS_COUNT=0
 # --- 1. DOCKER CONTAINERS & RAM AUDIT ---
 echo -e "\n${C_C}--- [1. NODE CONTAINERS & RAM LIMIT AUDIT] ---${C_0}"
 ROOTS=("$@")
-if (( ${#ROOTS[@]} == 0 )); then ROOTS=(/opt /root /home /srv); fi
+if (( ${#ROOTS[@]} == 0 )); then ROOTS=(/opt /root /home /srv /home/ubuntu /home/opc); fi
 
 found=0
 while IFS= read -r cn; do
@@ -656,7 +660,6 @@ else
 fi
 
 DNS_START=$(date +%s%N 2>/dev/null || echo 0)
-# DÙNG TIMEOUT 2 CHỐNG BỊ TREO LỆNH HOST FOREVER
 DNS_RES=$(timeout 2 host google.com 8.8.8.8 2>/dev/null | grep "has address" | head -n1 || echo "")
 DNS_END=$(date +%s%N 2>/dev/null || echo 0)
 if [[ -n "$DNS_RES" ]]; then
@@ -666,7 +669,8 @@ else
   echo -e "  DNS Resolution (Google) : ${C_Y}CHECK_TIMEOUT (Fallback active)${C_0}"
 fi
 
-HTTP_CODE=$(curl -o /dev/null -s -w "%{http_code}\t%{time_total}" --connect-timeout 2 --max-time 3 https://1.1.1.1 2>/dev/null || echo "000 0")
+# TEST DÙNG GOOGLE -K CHỐNG BỊ BÁO BỎNG MẠNG NAT
+HTTP_CODE=$(curl -o /dev/null -s -w "%{http_code}\t%{time_total}" --connect-timeout 2 --max-time 3 -k https://google.com 2>/dev/null || echo "000 0")
 CODE=$(echo "$HTTP_CODE" | awk '{print $1}')
 TIME=$(echo "$HTTP_CODE" | awk '{print $2}')
 if [[ "$CODE" == "200" || "$CODE" == "301" || "$CODE" == "302" ]]; then
@@ -772,7 +776,39 @@ chmod +x /usr/local/bin/ii-status.sh
 ln -sf /usr/local/bin/ii-status.sh /usr/bin/ii-status.sh 2>/dev/null || true
 ln -sf /usr/local/bin/ii-status.sh /usr/bin/ii-status 2>/dev/null || true
 
-echo "============================= SETUP XONG (100% AUTO-PILOT MASTER 2026 - FIXED) =============================="
+# TẠO FILE TÌM HIỂU CHUYÊN SÂU 'sudo ii-deep' TRONG SCRIPT MASTER
+cat > /usr/local/bin/ii-deep.sh <<'EOF_DEEP'
+#!/usr/bin/env bash
+echo "==================== [PRO DEEP STABILITY DIAGNOSTIC] ===================="
+echo "TIMESTAMP : $(date '+%Y-%m-%d %H:%M:%S')"
+echo "HOSTNAME  : $(hostname)"
+echo "UPTIME    : $(uptime -p 2>/dev/null || uptime)"
+echo ""
+echo "--- [1. MEMORY PRESSURE STALLS (PSI)] ---"
+cat /proc/pressure/memory 2>/dev/null || echo "PSI not supported"
+echo ""
+echo "--- [2. KERNEL DMESG RECENT ERROR LOGS] ---"
+ERRS=$(dmesg 2>/dev/null | grep -iE "error|fail|oom|read-only" | tail -n 8 || true)
+if [[ -n "$ERRS" ]]; then echo "$ERRS"; else echo "Clean (No recent kernel errors)"; fi
+echo ""
+echo "--- [3. BANDWIDTH TRAFFIC STATS (vnstat)] ---"
+vnstat -d 3 2>/dev/null || vnstat 2>/dev/null || echo "vnstat initializing..."
+echo ""
+echo "--- [4. TOP RESTARTING CONTAINERS] ---"
+docker ps -a --format "table {{.Names}}\t{{.Status}}" 2>/dev/null | head -n 6
+echo ""
+echo "--- [5. SAMPLE CONTAINER LOGS (3 Nodes)] ---"
+for c in $(docker ps -q 2>/dev/null | shuf -n 3 2>/dev/null || docker ps -q 2>/dev/null | head -n 3); do
+  c_name=$(docker inspect -f '{{.Name}}' "$c" 2>/dev/null || echo "$c")
+  echo ">>> Log [$c_name]:"
+  docker logs --tail 3 "$c" 2>&1 | sed 's/^/    /'
+done
+echo "=========================================================================="
+EOF_DEEP
+chmod +x /usr/local/bin/ii-deep.sh
+ln -sf /usr/local/bin/ii-deep.sh /usr/bin/ii-deep 2>/dev/null || true
+
+echo "============================= SETUP XONG (100% AUTO-PILOT MASTER 2026 - OFFICIAL) =============================="
 sudo ii-status.sh || true
 MASTER_EOF
 chmod +x ~/setup_vps.sh
