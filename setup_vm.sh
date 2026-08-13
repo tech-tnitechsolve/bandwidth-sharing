@@ -1,7 +1,7 @@
 cat << 'VM_MASTER_EOF' > setup_vm.sh
 #!/usr/bin/env bash
 #============================================================================
-#  setup_vm.sh - SETUP MÁY ẢO CÁ NHÂN (12-15h/ngày - 2026 VM MASTER FIX)
+#  setup_vm.sh - SETUP MÁY ẢO CÁ NHÂN (12-15h/ngày - 2026 VM ULTIMATE)
 #============================================================================
 set -Eeuo pipefail
 
@@ -73,7 +73,7 @@ echo "=============================================================="
 echo "  VM $(hostname) | RAM ${MEM_MB}MB | ${CPU} CPU | Ao hoa: ${VIRT}"
 echo "=============================================================="
 
-log "Kich hoat KSM (Gop RAM trung lap)..."
+log "Kich hoat KSM gop RAM ngam..."
 if [[ -f /sys/kernel/mm/ksm/run ]]; then
   echo 1 > /sys/kernel/mm/ksm/run 2>/dev/null || true
   echo 300 > /sys/kernel/mm/ksm/sleep_millisecs 2>/dev/null || true
@@ -94,6 +94,7 @@ if ! swapon --show 2>/dev/null | grep -q "/dev/zram0"; then
 fi
 
 SWAPPINESS=100
+sysctl -w vm.swappiness=100 >/dev/null 2>&1 || true
 
 if swapon --show=NAME --noheadings 2>/dev/null | grep -q "/swapfile"; then
   log "Da co swap đia /swapfile -> bo qua"
@@ -127,7 +128,8 @@ log "apt update & install goi phu thuoc cho VM..."
 apt-get update -y -qq
 apt-get install -y -qq --no-install-recommends \
   -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
-  curl wget git unzip jq bc ca-certificates uuid-runtime cron logrotate net-tools systemd-timesyncd vnstat nload speedtest-cli dnsutils || true
+  curl wget git unzip jq bc ca-certificates uuid-runtime cron logrotate net-tools \
+  iptables-persistent netfilter-persistent systemd-timesyncd vnstat nload speedtest-cli dnsutils || true
 
 if has_systemd; then
   systemctl stop snapd earlyoom 2>/dev/null || true
@@ -143,10 +145,14 @@ if has_systemd && systemctl list-unit-files 2>/dev/null | grep -q '^systemd-reso
   systemctl disable --now systemd-resolved >/dev/null 2>&1 || true
 fi
 rm -f /etc/resolv.conf
-printf 'nameserver 8.8.8.8\nnameserver 1.1.1.1\n' > /etc/resolv.conf
+printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' > /etc/resolv.conf
 
 modprobe nf_conntrack 2>/dev/null || true
 modprobe tcp_bbr 2>/dev/null || true
+
+iptables -P INPUT ACCEPT 2>/dev/null || true
+iptables -P FORWARD ACCEPT 2>/dev/null || true
+iptables -F FORWARD 2>/dev/null || true
 
 SYSCTL_FILE=/etc/sysctl.d/99-internetincome.conf
 cat > "$SYSCTL_FILE" <<EOF_SYSCTL
@@ -180,9 +186,6 @@ net.ipv4.tcp_slow_start_after_idle = 0
 net.netfilter.nf_conntrack_max = 524288
 net.netfilter.nf_conntrack_udp_timeout = 60
 net.netfilter.nf_conntrack_udp_timeout_stream = 180
-net.ipv6.conf.all.disable_ipv6 = 1
-net.ipv6.conf.default.disable_ipv6 = 1
-net.ipv6.conf.lo.disable_ipv6 = 1
 EOF_SYSCTL
 
 while IFS= read -r line; do
@@ -236,6 +239,8 @@ auto_patch_engageub_repo() {
     if [[ -f "$sh_file" ]]; then
       cp -n "$sh_file" "${sh_file}.bak" 2>/dev/null || true
       
+      sed -i 's/--sysctl net.ipv6.conf.[a-z0-9_]*.disable_ipv6=[0-9]//g' "$sh_file" 2>/dev/null || true
+
       if ! grep -q "\--restart" "$sh_file"; then
         sed -i "s/docker run -d/docker run -d --restart=unless-stopped/g" "$sh_file" 2>/dev/null || true
       fi
@@ -279,6 +284,7 @@ NEW_DAEMON="$(cat <<EOF_DAEMON
   "log-driver": "json-file",
   "log-opts": { "max-size": "10m", "max-file": "3" },
   "dns": ["8.8.8.8", "1.1.1.1"],
+  "registry-mirrors": ["https://mirror.gcr.io"],
   "max-concurrent-downloads": ${CONCURRENT_DOWNLOADS},
   "live-restore": true,
   "userland-proxy": false,
@@ -306,6 +312,10 @@ else
 fi
 
 if has_systemd; then systemctl enable --now docker >/dev/null 2>&1 || true; fi
+
+while ! docker info >/dev/null 2>&1; do
+  sleep 1
+done
 
 if (( DOCKER_RESTARTED == 1 )); then
   sleep 10
@@ -412,8 +422,7 @@ else
   WARNINGS_COUNT=$((WARNINGS_COUNT+1))
 fi
 
-# FIX TIMEOUT CHO VM NẾU MẠNG WINDOWS LẠI BỊ RỚT
-DNS_RES=$(timeout 2 host google.com 8.8.8.8 2>/dev/null | grep "has address" | head -n1 || echo "")
+DNS_RES=$(timeout 2 host google.com 1.1.1.1 2>/dev/null || timeout 2 host google.com 8.8.8.8 2>/dev/null || echo "")
 if [[ -n "$DNS_RES" ]]; then
   echo -e "  DNS Resolution (Google) : ${C_G}OK${C_0}"
 else
@@ -449,6 +458,37 @@ EOF_STATUS
 chmod +x /usr/local/bin/ii-status.sh
 ln -sf /usr/local/bin/ii-status.sh /usr/bin/ii-status.sh 2>/dev/null || true
 ln -sf /usr/local/bin/ii-status.sh /usr/bin/ii-status 2>/dev/null || true
+
+cat > /usr/local/bin/ii-deep.sh <<'EOF_DEEP'
+#!/usr/bin/env bash
+echo "==================== [PRO DEEP STABILITY DIAGNOSTIC] ===================="
+echo "TIMESTAMP : $(date '+%Y-%m-%d %H:%M:%S')"
+echo "HOSTNAME  : $(hostname)"
+echo "UPTIME    : $(uptime -p 2>/dev/null || uptime)"
+echo ""
+echo "--- [1. MEMORY PRESSURE STALLS (PSI)] ---"
+cat /proc/pressure/memory 2>/dev/null || echo "PSI not supported"
+echo ""
+echo "--- [2. KERNEL DMESG RECENT ERROR LOGS] ---"
+ERRS=$(dmesg 2>/dev/null | grep -iE "error|fail|oom|read-only" | tail -n 8 || true)
+if [[ -n "$ERRS" ]]; then echo "$ERRS"; else echo "Clean (No recent kernel errors)"; fi
+echo ""
+echo "--- [3. BANDWIDTH TRAFFIC STATS (vnstat)] ---"
+vnstat -d 3 2>/dev/null || vnstat 2>/dev/null || echo "vnstat initializing..."
+echo ""
+echo "--- [4. TOP RESTARTING CONTAINERS] ---"
+docker ps -a --format "table {{.Names}}\t{{.Status}}" 2>/dev/null | head -n 6
+echo ""
+echo "--- [5. SAMPLE CONTAINER LOGS (3 Nodes)] ---"
+for c in $(docker ps -q 2>/dev/null | shuf -n 3 2>/dev/null || docker ps -q 2>/dev/null | head -n 3); do
+  c_name=$(docker inspect -f '{{.Name}}' "$c" 2>/dev/null || echo "$c")
+  echo ">>> Log [$c_name]:"
+  docker logs --tail 3 "$c" 2>&1 | sed 's/^/    /'
+done
+echo "=========================================================================="
+EOF_DEEP
+chmod +x /usr/local/bin/ii-deep.sh
+ln -sf /usr/local/bin/ii-deep.sh /usr/bin/ii-deep 2>/dev/null || true
 
 cat > /etc/logrotate.d/ii-logs <<'EOF_LOGROTATE'
 /var/log/ii-*.log {
@@ -491,7 +531,7 @@ if [[ -n "$AUTO_OFF" ]]; then
 fi
 
 echo
-echo "============================= SETUP XONG (VM MASTER FIX) =============================="
+echo "============================= SETUP XONG (VM ULTIMATE 2026) =============================="
 /usr/local/bin/ii-status.sh || true
 VM_MASTER_EOF
 chmod +x setup_vm.sh
