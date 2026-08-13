@@ -1,13 +1,7 @@
 cat << 'VM_MASTER_EOF' > setup_vm.sh
 #!/usr/bin/env bash
 #============================================================================
-#  setup_vm.sh - SETUP MÁY ẢO CÁ NHÂN (12-15h/ngày - 2026 VM MASTER)
-#
-#  ĐẶC ĐIỂM DÀNH RIÊNG CHO MÁY ẢO PC WINDOWS:
-#   - Tự động nén ZRAM & KSM: Giúp VM chiếm ít RAM thật của Windows hơn.
-#   - Tự động BẬT LẠI toàn bộ container khi MỞ VM (@reboot autostart).
-#   - Tự động Đồng bộ thời gian NTP khi khôi phục VM từ Windows Sleep.
-#   - Giữ nguyên tùy chọn tự tắt máy theo giờ: --auto-off 23:30
+#  setup_vm.sh - SETUP MÁY ẢO CÁ NHÂN (12-15h/ngày - 2026 VM MASTER FIX)
 #============================================================================
 set -Eeuo pipefail
 
@@ -20,7 +14,6 @@ log()  { echo -e "${C_G}[OK]${C_0} $*"; }
 warn() { echo -e "${C_Y}[!!]${C_0} $*"; }
 die()  { echo -e "${C_R}[XX]${C_0} $*"; exit 1; }
 
-#--------------------------------- THAM SỐ -----------------------------------
 AUTO_OFF=""
 DO_PULL=1
 BASE_DIR=""
@@ -48,12 +41,10 @@ fi
 
 has_systemd() { command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; }
 
-#------------------------------- THÔNG TIN MÁY ẢO --------------------------
 VIRT="$(systemd-detect-virt 2>/dev/null || echo none)"
 MEM_MB=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
 CPU=$(nproc 2>/dev/null || echo 1)
 
-# GIỚI HẠN DOCKER THEO DUNG LƯỢNG RAM MÁY ẢO
 CONTAINER_MEM_LIMIT="50m"
 CONTAINER_SWAP_LIMIT="128m"
 if (( MEM_MB <= 1200 )); then
@@ -80,20 +71,17 @@ fi
 
 echo "=============================================================="
 echo "  VM $(hostname) | RAM ${MEM_MB}MB | ${CPU} CPU | Ao hoa: ${VIRT}"
-echo "  Swap target=${TARGET_SWAP_MB}MB | Limit default=${CONTAINER_MEM_LIMIT}/${CONTAINER_SWAP_LIMIT}"
 echo "=============================================================="
 
-#--------------------------- 1. TỐI ƯU ZRAM & KSM CHO VM ------------------------
-log "Kich hoat KSM (Gop RAM trung lap giup tiet khem RAM Host Windows)..."
+log "Kich hoat KSM (Gop RAM trung lap)..."
 if [[ -f /sys/kernel/mm/ksm/run ]]; then
   echo 1 > /sys/kernel/mm/ksm/run 2>/dev/null || true
   echo 300 > /sys/kernel/mm/ksm/sleep_millisecs 2>/dev/null || true
   echo 1250 > /sys/kernel/mm/ksm/pages_to_scan 2>/dev/null || true
-  log "Da kich hoat KSM thanh cong!"
 fi
 
 ZRAM_SIZE_BYTES=$(( MEM_MB * 1024 * 1024 ))
-log "Kich hoat ZRAM ${MEM_MB}MB cho VM (Nem RAM sieu toc LZ4)..."
+log "Kich hoat ZRAM ${MEM_MB}MB cho VM..."
 if ! swapon --show 2>/dev/null | grep -q "/dev/zram0"; then
   modprobe zram num_devices=1 2>/dev/null || true
   if [[ -b /dev/zram0 ]]; then
@@ -102,17 +90,15 @@ if ! swapon --show 2>/dev/null | grep -q "/dev/zram0"; then
     echo "$ZRAM_SIZE_BYTES" > /sys/block/zram0/disksize 2>/dev/null || true
     mkswap /dev/zram0 >/dev/null 2>&1
     swapon -p 10 /dev/zram0 2>/dev/null || true
-    log "Da kich hoat ZRAM ${MEM_MB}MB (Priority 10) thanh cong!"
   fi
 fi
 
 SWAPPINESS=100
 
-#----------------------------------- 2. SWAPFILE ---------------------------------
 if swapon --show=NAME --noheadings 2>/dev/null | grep -q "/swapfile"; then
   log "Da co swap đia /swapfile -> bo qua"
 elif [[ "$VIRT" =~ ^(lxc|lxc-libvirt|openvz)$ ]]; then
-  warn "May ${VIRT} (container) khong tao duoc swap -> bo qua"
+  warn "May ${VIRT} khong tao duoc swap"
 else
   log "Tao swap đia ${TARGET_SWAP_MB}MB..."
   if ! fallocate -l "${TARGET_SWAP_MB}M" /swapfile 2>/dev/null; then
@@ -121,14 +107,11 @@ else
   chmod 600 /swapfile
   if mkswap /swapfile >/dev/null 2>&1 && swapon -p 0 /swapfile 2>/dev/null; then
     grep -q '^/swapfile' /etc/fstab || echo '/swapfile none swap sw,pri=0 0 0' >> /etc/fstab
-    log "Tao swap ${TARGET_SWAP_MB}MB thanh cong"
   else
     rm -f /swapfile
-    warn "Kernel khong cho tao swap -> bo qua"
   fi
 fi
 
-#--------------------------- 3. APT & ĐỒNG BỘ THỜI GIAN ------------------------
 export DEBIAN_FRONTEND=noninteractive
 if [[ -f /etc/needrestart/needrestart.conf ]]; then
   sed -i "s/^#\?\$nrconf{restart} = .*/\$nrconf{restart} = 'a';/" /etc/needrestart/needrestart.conf 2>/dev/null || true
@@ -146,7 +129,6 @@ apt-get install -y -qq --no-install-recommends \
   -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
   curl wget git unzip jq bc ca-certificates uuid-runtime cron logrotate net-tools systemd-timesyncd vnstat nload speedtest-cli dnsutils || true
 
-# TỰ ĐỘNG BỎ EARLYOOM ĐỂ TRANH KILL NHẦM CONTAINER DANG KIẾM TIỀN
 if has_systemd; then
   systemctl stop snapd earlyoom 2>/dev/null || true
   systemctl disable snapd earlyoom 2>/dev/null || true
@@ -157,15 +139,12 @@ apt-get purge -y snapd earlyoom 2>/dev/null || true
 timedatectl set-ntp true 2>/dev/null || true
 timedatectl set-timezone Asia/Ho_Chi_Minh 2>/dev/null || true
 
-#--------------------------------- 4. DNS SACH -------------------------------
 if has_systemd && systemctl list-unit-files 2>/dev/null | grep -q '^systemd-resolved'; then
   systemctl disable --now systemd-resolved >/dev/null 2>&1 || true
 fi
 rm -f /etc/resolv.conf
 printf 'nameserver 8.8.8.8\nnameserver 1.1.1.1\n' > /etc/resolv.conf
-log "resolv.conf -> 8.8.8.8 + 1.1.1.1"
 
-#------------------------------- 5. KERNEL TUNING ----------------------------
 modprobe nf_conntrack 2>/dev/null || true
 modprobe tcp_bbr 2>/dev/null || true
 
@@ -211,7 +190,6 @@ while IFS= read -r line; do
   [[ -z "${line//[[:space:]]/}" ]] && continue
   sysctl -w "$line" >/dev/null 2>&1 || true
 done < "$SYSCTL_FILE"
-log "Kernel tuning xong ($SYSCTL_FILE)"
 
 if [[ -f /etc/sysctl.d/99-vps-optimize.conf ]]; then
   rm -f /etc/sysctl.d/99-vps-optimize.conf
@@ -233,7 +211,6 @@ RuntimeMaxUse=10M
 EOF_JOURNAL
 if has_systemd; then systemctl restart systemd-journald 2>/dev/null || true; fi
 
-#---------------------------------- 6. DOCKER --------------------------------
 if ! command -v docker >/dev/null 2>&1; then
   log "Cai dat Docker..."
   curl -fsSL https://get.docker.com | sh
@@ -241,14 +218,11 @@ else
   log "Docker da co san: $(docker --version 2>/dev/null || echo '?')"
 fi
 
-# THÊM USER VÀO GROUP DOCKER ĐỂ DÙNG DOCKER KHÔNG CẦN SUDO
 if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
   usermod -aG docker "${SUDO_USER}" 2>/dev/null || true
-  log "Da them '${SUDO_USER}' vao group docker"
 fi
 
 auto_patch_engageub_repo() {
-  log "Dang quet va PATCH RAM DOCKER VM (Chung: ${CONTAINER_MEM_LIMIT} | Mystnodes: 250m | Wipter: 350m)..."
   ROOTS=(/opt /root /home /srv)
   if [[ -n "$BASE_DIR" ]]; then ROOTS+=("$BASE_DIR"); fi
 
@@ -317,7 +291,7 @@ EOF_DAEMON
 
 DOCKER_RESTARTED=0
 if [[ -f /etc/docker/daemon.json ]] && printf '%s\n' "$NEW_DAEMON" | cmp -s - /etc/docker/daemon.json; then
-  log "daemon.json khong thay doi -> bo qua restart docker"
+  log "daemon.json khong thay doi -> bo qua"
 else
   if [[ -f /etc/docker/daemon.json ]]; then
     cp -f /etc/docker/daemon.json "/etc/docker/daemon.json.bak.$(date +%Y%m%d%H%M%S)"
@@ -346,17 +320,13 @@ if (( DOCKER_RESTARTED == 1 )); then
   docker ps -aq -f status=exited 2>/dev/null | xargs -r -n1 docker start >/dev/null 2>&1 || true
 fi
 
-#------------------------------- 7. PRE-PULL IMAGE ---------------------------
 if (( DO_PULL == 1 )); then
   log "Pre-pulling core docker images cho VM..."
   for img in "traffmonetizer/cli_v2:latest" "xjasonlyu/tun2socks:latest"; do
     docker pull "$img" >/dev/null 2>&1 || true
   done
-else
-  log "Bo qua pre-pull (--no-pull)"
 fi
 
-#--------------------- 8. AUTOSTART CONTAINER KHI MỞ VM ----------------------
 cat > /usr/local/bin/ii-autostart.sh <<'EOS_AUTOSTART'
 #!/usr/bin/env bash
 LOG=/var/log/ii-autostart.log
@@ -377,7 +347,6 @@ ids=$(docker ps -aq 2>/dev/null || true)
 EOS_AUTOSTART
 chmod +x /usr/local/bin/ii-autostart.sh
 
-# FILE DIAGNOSTIC ii-status.sh TỐI ƯU CHO VM
 cat > /usr/local/bin/ii-status.sh <<'EOF_STATUS'
 #!/usr/bin/env bash
 set -u
@@ -441,6 +410,14 @@ if [[ "$NTP_STAT" == "active" || "$NTP_STAT" == "yes" ]]; then
 else
   echo -e "  NTP Time Sync Status    : ${C_Y}INACTIVE (${NTP_STAT})${C_0}"
   WARNINGS_COUNT=$((WARNINGS_COUNT+1))
+fi
+
+# FIX TIMEOUT CHO VM NẾU MẠNG WINDOWS LẠI BỊ RỚT
+DNS_RES=$(timeout 2 host google.com 8.8.8.8 2>/dev/null | grep "has address" | head -n1 || echo "")
+if [[ -n "$DNS_RES" ]]; then
+  echo -e "  DNS Resolution (Google) : ${C_G}OK${C_0}"
+else
+  echo -e "  DNS Resolution (Google) : ${C_Y}CHECK_TIMEOUT${C_0}"
 fi
 
 echo -e "\n${C_C}--- [3. SYSTEM RAM, SWAP & ZRAM ALLOCATION] ---${C_0}"
@@ -508,24 +485,13 @@ else
   service cron start >/dev/null 2>&1 || true
 fi
 
-log "Autostart: container tu chay lai moi khi MO VM (@reboot, log /var/log/ii-autostart.log)"
+log "Autostart: container tu chay lai moi khi MO VM (@reboot)"
 if [[ -n "$AUTO_OFF" ]]; then
   log "Auto-off: may se tu poweroff luc ${AUTO_OFF} hang ngay"
 fi
 
-#--------------------------------- TỔNG KẾT ----------------------------------
-SW_DESC=$(swapon --show=SIZE --noheadings 2>/dev/null | paste -sd' ' -)
-if [[ -z "$SW_DESC" ]]; then SW_DESC="khong co"; fi
-
 echo
-echo "============================= SETUP XONG (VM MASTER 2026) =============================="
-echo "  Docker : $(docker --version 2>/dev/null || echo 'loi')"
-echo "  Swap   : ${SW_DESC}"
-echo "  Cron   : @reboot autostart + prune CN$( [[ -n "$AUTO_OFF" ]] && echo " + poweroff ${AUTO_OFF}" )"
-echo "  Tool   : sudo ii-status.sh (xem nhanh folder/container/RAM/Disk)"
-echo
+echo "============================= SETUP XONG (VM MASTER FIX) =============================="
 /usr/local/bin/ii-status.sh || true
-echo
-echo "=========================================================================="
 VM_MASTER_EOF
 chmod +x setup_vm.sh
