@@ -1,7 +1,7 @@
 cat << 'ORACLE_MASTER_EOF' > /root/setup_oracle_cloud.sh
 #!/usr/bin/env bash
 #============================================================================
-#  setup_oracle_cloud.sh (100% AUTO-PILOT OCI MASTER 2026 - FIX HANG BUG)
+#  setup_oracle_cloud.sh (100% AUTO-PILOT OCI MASTER 2026 - FIX-ALL)
 #============================================================================
 set -Eeuo pipefail
 
@@ -301,7 +301,7 @@ if has_systemd; then systemctl restart systemd-journald 2>/dev/null || true; fi
 
 auto_patch_engageub_repo() {
   log "Dang quet va PATCH RAM DOCKER OCI..."
-  ROOTS=(/opt /root /home /srv)
+  ROOTS=(/opt /root /home /srv /home/ubuntu)
   if [[ -n "$BASE_DIR" ]]; then ROOTS+=("$BASE_DIR"); fi
 
   while IFS= read -r sh_file; do
@@ -391,7 +391,7 @@ if (( DOCKER_RESTARTED == 1 )); then
     [[ -n "$cid" ]] || continue
     docker start "$cid" >/dev/null 2>&1 || true
     sleep 1.5
-  done < <(find /opt /root /home /srv -maxdepth 4 -name containernames.txt -type f -exec cat {} + 2>/dev/null | sort -u)
+  done < <(find /opt /root /home /srv /home/ubuntu -maxdepth 4 -name containernames.txt -type f -exec cat {} + 2>/dev/null | sort -u)
 
   if command -v ctr >/dev/null 2>&1; then
     for cid in $(docker ps -aq --no-trunc -f status=exited 2>/dev/null); do
@@ -411,7 +411,7 @@ install_cron_stack() {
   cat > /usr/local/bin/ii-restart-all.sh <<'EOF_RESTART'
 #!/usr/bin/env bash
 LOG=/var/log/ii-restart.log
-ROOTS=(/opt /root /home /srv __EXTRA__)
+ROOTS=(/opt /root /home /srv /home/ubuntu __EXTRA__)
 ts() { date '+%F %T'; }
 HAVE_CTR=0; command -v ctr >/dev/null 2>&1 && HAVE_CTR=1
 
@@ -538,7 +538,7 @@ WARNINGS_COUNT=0
 # --- 1. DOCKER CONTAINERS & RAM AUDIT ---
 echo -e "\n${C_C}--- [1. NODE CONTAINERS & RAM LIMIT AUDIT] ---${C_0}"
 ROOTS=("$@")
-if (( ${#ROOTS[@]} == 0 )); then ROOTS=(/opt /root /home /srv); fi
+if (( ${#ROOTS[@]} == 0 )); then ROOTS=(/opt /root /home /srv /home/ubuntu); fi
 
 found=0
 while IFS= read -r cn; do
@@ -606,7 +606,6 @@ else
 fi
 
 DNS_START=$(date +%s%N 2>/dev/null || echo 0)
-# FIX CHỐNG TREO BẰNG TIMEOUT 2
 DNS_RES=$(timeout 2 host google.com 8.8.8.8 2>/dev/null | grep "has address" | head -n1 || echo "")
 DNS_END=$(date +%s%N 2>/dev/null || echo 0)
 if [[ -n "$DNS_RES" ]]; then
@@ -688,7 +687,9 @@ chmod +x /usr/local/bin/ii-status.sh
 ln -sf /usr/local/bin/ii-status.sh /usr/bin/ii-status.sh 2>/dev/null || true
 ln -sf /usr/local/bin/ii-status.sh /usr/bin/ii-status 2>/dev/null || true
 
-echo "============================= SETUP XONG (100% AUTO-PILOT OCI MASTER 2026 - FIXED) =============================="
+echo "============================= SETUP XONG (100% AUTO-PILOT OCI MASTER 2026 - FIX-ALL) =============================="
 /usr/local/bin/ii-status.sh || true
 ORACLE_MASTER_EOF
 chmod +x /root/setup_oracle_cloud.sh
+cp -f /root/setup_oracle_cloud.sh /home/ubuntu/setup_oracle_cloud.sh 2>/dev/null || true
+bash /root/setup_oracle_cloud.sh
