@@ -1,7 +1,14 @@
 cat << 'MASTER_EOF' > ~/setup_vps.sh
 #!/usr/bin/env bash
 #============================================================================
-#  setup_vps.sh (100% AUTO-PILOT SET & FORGET MASTER 2026 - OPTIMIZED MAX EARNINGS)
+#  setup_vps.sh (100% AUTO-PILOT SET & FORGET MASTER 2026 - FULL OPTIMIZED)
+#
+#  CÀI 1 LẦN DUY NHẤT - TỰ ĐỘNG TỐI ƯU 100% CHO CẢ VPS MỚI LẪN VPS CỦ
+#   - AUTO-PILOT WATCHDOG: Cron 15m ngam TU DONG QUET folder moi add.
+#   - DYNAMIC RAM & ZRAM ALLOCATION: ZRAM = 100% RAM thật, Swappiness 100.
+#   - AUTOMATIC DOCKER CLEANUP: Tu dong don mang rac & volume ngam.
+#   - STRICT TIME SYNC (NTP): Dam bao dong ho VPS chuan milisecond 24/7.
+#   - 24/7 INCOME DIAGNOSTIC: Lenh 'sudo ii-status.sh' kiem tra toan dien VPS.
 #============================================================================
 set -Eeuo pipefail
 
@@ -80,11 +87,10 @@ clear_apt_locks
 export DEBIAN_FRONTEND=noninteractive
 log "apt update & install cac goi phu thuoc..."
 apt-get update -y -qq || { clear_apt_locks; apt-get update -y -qq; }
-# DA BO earlyoom DE TRANH KILL NHAM CONTAINER DANG KIEM TIEN
 apt-get install -y -qq --no-install-recommends \
   -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
   curl wget git unzip jq bc ca-certificates uuid-runtime cron logrotate net-tools \
-  vnstat nload speedtest-cli dnsutils || true
+  systemd-timesyncd vnstat nload speedtest-cli dnsutils || true
 
 if ! command -v docker >/dev/null 2>&1; then
   log "VPS MOI: Dang tu dong cai dat Docker official..."
@@ -113,9 +119,9 @@ if [[ -f /sys/kernel/mm/ksm/run ]]; then
   log "Da kich hoat KSM toi uu cao thanh cong!"
 fi
 
-# FIX 1: TANG KICH THUOC ZRAM BANG 100% RAM THIS (MIN 1GB, MAX 4GB)
+# TÍNH NĂNG MỚI: TỰ ĐỘNG TẠO ZRAM BẰNG 100% RAM VẬT LÝ
 ZRAM_SIZE_BYTES=$(( MEM_MB * 1024 * 1024 ))
-log "Kich hoat ZRAM (${MEM_MB}MB - Nem RAM sieu toc)..."
+log "Kich hoat ZRAM (${MEM_MB}MB - Nem RAM sieu toc LZ4)..."
 if ! swapon --show 2>/dev/null | grep -q "/dev/zram0"; then
   modprobe zram num_devices=1 2>/dev/null || true
   if [[ -b /dev/zram0 ]]; then
@@ -128,7 +134,7 @@ if ! swapon --show 2>/dev/null | grep -q "/dev/zram0"; then
   fi
 fi
 
-# FIX 2: THIET LAP SWAPPINESS HIGH (100) DE UU TIEN ZRAM TOI DA
+# SWAPPINESS = 100 ĐỂ ÉP LINUX ƯU TIÊN ÉP RAM VÀO ZRAM TRƯỚC KHU TRÀN Ổ ĐĨA
 TARGET_SWAP_MB=2048
 SWAPPINESS=100
 
@@ -149,7 +155,7 @@ fi
 
 echo "=============================================================="
 echo "  VPS $(hostname) | RAM ${MEM_MB}MB | ${CPU} CPU | AUTO-PILOT MASTER 2026"
-echo "  Swap target=${TARGET_SWAP_MB}MB | Swappiness=${SWAPPINESS} (ZRAM Optimized) | Limit default=${CONTAINER_MEM_LIMIT}/${CONTAINER_SWAP_LIMIT}"
+echo "  Swap target=${TARGET_SWAP_MB}MB | Swappiness=${SWAPPINESS} (ZRAM Mode) | Limit default=${CONTAINER_MEM_LIMIT}/${CONTAINER_SWAP_LIMIT}"
 echo "=============================================================="
 
 CURR_SWAP_MB=$(free -m 2>/dev/null | awk '/^Swap:/{print $2}' || echo 0)
@@ -217,6 +223,10 @@ if [[ -f /etc/vnstat.conf ]]; then
   if has_systemd; then systemctl restart vnstat 2>/dev/null || true; fi
 fi
 
+# TÍNH NĂNG MỚI: BẬT ĐỒNG BỘ THỜI GIAN NTP SIÊU CHUẨN CHỐNG MẤT TOKEN APP
+if has_systemd; then
+  systemctl enable --now systemd-timesyncd 2>/dev/null || true
+fi
 timedatectl set-ntp true 2>/dev/null || true
 timedatectl set-timezone Asia/Ho_Chi_Minh 2>/dev/null || true
 
@@ -280,7 +290,7 @@ while IFS= read -r line; do
   [[ -z "${line//[[:space:]]/}" ]] && continue
   sysctl -w "$line" >/dev/null 2>&1 || true
 done < "$SYSCTL_FILE"
-log "Kernel Tuning Safe Mode xong (Swappiness 100 cho ZRAM)"
+log "Kernel Tuning Safe Mode xong"
 
 if [[ -f /etc/sysctl.d/99-vps-optimize.conf ]]; then
   rm -f /etc/sysctl.d/99-vps-optimize.conf
@@ -505,13 +515,15 @@ EOF_RESTART
   fi
   chmod +x /usr/local/bin/ii-restart-all.sh
 
-  # FIX 3: CHUYEN LICH RESTART THANH HANG TUAN (CN 4H15) VA BO DROP_CACHES
+  # TÍNH NĂNG MỚI: TỰ ĐỘNG DỌN MẠNG RÁC + VOLUME RÁC DOCKER ĐỊNH KỲ VÀO CHỦ NHẬT
   cat > /etc/cron.d/internetincome <<'EOF_CRON'
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 15 4 * * 0 root /usr/local/bin/ii-restart-all.sh
 */15 * * * * root docker ps -aq -f status=exited 2>/dev/null | xargs -r -n1 docker start >/dev/null 2>&1
+0 3 * * 0 root /usr/bin/docker network prune -f >/dev/null 2>&1
+15 3 * * 0 root /usr/bin/docker volume prune -f >/dev/null 2>&1
 30 5 * * 0 root /usr/bin/docker image prune -f >/dev/null 2>&1
 EOF_CRON
   chmod 644 /etc/cron.d/internetincome
@@ -640,6 +652,14 @@ else
   ISSUES_COUNT=$((ISSUES_COUNT+1))
 fi
 
+NTP_STAT=$(timedatectl status 2>/dev/null | grep "NTP service" | awk '{print $3}' || echo "unknown")
+if [[ "$NTP_STAT" == "active" || "$NTP_STAT" == "yes" ]]; then
+  echo -e "  NTP Time Sync Status    : ${C_G}ACTIVE (Strict millisecond accuracy)${C_0}"
+else
+  echo -e "  NTP Time Sync Status    : ${C_Y}INACTIVE (${NTP_STAT})${C_0}"
+  WARNINGS_COUNT=$((WARNINGS_COUNT+1))
+fi
+
 DNS_START=$(date +%s%N 2>/dev/null || echo 0)
 DNS_RES=$(host -w 2 google.com 8.8.8.8 2>/dev/null | grep "has address" | head -n1 || echo "")
 DNS_END=$(date +%s%N 2>/dev/null || echo 0)
@@ -678,9 +698,10 @@ RAM_USED=$(free -m | awk '/^Mem:/{print $3}')
 RAM_AVAIL=$(free -m | awk '/^Mem:/{print $7}')
 SWAP_TOTAL=$(free -m | awk '/^Swap:/{print $2}')
 SWAP_USED=$(free -m | awk '/^Swap:/{print $3}')
+SWAP_VAL=$(cat /proc/sys/vm/swappiness 2>/dev/null || echo 0)
 
 echo "  RAM  : Total ${RAM_TOTAL}MB | Used ${RAM_USED}MB | Avail ${RAM_AVAIL}MB"
-echo "  Swap : Total ${SWAP_TOTAL}MB | Used ${SWAP_USED}MB"
+echo "  Swap : Total ${SWAP_TOTAL}MB | Used ${SWAP_USED}MB | Swappiness ${SWAP_VAL}"
 
 if swapon --show 2>/dev/null | grep -q "/dev/zram0"; then
   ZRAM_SIZE=$(swapon --show 2>/dev/null | grep "/dev/zram0" | awk '{print $3}')
@@ -756,7 +777,7 @@ chmod +x /usr/local/bin/ii-status.sh
 ln -sf /usr/local/bin/ii-status.sh /usr/bin/ii-status.sh
 ln -sf /usr/local/bin/ii-status.sh /usr/bin/ii-status
 
-echo "============================= SETUP XONG (100% AUTO-PILOT MASTER 2026 - FIX ZRAM/SWAPPINESS) =============================="
+echo "============================= SETUP XONG (100% AUTO-PILOT MASTER 2026 - FULL OPTIMIZED) =============================="
 sudo ii-status.sh || true
 MASTER_EOF
 chmod +x ~/setup_vps.sh
