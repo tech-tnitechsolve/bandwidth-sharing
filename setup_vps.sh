@@ -69,6 +69,42 @@ else
   CONTAINER_MEM_LIMIT="100m"; CONTAINER_SWAP_LIMIT="256m"; TARGET_SWAP_MB=4096
 fi
 
+#============================================================================
+# [PATCH] BANG HO SO RIENG CHO TUNG NEN TANG
+#----------------------------------------------------------------------------
+# Cai thu vien ho so ra /usr/local/lib de ii-restart-all.sh, ii-status.sh
+# va ii-flapguard.sh cung dung chung MOT nguon su that duy nhat.
+# Sua limit 1 app -> chi sua trong file do, khong phai sua 4 cho.
+#============================================================================
+TIER_IDX=1
+if   (( MEM_MB <= 2500 )); then TIER_IDX=1
+elif (( MEM_MB <= 5000 )); then TIER_IDX=2
+elif (( MEM_MB <= 9000 )); then TIER_IDX=3
+else                            TIER_IDX=4
+fi
+
+#============================================================================
+# [PATCH] DEDICATED LIMITS: REPOCKET / HONEYGAIN / MYSTERIUM
+#----------------------------------------------------------------------------
+# LY DO: limit chung (35-100m) la QUA THAP cho 3 app nay.
+#   - Repocket (Node.js)  thuc te dung ~60-120MB -> bi OOM kill lien tuc
+#     => day chinh la nguyen nhan "thieu tinh on dinh voi docker".
+#   - Honeygain           thuc te dung ~50-90MB  -> OOM -> restart loop
+#     => restart lien tuc chinh la thu khien Honeygain SUSPEND ACCOUNT.
+#   - Mysterium giu nguyen 250m/500m nhu cu.
+# Limit la MUC TRAN, khong phai RAM cap phat truoc -> khong ton them RAM
+# neu app chay binh thuong.
+#============================================================================
+if   (( MEM_MB <= 2500 )); then
+  REPOCKET_MEM="120m"; REPOCKET_SWAP="240m"; HONEYGAIN_MEM="160m"; HONEYGAIN_SWAP="320m"
+elif (( MEM_MB <= 5000 )); then
+  REPOCKET_MEM="160m"; REPOCKET_SWAP="320m"; HONEYGAIN_MEM="200m"; HONEYGAIN_SWAP="400m"
+elif (( MEM_MB <= 9000 )); then
+  REPOCKET_MEM="200m"; REPOCKET_SWAP="400m"; HONEYGAIN_MEM="256m"; HONEYGAIN_SWAP="512m"
+else
+  REPOCKET_MEM="256m"; REPOCKET_SWAP="512m"; HONEYGAIN_MEM="320m"; HONEYGAIN_SWAP="640m"
+fi
+
 clear_apt_locks() {
   log "Giai phong khoa APT Lock..."
   if has_systemd; then
@@ -249,6 +285,31 @@ printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\nnameserver 222.252.2.2\nnameserv
 modprobe nf_conntrack 2>/dev/null || true
 modprobe tcp_bbr 2>/dev/null || true
 
+#============================================================================
+# [PATCH-MYSTERIUM] Bao dam /dev/net/tun ton tai tren HOST
+#----------------------------------------------------------------------------
+# Loi setup Mysterium pho bien nhat:
+#   CreateTUN("myst0") failed; /dev/net/tun does not exist
+# Node Mysterium tao WireGuard interface -> BAT BUOC co TUN.
+# Cac container tun2socks/tun2proxy cua engageub cung bind-mount /dev/net/tun.
+#============================================================================
+modprobe tun 2>/dev/null || true
+if [[ ! -c /dev/net/tun ]]; then
+  mkdir -p /dev/net 2>/dev/null || true
+  mknod /dev/net/tun c 10 200 2>/dev/null || true
+  chmod 600 /dev/net/tun 2>/dev/null || true
+fi
+if [[ -c /dev/net/tun ]]; then
+  echo tun > /etc/modules-load.d/tun.conf 2>/dev/null || true
+  MYST_TUN_OK=1
+  log "TUN device san sang (/dev/net/tun) -> Mysterium co the tao WireGuard"
+else
+  MYST_TUN_OK=0
+  warn "KHONG co /dev/net/tun (ao hoa: ${VIRT})."
+  warn "  -> Mysterium SE LOI: CreateTUN(\"myst0\") failed"
+  warn "  -> Yeu cau nha cung cap VPS bat TUN/TAP, hoac doi sang VPS KVM."
+fi
+
 iptables -P INPUT ACCEPT 2>/dev/null || true
 iptables -P FORWARD ACCEPT 2>/dev/null || true
 iptables -F FORWARD 2>/dev/null || true
@@ -326,6 +387,327 @@ RuntimeMaxUse=5M
 EOF_JOURNAL
 if has_systemd; then systemctl restart systemd-journald 2>/dev/null || true; fi
 
+#============================================================================
+# [PATCH] CAI THU VIEN HO SO APP + FLAPGUARD
+#============================================================================
+mkdir -p /usr/local/lib
+cat > /usr/local/lib/ii-app-profiles.sh <<'EOF_PROFILES'
+#!/usr/bin/env bash
+#============================================================================
+# /usr/local/lib/ii-app-profiles.sh
+# BANG HO SO TOI UU RIENG CHO TUNG NEN TANG trong engageub/InternetIncome
+#----------------------------------------------------------------------------
+# Duoc source boi: setup_vps.sh, ii-restart-all.sh, ii-status.sh, ii-flapguard.sh
+# Sua limit cho 1 app? Chi can sua DUY NHAT o file nay.
+#============================================================================
+
+# Tra ve chi so tier 1..4 tu tong RAM (MB) - GIONG HET logic tier goc
+ii_tier_idx() {
+  local m="${1:-0}"
+  if   (( m <= 2500 )); then echo 1
+  elif (( m <= 5000 )); then echo 2
+  elif (( m <= 9000 )); then echo 3
+  else                       echo 4
+  fi
+}
+
+# _p <tier> <v1> <v2> <v3> <v4>  -> in ra gia tri theo tier
+_p() { local t="$1"; shift; local a=("$@"); echo "${a[$((t-1))]}"; }
+
+#----------------------------------------------------------------------------
+# ii_profile <container_name> <image> <tier_idx>
+# Xuat ra cac bien:
+#   P_APP     ten app chuan hoa
+#   P_MEM     --memory
+#   P_SWAP    --memory-swap
+#   P_POLICY  --restart policy
+#   P_VPS     safe | resi | ban
+#   P_MAXIP   so container toi da NEN chay tren 1 IP (0 = khong gioi han)
+#   P_NOTE    ghi chu ngan
+#----------------------------------------------------------------------------
+# P_VPS:
+#   safe = nha cung cap CHAP NHAN IP datacenter/VPS
+#   resi = CHI cho IP residential -> chay tren VPS de bi flag/khoa, thu nhap ~0
+#   ban  = CAM TUYET DOI VPS/VM/Docker -> chay la MAT ACCOUNT
+#----------------------------------------------------------------------------
+# P_POLICY:
+#   unless-stopped = app on dinh, cho restart tu do
+#   on-failure:N   = app NHAY CAM SUSPEND -> that bai N lan thi DUNG HAN,
+#                    tranh reconnect vo han khien nha cung cap danh dau abuse
+#----------------------------------------------------------------------------
+ii_profile() {
+  local n img t
+  n="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]' | sed 's|^/||')"
+  img="$(printf '%s' "${2:-}" | tr '[:upper:]' '[:lower:]')"
+  t="${3:-3}"
+  case "$t" in 1|2|3|4) ;; *) t=3 ;; esac
+
+  P_APP=""; P_MEM=""; P_SWAP=""; P_POLICY="unless-stopped"
+  P_VPS="safe"; P_MAXIP=0; P_NOTE=""
+
+  case "$n" in
+    # ---- HA TANG (khong phai app kiem tien) - GIU NGUYEN, khong dung toi ----
+    tun*)
+      P_APP="tun2socks";  P_MEM=$(_p $t 32m 48m 64m 96m);   P_SWAP=$(_p $t 64m 96m 128m 192m)
+      P_POLICY="__KEEP__"; P_NOTE="Ha tang mang cho proxy - giu nguyen policy goc" ;;
+    dindurnetwork*|dindproxylite*|adnadedind*|dind*)
+      P_APP="docker-in-docker"; P_MEM=$(_p $t 128m 160m 200m 256m); P_SWAP=$(_p $t 256m 320m 400m 512m)
+      P_POLICY="__KEEP__"; P_NOTE="Docker-in-Docker ha tang - giu nguyen policy goc" ;;
+
+    # ================= NHOM CHAY TOT TREN VPS (IP datacenter OK) =============
+    myst*)
+      P_APP="Mysterium"; P_MEM=$(_p $t 250m 250m 300m 350m); P_SWAP=$(_p $t 500m 500m 600m 700m)
+      P_VPS="safe"; P_NOTE="Can /dev/net/tun. IP datacenter tra thap hon residential" ;;
+    repocket*)
+      P_APP="Repocket"; P_MEM=$(_p $t 120m 160m 200m 256m); P_SWAP=$(_p $t 240m 320m 400m 512m)
+      P_VPS="safe"; P_MAXIP=2; P_NOTE="Node.js ~60-120MB. Gioi han 2 thiet bi/1 IP" ;;
+    traffmon*)
+      P_APP="Traffmonetizer"; P_MEM=$(_p $t 70m 90m 110m 140m); P_SWAP=$(_p $t 140m 180m 220m 280m)
+      P_VPS="safe"; P_NOTE="Go binary nhe, chap nhan datacenter, khong gioi han thiet bi" ;;
+    bitping*)
+      P_APP="Bitping"; P_MEM=$(_p $t 90m 110m 140m 180m); P_SWAP=$(_p $t 180m 220m 280m 360m)
+      P_VPS="safe"; P_NOTE="Chay do mang, can DNS on dinh" ;;
+    proxyrack*)
+      P_APP="Proxyrack"; P_MEM=$(_p $t 70m 90m 110m 140m); P_SWAP=$(_p $t 140m 180m 220m 280m)
+      P_VPS="safe"; P_NOTE="Datacenter chi ~0.05 USD/GB (residential 0.50). Toi da 500 thiet bi" ;;
+    proxybase*)
+      P_APP="Proxybase"; P_MEM=$(_p $t 70m 90m 110m 140m); P_SWAP=$(_p $t 140m 180m 220m 280m)
+      P_VPS="safe" ;;
+    proxylite*)
+      P_APP="Proxylite"; P_MEM=$(_p $t 70m 90m 110m 140m); P_SWAP=$(_p $t 140m 180m 220m 280m)
+      P_VPS="safe" ;;
+    peer2profit*)
+      P_APP="Peer2Profit"; P_MEM=$(_p $t 90m 110m 140m 180m); P_SWAP=$(_p $t 180m 220m 280m 360m)
+      P_VPS="safe" ;;
+    urnetwork*)
+      P_APP="URnetwork"; P_MEM=$(_p $t 110m 140m 180m 220m); P_SWAP=$(_p $t 220m 280m 360m 440m)
+      P_VPS="safe" ;;
+    titan*)
+      P_APP="Titan Network"; P_MEM=$(_p $t 200m 256m 320m 400m); P_SWAP=$(_p $t 400m 512m 640m 800m)
+      P_VPS="safe"; P_NOTE="Node luu tru+bang thong, ngon RAM hon cac app khac" ;;
+    antgain*)
+      P_APP="AntGain"; P_MEM=$(_p $t 70m 90m 110m 140m); P_SWAP=$(_p $t 140m 180m 220m 280m)
+      P_VPS="safe" ;;
+    wizardgain*)
+      P_APP="WizardGain"; P_MEM=$(_p $t 70m 90m 110m 140m); P_SWAP=$(_p $t 140m 180m 220m 280m)
+      P_VPS="safe" ;;
+
+    # ============ NHOM CHI CHO IP RESIDENTIAL - NHAY CAM SUSPEND =============
+    # Tat ca deu dung on-failure:N de KHONG reconnect vo han khi bi tu choi.
+    honey*)
+      P_APP="Honeygain"; P_MEM=$(_p $t 160m 200m 256m 320m); P_SWAP=$(_p $t 320m 400m 512m 640m)
+      P_POLICY="on-failure:10"; P_VPS="resi"; P_MAXIP=1
+      P_NOTE="CHI residential. Toi da 10 thiet bi/account, 1/IP. Restart nhieu = SUSPEND" ;;
+    pawns*)
+      P_APP="IPRoyal Pawns"; P_MEM=$(_p $t 80m 100m 128m 160m); P_SWAP=$(_p $t 160m 200m 256m 320m)
+      P_POLICY="on-failure:10"; P_VPS="resi"; P_MAXIP=1
+      P_NOTE="CHI residential - IP datacenter se bi tu choi" ;;
+    packetstream*)
+      P_APP="PacketStream"; P_MEM=$(_p $t 80m 100m 128m 160m); P_SWAP=$(_p $t 160m 200m 256m 320m)
+      P_POLICY="on-failure:10"; P_VPS="resi"; P_MAXIP=1
+      P_NOTE="CHI residential" ;;
+    packetshare*)
+      P_APP="Packetshare"; P_MEM=$(_p $t 80m 100m 128m 160m); P_SWAP=$(_p $t 160m 200m 256m 320m)
+      P_POLICY="on-failure:10"; P_VPS="resi"; P_MAXIP=1
+      P_NOTE="CHI residential" ;;
+    earnfm*)
+      P_APP="EarnFM"; P_MEM=$(_p $t 110m 140m 180m 220m); P_SWAP=$(_p $t 220m 280m 360m 440m)
+      P_POLICY="on-failure:10"; P_VPS="resi"; P_MAXIP=1
+      P_NOTE="CHI residential. Node.js ~80-150MB" ;;
+    wipter*)
+      P_APP="Wipter"; P_MEM=$(_p $t 350m 350m 400m 450m); P_SWAP=$(_p $t 600m 600m 700m 800m)
+      P_POLICY="on-failure:10"; P_VPS="resi"
+      P_NOTE="Chromium ben trong -> nang. CHI residential" ;;
+    depinext*)
+      P_APP="Depin/Grass ext"; P_MEM=$(_p $t 350m 400m 450m 512m); P_SWAP=$(_p $t 600m 700m 800m 900m)
+      P_POLICY="on-failure:10"; P_VPS="resi"
+      P_NOTE="Chrome extension -> rat nang. Grass CHI residential" ;;
+    ebesucher*)
+      P_APP="Ebesucher"; P_MEM=$(_p $t 400m 450m 512m 640m); P_SWAP=$(_p $t 700m 800m 900m 1000m)
+      P_POLICY="on-failure:10"; P_VPS="resi"
+      P_NOTE="Trinh duyet day du (surfing) -> nang nhat" ;;
+    adnade*)
+      P_APP="Adnade"; P_MEM=$(_p $t 400m 450m 512m 640m); P_SWAP=$(_p $t 700m 800m 900m 1000m)
+      P_POLICY="on-failure:10"; P_VPS="resi"
+      P_NOTE="Trinh duyet day du -> nang nhat" ;;
+
+    # ================ CAM TUYET DOI TREN VPS/DOCKER =========================
+    earnapp*)
+      P_APP="EarnApp"; P_MEM=$(_p $t 90m 110m 140m 180m); P_SWAP=$(_p $t 180m 220m 280m 360m)
+      P_POLICY="on-failure:5"; P_VPS="ban"; P_MAXIP=1
+      P_NOTE="EarnApp CAM VM/Docker/VPS -> chay la BI XOA ACCOUNT + mat tien chua rut" ;;
+
+    *)
+      P_APP=""; P_POLICY="__KEEP__"; P_NOTE="Khong co ho so - giu nguyen cau hinh goc" ;;
+  esac
+
+  # Neu goi voi image thay vi ten container (truong hop docker update)
+  if [[ -z "$P_APP" && -n "$img" ]]; then
+    case "$img" in
+      *mysteriumnetwork/myst*) ii_profile "myst" "" "$t"; return ;;
+      *repocket*)              ii_profile "repocket" "" "$t"; return ;;
+      *honeygain*)             ii_profile "honey" "" "$t"; return ;;
+      *traffmonetizer*)        ii_profile "traffmon" "" "$t"; return ;;
+      *bitping*)               ii_profile "bitping" "" "$t"; return ;;
+      *earnfm*)                ii_profile "earnfm" "" "$t"; return ;;
+      *earnapp*)               ii_profile "earnapp" "" "$t"; return ;;
+      *proxyrack*)             ii_profile "proxyrack" "" "$t"; return ;;
+      *proxybase*)             ii_profile "proxybase" "" "$t"; return ;;
+      *proxylite*)             ii_profile "proxylite" "" "$t"; return ;;
+      *pawns*)                 ii_profile "pawns" "" "$t"; return ;;
+      *packetstream*)          ii_profile "packetstream" "" "$t"; return ;;
+      *packetshare*)           ii_profile "packetshare" "" "$t"; return ;;
+      *peer2profit*)           ii_profile "peer2profit" "" "$t"; return ;;
+      *community-provider*)    ii_profile "urnetwork" "" "$t"; return ;;
+      *titan-edge*)            ii_profile "titan" "" "$t"; return ;;
+      *antgain*)               ii_profile "antgain" "" "$t"; return ;;
+      *wizardgain*)            ii_profile "wizardgain" "" "$t"; return ;;
+    esac
+  fi
+}
+
+# Danh sach app co ho so, dung de duyet khi patch file internetIncome.sh
+# (KHONG gom tun/dind - ha tang giu nguyen)
+II_APPS="myst repocket traffmon bitping proxyrack proxybase proxylite peer2profit urnetwork titan antgain wizardgain honey pawns packetstream packetshare earnfm wipter depinext ebesucher adnade earnapp"
+
+# App nhay cam suspend -> can flap-guard bao ve
+II_SUSPEND_SENSITIVE="honey pawns packetstream packetshare earnfm wipter depinext ebesucher adnade earnapp"
+
+ii_is_suspend_sensitive() {
+  local n="${1:-}"
+  for a in $II_SUSPEND_SENSITIVE; do
+    case "$n" in ${a}*) return 0 ;; esac
+  done
+  return 1
+}
+EOF_PROFILES
+chmod 644 /usr/local/lib/ii-app-profiles.sh
+. /usr/local/lib/ii-app-profiles.sh
+log "Da cai bang ho so toi uu cho $(echo $II_APPS | wc -w) nen tang"
+
+cat > /usr/local/bin/ii-flapguard.sh <<'EOF_FLAPGUARD'
+#!/usr/bin/env bash
+#============================================================================
+# /usr/local/bin/ii-flapguard.sh
+# BAO VE ACCOUNT KHOI BI SUSPEND
+#----------------------------------------------------------------------------
+# VAN DE: --restart=always + RAM limit thap = vong lap tu huy:
+#   OOM kill -> Docker restart -> app login lai -> nha cung cap thay
+#   reconnect lien tuc tu cung 1 device -> danh dau abuse -> SUSPEND ACCOUNT.
+#
+# Docker KHONG co co che "restart bao nhieu lan trong 1 gio thi dung".
+# --restart=on-failure:N chi dem LAN LIEN TIEP va bi RESET moi khi container
+# chay thanh cong 1 lat -> app flap cham (10 phut/lan) se KHONG BAO GIO cham
+# nguong N, nhung van du de nha cung cap danh dau abuse.
+#
+# Script nay bu dap dung khoang trong do: do TOC DO restart theo thoi gian
+# that va DUNG HAN container nhay cam truoc khi no lam mat account.
+#
+# Chay moi 10 phut qua cron.
+#============================================================================
+set -uo pipefail
+
+PROFILES=/usr/local/lib/ii-app-profiles.sh
+[[ -r "$PROFILES" ]] && . "$PROFILES"
+
+LOG=/var/log/ii-flapguard.log
+STATE=/var/lib/ii-flapguard
+mkdir -p "$STATE" 2>/dev/null || true
+
+# Nguong: neu 1 container nhay cam restart > FLAP_MAX lan trong FLAP_WINDOW giay
+# thi dung han. 6 lan / 1 gio = da la bat thuong voi app bandwidth binh thuong.
+FLAP_MAX="${FLAP_MAX:-6}"
+FLAP_WINDOW="${FLAP_WINDOW:-3600}"
+# Sau khi bi dung, cho COOLDOWN giay roi moi cho phep chay lai (mac dinh 6 tieng)
+COOLDOWN="${COOLDOWN:-21600}"
+
+ts() { date '+%F %T'; }
+say() { echo "[$(ts)] $*" >> "$LOG"; }
+
+command -v docker >/dev/null 2>&1 || exit 0
+
+MEM_MB=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
+TIER=$(ii_tier_idx "$MEM_MB" 2>/dev/null || echo 3)
+
+for cid in $(docker ps -aq 2>/dev/null); do
+  cname=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null | sed 's|^/||') || continue
+  [[ -n "$cname" ]] || continue
+  cimg=$(docker inspect -f '{{.Config.Image}}' "$cid" 2>/dev/null || echo "")
+
+  ii_profile "$cname" "$cimg" "$TIER" 2>/dev/null || continue
+  # Chi bao ve nhung app CO THE bi suspend. App khac ke ca restart nhieu
+  # cung khong sao (Repocket/Traffmonetizer khong khoa account vi reconnect).
+  ii_is_suspend_sensitive "$cname" || continue
+
+  rc=$(docker inspect -f '{{.RestartCount}}' "$cid" 2>/dev/null || echo 0)
+  running=$(docker inspect -f '{{.State.Running}}' "$cid" 2>/dev/null || echo false)
+  oom=$(docker inspect -f '{{.State.OOMKilled}}' "$cid" 2>/dev/null || echo false)
+  now=$(date +%s)
+
+  f="$STATE/${cname}.state"
+  prev_rc=0; prev_t=0; stopped_at=0
+  [[ -f "$f" ]] && read -r prev_rc prev_t stopped_at < "$f" 2>/dev/null
+  prev_rc=${prev_rc:-0}; prev_t=${prev_t:-0}; stopped_at=${stopped_at:-0}
+
+  # --- Da bi flapguard dung truoc do: kiem tra het cooldown chua ---
+  if (( stopped_at > 0 )); then
+    if (( now - stopped_at >= COOLDOWN )); then
+      say "[$cname] Het cooldown ($(( (now-stopped_at)/60 )) phut). Cho phep chay lai."
+      docker start "$cid" >/dev/null 2>&1 \
+        && say "[$cname] Da khoi dong lai sau cooldown." \
+        || say "[$cname] Khong start duoc sau cooldown."
+      echo "$rc $now 0" > "$f"
+    fi
+    continue
+  fi
+
+  # --- Do toc do restart trong cua so thoi gian ---
+  if (( prev_t == 0 )); then
+    echo "$rc $now 0" > "$f"
+    continue
+  fi
+
+  delta=$(( rc - prev_rc ))
+  elapsed=$(( now - prev_t ))
+
+  if (( delta < 0 )); then          # container bi tao lai -> reset moc
+    echo "$rc $now 0" > "$f"
+    continue
+  fi
+
+  if (( elapsed >= FLAP_WINDOW )); then
+    # Ket thuc 1 cua so: danh gia roi mo cua so moi
+    if (( delta > FLAP_MAX )); then
+      say "[$cname] FLAP: ${delta} lan restart trong $(( elapsed/60 )) phut (nguong ${FLAP_MAX})."
+      say "[$cname] -> DUNG HAN de bao ve account khoi bi suspend. Cooldown $(( COOLDOWN/3600 ))h."
+      [[ "$oom" == "true" ]] && say "[$cname] Nguyen nhan: OOMKilled -> RAM limit qua thap."
+      docker update --restart=no "$cid" >/dev/null 2>&1 || true
+      docker stop "$cid" >/dev/null 2>&1 || true
+      echo "$rc $now $now" > "$f"
+    else
+      echo "$rc $now 0" > "$f"
+    fi
+    continue
+  fi
+
+  # Trong cua so: neu da vuot nguong thi cat ngay, khong doi het cua so
+  if (( delta > FLAP_MAX )); then
+    say "[$cname] FLAP GAP: ${delta} lan restart chi trong $(( elapsed/60 )) phut."
+    say "[$cname] -> DUNG HAN ngay. Cooldown $(( COOLDOWN/3600 ))h."
+    [[ "$oom" == "true" ]] && say "[$cname] Nguyen nhan: OOMKilled -> RAM limit qua thap."
+    docker update --restart=no "$cid" >/dev/null 2>&1 || true
+    docker stop "$cid" >/dev/null 2>&1 || true
+    echo "$rc $now $now" > "$f"
+  fi
+done
+
+# Don state cu cua container da bi xoa
+find "$STATE" -name '*.state' -mtime +14 -delete 2>/dev/null || true
+EOF_FLAPGUARD
+chmod +x /usr/local/bin/ii-flapguard.sh
+ln -sf /usr/local/bin/ii-flapguard.sh /usr/bin/ii-flapguard 2>/dev/null || true
+log "Da cai ii-flapguard (bao ve account khoi bi suspend)"
+
 auto_patch_engageub_repo() {
   log "Dang quet va PATCH RAM DOCKER + FIX TẬN GỐC CỜ IPV6..."
   ROOTS=(/opt /root /home /srv /home/ubuntu /home/opc)
@@ -361,6 +743,53 @@ auto_patch_engageub_repo() {
 
       sed -i -E '/wipter/I s/--memory="[0-9]+[a-zA-Z]+"/--memory="350m"/g' "$sh_file" 2>/dev/null || true
       sed -i -E '/wipter/I s/--memory-swap="[0-9]+[a-zA-Z]+"/--memory-swap="600m"/g' "$sh_file" 2>/dev/null || true
+
+      #====================================================================
+      # [PATCH] TOI UU RIENG TUNG NEN TANG (bang ho so ii-app-profiles.sh)
+      #--------------------------------------------------------------------
+      # Thay vi sua tay tung app, duyet toan bo danh sach app co ho so va
+      # ap dung dung --memory / --memory-swap / --restart cho rieng app do.
+      # Cac sed chung o tren da ep MOI app ve limit tier chung; vong lap nay
+      # chay SAU nen se ghi de lai bang gia tri dung cua tung app.
+      #
+      # Vi sao phai doi --restart:
+      #   Repo goc dung --restart=always cho 27 container. Voi app nhay cam
+      #   suspend (Honeygain, Pawns, EarnFM...) thi 'always' = reconnect vo
+      #   han khi bi tu choi -> nha cung cap danh dau abuse -> KHOA ACCOUNT.
+      #   Ta doi sang on-failure:N cho rieng nhom do.
+      #====================================================================
+      for _app in $II_APPS; do
+        ii_profile "$_app" "" "$TIER_IDX"
+        [[ -n "$P_MEM" ]] || continue
+        # Chi tac dong dong 'docker run' co chua ten container cua app do
+        sed -i -E "/docker run/{/--name ${_app}/{
+          s/--memory=\"[0-9]+[a-zA-Z]+\"/--memory=\"${P_MEM}\"/g;
+          s/--memory-swap=\"[0-9]+[a-zA-Z]+\"/--memory-swap=\"${P_SWAP}\"/g
+        }}" "$sh_file" 2>/dev/null || true
+
+        if [[ "$P_POLICY" != "__KEEP__" ]]; then
+          sed -i -E "/docker run/{/--name ${_app}/{
+            s/--restart=[a-z-]+(:[0-9]+)?/--restart=${P_POLICY}/g;
+            s/--restart [a-z-]+(:[0-9]+)?/--restart=${P_POLICY}/g
+          }}" "$sh_file" 2>/dev/null || true
+        fi
+      done
+
+      #====================================================================
+      # [PATCH] MYSTERIUM - fix loi setup tan goc
+      #--------------------------------------------------------------------
+      # Repo goc KHONG mount /dev/net/tun vao container myst (chi cac
+      # container tun2socks moi co). Node Mysterium can tao WireGuard
+      # interface myst0 -> khong co TUN thi bao:
+      #   CreateTUN("myst0") failed; /dev/net/tun does not exist
+      # Dung --device (khong dung --mount) vi --device cap luon quyen
+      # cgroup device, --mount chi tao file node.
+      # Guard 3 lop: chi dong 'docker run', chua co '/dev/net/tun'
+      # -> KHONG bao gio dung vao dong 'docker pull', chay lai N lan van sach.
+      #====================================================================
+      if (( MYST_TUN_OK == 1 )); then
+        sed -i '/docker run/{\|mysteriumnetwork/myst:latest|{\|/dev/net/tun|!s|mysteriumnetwork/myst:latest|--device /dev/net/tun:/dev/net/tun mysteriumnetwork/myst:latest|}}' "$sh_file" 2>/dev/null || true
+      fi
     fi
   done < <(find "${ROOTS[@]}" -maxdepth 4 -name internetIncome.sh -type f 2>/dev/null | sort -u)
 }
@@ -374,16 +803,28 @@ if command -v docker >/dev/null 2>&1; then
     docker update --memory="${CONTAINER_MEM_LIMIT}" --memory-swap="${CONTAINER_SWAP_LIMIT}" $CTRS >/dev/null 2>&1 || true
     docker update --restart=unless-stopped $CTRS >/dev/null 2>&1 || true
     
+    # [PATCH] Ap dung ho so RIENG cho tung app len container DANG CHAY.
+    # Khong can tao lai container - docker update sua duoc limit va restart
+    # policy ngay lap tuc.
+    _n_prof=0
     for cid in $CTRS; do
       c_img=$(docker inspect -f '{{.Config.Image}}' "$cid" 2>/dev/null || true)
-      c_name=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null || true)
-      if [[ "$c_img" =~ mysterium|myst ]] || [[ "$c_name" =~ mysterium|myst ]]; then
-        docker update --memory="250m" --memory-swap="500m" "$cid" >/dev/null 2>&1 || true
-      elif [[ "$c_img" =~ wipter ]] || [[ "$c_name" =~ wipter ]]; then
-        docker update --memory="350m" --memory-swap="600m" "$cid" >/dev/null 2>&1 || true
+      c_name=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null | sed 's|^/||' || true)
+      ii_profile "$c_name" "$c_img" "$TIER_IDX"
+      [[ -n "$P_MEM" ]] || continue
+      if [[ "$P_POLICY" == "__KEEP__" ]]; then
+        docker update --memory="$P_MEM" --memory-swap="$P_SWAP" "$cid" >/dev/null 2>&1 || true
+      else
+        docker update --memory="$P_MEM" --memory-swap="$P_SWAP" \
+                      --restart="$P_POLICY" "$cid" >/dev/null 2>&1 || true
+      fi
+      _n_prof=$((_n_prof+1))
+      # Canh bao app CAM chay tren VPS
+      if [[ "$P_VPS" == "ban" ]]; then
+        warn "  ${P_APP} (${c_name}): ${P_NOTE}"
       fi
     done
-    log "Da kiem tra va cap nhat LIVE RAM Limit theo Tier thanh cong!"
+    log "Da ap dung ho so toi uu rieng cho ${_n_prof} container"
   fi
 fi
 
@@ -472,6 +913,21 @@ HAVE_CTR=0; command -v ctr >/dev/null 2>&1 && HAVE_CTR=1
     MEM_LIMIT="100m"; SWAP_LIMIT="256m"
   fi
 
+  # [PATCH] Nap bang ho so rieng tung app - DUNG CHUNG voi setup_vps.sh
+  # Neu thieu, cron hang tuan se ghi de limit ve tier chung -> app OOM tro lai.
+  PROFILES=/usr/local/lib/ii-app-profiles.sh
+  if [[ -r "$PROFILES" ]]; then . "$PROFILES"; fi
+  TIER_IDX=$(ii_tier_idx "$MEM_MB" 2>/dev/null || echo 3)
+
+  # Bao dam TUN cho Mysterium sau moi lan reboot
+  modprobe tun 2>/dev/null || true
+  if [[ ! -c /dev/net/tun ]]; then
+    mkdir -p /dev/net 2>/dev/null || true
+    mknod /dev/net/tun c 10 200 2>/dev/null || true
+    chmod 600 /dev/net/tun 2>/dev/null || true
+  fi
+  MYST_TUN_OK=0; [[ -c /dev/net/tun ]] && MYST_TUN_OK=1
+
   while IFS= read -r sh_f; do
     d_path=$(dirname "$sh_f")
     [[ -f "${d_path}/properties.conf" ]] && sed -i "s/MAX_MEMORY=.*/MAX_MEMORY=${MEM_LIMIT}/" "${d_path}/properties.conf" 2>/dev/null || true
@@ -489,6 +945,27 @@ HAVE_CTR=0; command -v ctr >/dev/null 2>&1 && HAVE_CTR=1
 
       sed -i -E '/wipter/I s/--memory="[0-9]+[a-zA-Z]+"/--memory="350m"/g' "$sh_f" 2>/dev/null || true
       sed -i -E '/wipter/I s/--memory-swap="[0-9]+[a-zA-Z]+"/--memory-swap="600m"/g' "$sh_f" 2>/dev/null || true
+
+      # [PATCH] Ap dung ho so rieng cho tung nen tang
+      for _app in ${II_APPS:-}; do
+        ii_profile "$_app" "" "$TIER_IDX"
+        [[ -n "$P_MEM" ]] || continue
+        sed -i -E "/docker run/{/--name ${_app}/{
+          s/--memory=\"[0-9]+[a-zA-Z]+\"/--memory=\"${P_MEM}\"/g;
+          s/--memory-swap=\"[0-9]+[a-zA-Z]+\"/--memory-swap=\"${P_SWAP}\"/g
+        }}" "$sh_f" 2>/dev/null || true
+        if [[ "$P_POLICY" != "__KEEP__" ]]; then
+          sed -i -E "/docker run/{/--name ${_app}/{
+            s/--restart=[a-z-]+(:[0-9]+)?/--restart=${P_POLICY}/g;
+            s/--restart [a-z-]+(:[0-9]+)?/--restart=${P_POLICY}/g
+          }}" "$sh_f" 2>/dev/null || true
+        fi
+      done
+
+      # [PATCH] Mysterium: mount TUN device
+      if (( MYST_TUN_OK == 1 )); then
+        sed -i '/docker run/{\|mysteriumnetwork/myst:latest|{\|/dev/net/tun|!s|mysteriumnetwork/myst:latest|--device /dev/net/tun:/dev/net/tun mysteriumnetwork/myst:latest|}}' "$sh_f" 2>/dev/null || true
+      fi
     fi
   done < <(find "${ROOTS[@]}" -maxdepth 4 -name internetIncome.sh -type f 2>/dev/null | sort -u)
 
@@ -530,10 +1007,14 @@ HAVE_CTR=0; command -v ctr >/dev/null 2>&1 && HAVE_CTR=1
     for cid in $(docker ps -aq 2>/dev/null); do
       c_img=$(docker inspect -f '{{.Config.Image}}' "$cid" 2>/dev/null || true)
       c_name=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null || true)
-      if [[ "$c_img" =~ mysterium|myst ]] || [[ "$c_name" =~ mysterium|myst ]]; then
-        docker update --memory="250m" --memory-swap="500m" "$cid" >/dev/null 2>&1 || true
-      elif [[ "$c_img" =~ wipter ]] || [[ "$c_name" =~ wipter ]]; then
-        docker update --memory="350m" --memory-swap="600m" "$cid" >/dev/null 2>&1 || true
+      cn=$(printf '%s' "$c_name" | sed 's|^/||')
+      ii_profile "$cn" "$c_img" "$TIER_IDX"
+      [[ -n "$P_MEM" ]] || continue
+      if [[ "$P_POLICY" == "__KEEP__" ]]; then
+        docker update --memory="$P_MEM" --memory-swap="$P_SWAP" "$cid" >/dev/null 2>&1 || true
+      else
+        docker update --memory="$P_MEM" --memory-swap="$P_SWAP" \
+                      --restart="$P_POLICY" "$cid" >/dev/null 2>&1 || true
       fi
     done
 
@@ -554,7 +1035,18 @@ SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 15 4 * * 0 root /usr/local/bin/ii-restart-all.sh
-*/15 * * * * root docker ps -aq -f status=exited 2>/dev/null | xargs -r -n1 docker start >/dev/null 2>&1
+
+# [PATCH] FLAPGUARD - bao ve account khoi bi suspend. Chay moi 10 phut.
+# Phat hien container nhay cam restart qua nhanh va dung han truoc khi
+# nha cung cap danh dau abuse. Tu dong bat lai sau 6 tieng cooldown.
+*/10 * * * * root /usr/local/bin/ii-flapguard.sh >/dev/null 2>&1
+
+# [PATCH] LOAI TRU cac app NHAY CAM SUSPEND khoi vong auto-start 15 phut.
+# Ly do: cac app nay dat --restart=on-failure:N, khi that bai N lan container
+# DUNG HAN CO Y de bao ve account. Dong cron cu start lai moi 15 phut se
+# pha huy hoan toan co che do -> reconnect vo han -> SUSPEND ACCOUNT.
+# Cac app khac (Repocket, Traffmonetizer, Mysterium...) van auto-start binh thuong.
+*/15 * * * * root for c in $(docker ps -aq -f status=exited 2>/dev/null); do n=$(docker inspect -f '{{.Name}}{{.Config.Image}}' "$c" 2>/dev/null); case "$n" in *honey*|*pawns*|*packetstream*|*packetshare*|*earnfm*|*wipter*|*depinext*|*ebesucher*|*adnade*|*earnapp*) ;; *) docker start "$c" >/dev/null 2>&1 ;; esac; done
 */15 * * * * root find /root /home /opt /srv /home/ubuntu /home/opc -name 'internetIncome.sh' -exec sed -i -E 's/--sysctl[ =]+net\.ipv6\.conf\.[a-zA-Z0-9_]+\.disable_ipv6=[0-9]//g' {} + >/dev/null 2>&1
 0 3 * * 0 root /usr/bin/docker network prune -f >/dev/null 2>&1
 15 3 * * 0 root /usr/bin/docker volume prune -f >/dev/null 2>&1
@@ -655,34 +1147,96 @@ TOTAL_CTRS=$(docker ps -aq 2>/dev/null | wc -l)
 EXITED_CTRS=$(docker ps -aq -f status=exited 2>/dev/null | wc -l)
 echo "  TOTAL SUMMARY: ${RUNNING_CTRS} running / ${TOTAL_CTRS} total (Exited: ${EXITED_CTRS})"
 
-echo -e "  Special App RAM Limits Audit:"
-myst_found=0; wipter_found=0
-while IFS= read -r cid; do
-  [[ -z "$cid" ]] && continue
-  c_img=$(docker inspect -f '{{.Config.Image}}' "$cid" 2>/dev/null || true)
-  c_name=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null || true)
-  c_mem=$(docker inspect -f '{{.HostConfig.Memory}}' "$cid" 2>/dev/null || echo 0)
-  c_mem_mb=$(( c_mem / 1024 / 1024 ))
+#============================================================================
+# [PATCH] AUDIT CHI TIET TUNG NEN TANG
+#============================================================================
+echo -e "\n${C_C}--- [1b. PER-PLATFORM AUDIT: RAM / RESTART POLICY / IP TYPE] ---${C_0}"
+PROFILES=/usr/local/lib/ii-app-profiles.sh
+if [[ -r "$PROFILES" ]]; then
+  . "$PROFILES"
+  TIER_IDX=$(ii_tier_idx "$MEM_MB")
+  printf "    %-16s %-9s %-16s %-6s %s\n" "APP" "RAM" "POLICY" "RC" "TRANG THAI"
+  _any=0
+  while IFS= read -r cid; do
+    [[ -z "$cid" ]] && continue
+    cn=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null | sed 's|^/||')
+    ci=$(docker inspect -f '{{.Config.Image}}' "$cid" 2>/dev/null || true)
+    ii_profile "$cn" "$ci" "$TIER_IDX"
+    [[ -n "$P_APP" ]] || continue
+    case "$P_APP" in tun2socks|docker-in-docker) continue ;; esac
+    _any=1
+    cmem=$(docker inspect -f '{{.HostConfig.Memory}}' "$cid" 2>/dev/null || echo 0)
+    cmb=$(( cmem / 1024 / 1024 ))
+    cpol=$(docker inspect -f '{{.HostConfig.RestartPolicy.Name}}{{if .HostConfig.RestartPolicy.MaximumRetryCount}}:{{.HostConfig.RestartPolicy.MaximumRetryCount}}{{end}}' "$cid" 2>/dev/null || echo "?")
+    crc=$(docker inspect -f '{{.RestartCount}}' "$cid" 2>/dev/null || echo 0)
+    coom=$(docker inspect -f '{{.State.OOMKilled}}' "$cid" 2>/dev/null || echo false)
+    want=${P_MEM%m}
+    st=""; col="$C_G"
+    if (( cmb == 0 )); then st="KHONG GIOI HAN"; col="$C_Y"; WARNINGS_COUNT=$((WARNINGS_COUNT+1))
+    elif (( cmb < want )); then st="RAM THAP (can ${P_MEM})"; col="$C_R"; ISSUES_COUNT=$((ISSUES_COUNT+1))
+    else st="OK"; fi
+    if [[ "$coom" == "true" ]]; then st="OOM KILLED!"; col="$C_R"; ISSUES_COUNT=$((ISSUES_COUNT+1)); fi
+    if [[ "$P_POLICY" != "__KEEP__" && "$cpol" == "always" ]]; then
+      st="$st | policy=always NGUY HIEM"; col="$C_R"; ISSUES_COUNT=$((ISSUES_COUNT+1))
+    fi
+    printf "    ${col}%-16s %-9s %-16s %-6s %s${C_0}\n" "$P_APP" "${cmb}MB" "$cpol" "$crc" "$st"
 
-  if [[ "$c_img" =~ mysterium|myst ]] || [[ "$c_name" =~ mysterium|myst ]]; then
-    myst_found=1
-    if (( c_mem_mb >= 200 )); then
-      echo -e "    - Mystnodes ($c_name): ${C_G}${c_mem_mb}MB RAM Limit (PASSED)${C_0}"
-    else
-      echo -e "    - Mystnodes ($c_name): ${C_R}${c_mem_mb}MB RAM Limit (FAIL - TOO LOW! Will OOM)${C_0}"
-      ISSUES_COUNT=$((ISSUES_COUNT+1))
+    # Canh bao loai IP
+    case "$P_VPS" in
+      ban)  echo -e "      ${C_R}!! ${P_NOTE}${C_0}"
+            echo -e "      ${C_R}!! GO NGAY app nay khoi VPS de tranh mat account${C_0}"
+            ISSUES_COUNT=$((ISSUES_COUNT+1)) ;;
+      resi) echo -e "      ${C_Y}~  Chi ho tro IP residential. Tren VPS: thu nhap gan 0 va co the bi khoa.${C_0}"
+            WARNINGS_COUNT=$((WARNINGS_COUNT+1)) ;;
+    esac
+    if ii_is_suspend_sensitive "$cn"; then
+      if (( crc > 20 )); then
+        echo -e "      ${C_R}!! RestartCount=${crc} RAT CAO -> nguy co suspend cao. Nen dung app nay vai ngay.${C_0}"
+        ISSUES_COUNT=$((ISSUES_COUNT+1))
+      elif (( crc > 8 )); then
+        echo -e "      ${C_Y}~  RestartCount=${crc} - theo doi, flapguard dang giam sat${C_0}"
+        WARNINGS_COUNT=$((WARNINGS_COUNT+1))
+      fi
     fi
-  elif [[ "$c_img" =~ wipter ]] || [[ "$c_name" =~ wipter ]]; then
-    wipter_found=1
-    if (( c_mem_mb >= 300 )); then
-      echo -e "    - Wipter ($c_name): ${C_G}${c_mem_mb}MB RAM Limit (PASSED - Dedicated 350M Limit)${C_0}"
-    else
-      echo -e "    - Wipter ($c_name): ${C_R}${c_mem_mb}MB RAM Limit (FAIL - TOO LOW! Needs 350M+)${C_0}"
-      ISSUES_COUNT=$((ISSUES_COUNT+1))
+    # Mysterium: kiem tra TUN
+    if [[ "$P_APP" == "Mysterium" ]]; then
+      if docker inspect -f '{{range .HostConfig.Devices}}{{.PathOnHost}}{{end}}' "$cid" 2>/dev/null | grep -q '/dev/net/tun'; then
+        echo -e "      ${C_G}+  TUN device da mount (WireGuard OK)${C_0}"
+      else
+        echo -e "      ${C_R}!! THIEU TUN -> CreateTUN(\"myst0\") failed, node KHONG kiem duoc tien${C_0}"
+        echo -e "      ${C_Y}   Fix: sudo bash ~/setup_vps.sh roi TAO LAI container myst${C_0}"
+        ISSUES_COUNT=$((ISSUES_COUNT+1))
+      fi
     fi
-  fi
-done < <(docker ps -aq 2>/dev/null)
-(( myst_found == 0 && wipter_found == 0 )) && echo "    - (No Mystnodes / Wipter containers active on this host)"
+  done < <(docker ps -aq 2>/dev/null)
+  (( _any == 0 )) && echo "    (Khong co app nao co ho so dang chay)"
+else
+  echo "    (Chua cai /usr/local/lib/ii-app-profiles.sh - chay lai setup_vps.sh)"
+fi
+
+# Flapguard: bao cao container dang bi tam dung de bao ve account
+if [[ -d /var/lib/ii-flapguard ]]; then
+  _held=0
+  for f in /var/lib/ii-flapguard/*.state; do
+    [[ -e "$f" ]] || continue
+    read -r _rc _t _stopped < "$f" 2>/dev/null || continue
+    if [[ "${_stopped:-0}" != "0" ]]; then
+      _left=$(( (${_stopped} + 21600 - $(date +%s)) / 60 ))
+      (( _left < 0 )) && _left=0
+      echo -e "  ${C_Y}FLAPGUARD: $(basename "$f" .state) dang tam dung de bao ve account (con ~${_left} phut)${C_0}"
+      _held=1
+    fi
+  done
+  (( _held == 0 )) && echo -e "  FLAPGUARD: ${C_G}Khong co container nao bi tam dung${C_0}"
+fi
+
+# [PATCH] Kiem tra TUN tren HOST (Mysterium bat buoc phai co)
+if [[ -c /dev/net/tun ]]; then
+  echo -e "  Host TUN Device        : ${C_G}/dev/net/tun OK (Mysterium co the chay)${C_0}"
+else
+  echo -e "  Host TUN Device        : ${C_R}THIEU! Mysterium se loi CreateTUN. VPS ${VIRT:-?} can bat TUN/TAP${C_0}"
+  WARNINGS_COUNT=$((WARNINGS_COUNT+1))
+fi
 
 # --- 2. NETWORK, PROXY & ROUTING HEALTH ---
 echo -e "\n${C_C}--- [2. NETWORK, PROXY & ROUTING HEALTH] ---${C_0}"
