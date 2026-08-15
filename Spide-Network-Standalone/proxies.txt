@@ -1,0 +1,3 @@
+# Mỗi dòng một proxy:
+# socks5://username:password@host:port
+# http://username:password@host:port
