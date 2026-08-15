@@ -1,104 +1,89 @@
-# Spide Standalone — lệnh ngắn gọn
+# Spide Network — chỉ 4 lệnh
 
-## Device name có cần không?
+Máy đã cài `setup_vps.sh` hoặc `setup_vm.sh` trước đó thì **không chạy lại setup**.
 
-**Có khi thêm thiết bị trên dashboard**, nhưng Linux CLI không nhận Device Name.
-
-- `Device name`: bạn tự đặt trên dashboard, ví dụ `spide-001`, `spide-002`…
-- `Device key`: lấy từ lệnh `--keys`.
-- Device name chỉ là nhãn quản lý; Machine ID và Device Key mới là định danh kỹ thuật.
-
-## 1. Chuẩn bị bằng WinSCP
-
-Sửa hai file:
+Dùng WinSCP để sửa:
 
 ```text
 proxies.txt
 properties.conf
 ```
 
-Cấu hình mặc định nên giữ:
+`DEVICE_PREFIX=auto` sẽ lấy tên folder. Ví dụ folder `Spide-Mkvn` tự xuất tên:
 
-```bash
-USE_PROXIES=true
-USE_SOCKS5_DNS=false
-USE_DNS_OVER_HTTPS=true
-SPIDE_MAX_INSTANCES=0
+```text
+Spide-Mkvn-001
+Spide-Mkvn-002
+...
 ```
 
-## 2. Chạy
+## 1. Bắt đầu tạo
 
 ```bash
-cd /root/Spide-Network-Standalone
-chmod +x spideNetwork.sh
-sudo bash spideNetwork.sh --start
+cd /home/antoine/Spide-Mkvn
+sudo bash spideNetwork.sh --create
 ```
 
-## 3. Lấy Device Key
-
-Sau khi `--start` hoàn tất, script tự tạo:
+Script tự tạo TUN, Spide peer và file:
 
 ```text
 spide-device-keys.txt
 ```
 
-Mở file này bằng WinSCP để copy Device name và Device key. Muốn cập nhật lại file:
+Mở file TXT bằng WinSCP, copy `Device name` và `Device key` vào dashboard. Giữ các node đang chạy trong lúc add key.
+
+## 2. Add device xong → triển khai
 
 ```bash
-sudo bash spideNetwork.sh --keys
+sudo bash spideNetwork.sh --deploy
 ```
 
-Thêm từng dòng vào dashboard:
+Lệnh tự restart các Spide peer, chờ xác thực, cập nhật file key và báo số node `Status=OK`.
+
+Nếu chưa đủ `OK`, kiểm tra key trên dashboard rồi chạy lại cùng lệnh:
+
+```bash
+sudo bash spideNetwork.sh --deploy
+```
+
+## 3. Cập nhật proxy
+
+Dùng WinSCP sửa/thêm/xóa dòng trong `proxies.txt`, sau đó:
+
+```bash
+sudo bash spideNetwork.sh --update
+```
+
+- Proxy không đổi: giữ Machine ID và Device Key cũ.
+- Proxy mới hoặc dòng proxy bị thay đổi: tạo Device Key mới.
+- Proxy bị xóa: container tương ứng bị xóa.
+
+Mở lại `spide-device-keys.txt`, add những key mới rồi chạy:
+
+```bash
+sudo bash spideNetwork.sh --deploy
+```
+
+## 4. Xóa hoàn toàn container
+
+```bash
+sudo bash spideNetwork.sh --remove
+```
+
+Lệnh xóa toàn bộ container TUN + Spide của folder nhưng giữ:
 
 ```text
-INDEX 1 → Device name: spide-001 → Device key: cột DEVICE_KEY
-INDEX 2 → Device name: spide-002 → Device key: cột DEVICE_KEY
-INDEX 3 → Device name: spide-003 → Device key: cột DEVICE_KEY
+spide-data/
+spide-device-keys.txt
 ```
 
-## 4. Sau khi thêm key
+Vì vậy chạy `--create` lại vẫn dùng key cũ cho proxy không đổi.
+
+## Tóm tắt
 
 ```bash
-sudo bash spideNetwork.sh --restart
-sleep 15
-sudo bash spideNetwork.sh --status
-```
-
-Trạng thái đúng:
-
-```text
-TUN_STATE=running
-PEER_STATE=running
-STATUS=OK
-```
-
-## 5. Backup một lần
-
-```bash
-sudo bash spideNetwork.sh --backup
-```
-
-## 6. Xóa container
-
-```bash
-sudo bash spideNetwork.sh --delete
-```
-
-Lệnh này giữ nguyên `spide-data` và Device Key. Chạy lại:
-
-```bash
-sudo bash spideNetwork.sh --start
-```
-
-Không xóa `spide-data` sau khi đã đăng ký thiết bị.
-
-## Toàn bộ lệnh cần nhớ
-
-```bash
-sudo bash spideNetwork.sh --start    # chạy
-sudo bash spideNetwork.sh --keys     # lấy key
-sudo bash spideNetwork.sh --status   # kiểm tra
-sudo bash spideNetwork.sh --restart  # tạo lại, giữ key
-sudo bash spideNetwork.sh --backup   # backup Machine ID
-sudo bash spideNetwork.sh --delete   # xóa container, giữ key
+sudo bash spideNetwork.sh --create  # tạo node + file key
+sudo bash spideNetwork.sh --deploy  # sau khi add key
+sudo bash spideNetwork.sh --update  # sau khi sửa proxies.txt
+sudo bash spideNetwork.sh --remove  # xóa toàn bộ container
 ```

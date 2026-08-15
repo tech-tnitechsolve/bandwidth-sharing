@@ -31,19 +31,22 @@ die(){ printf '%s[XX]%s %s\n' "$R" "$N" "$*" >&2; exit 1; }
 trap 'rc=$?; printf "%s[XX]%s Loi dong %s (exit=%s)\n" "$R" "$N" "${BASH_LINENO[0]:-?}" "$rc" >&2; exit "$rc"' ERR
 
 usage(){ cat <<'EOF'
-Spide Network standalone
+Spide Network — 4 lệnh chính
 
-  sudo bash spideNetwork.sh --start
-  sudo bash spideNetwork.sh --keys
-  sudo bash spideNetwork.sh --status
-  sudo bash spideNetwork.sh --validate
-  sudo bash spideNetwork.sh --restart
-  sudo bash spideNetwork.sh --stop
-  sudo bash spideNetwork.sh --delete
-  sudo bash spideNetwork.sh --backup
+  1. Tạo node và xuất key:
+     sudo bash spideNetwork.sh --create
 
---stop và --delete đều REMOVE container thay vì chỉ stop, để cron cũ không tự bật lại.
-Machine ID trong spide-data luôn được giữ, trừ khi tự xóa folder này.
+  2. Sau khi add Device Key trên dashboard:
+     sudo bash spideNetwork.sh --deploy
+
+  3. Sau khi sửa/thêm/xóa proxies.txt:
+     sudo bash spideNetwork.sh --update
+
+  4. Xóa toàn bộ container của folder:
+     sudo bash spideNetwork.sh --remove
+
+File key tự tạo: spide-device-keys.txt
+--remove chỉ xóa container; vẫn giữ Machine ID và Device Key trong spide-data.
 EOF
 }
 
@@ -55,6 +58,8 @@ dk(){
 }
 
 load_config(){
+  DEVICE_PREFIX=auto
+  DEPLOY_WAIT=20
   USE_PROXIES=true
   USE_SOCKS5_DNS=false
   USE_DNS_OVER_HTTPS=true
@@ -73,6 +78,12 @@ load_config(){
   set +x
   # shellcheck disable=SC1090
   source "$CONF"
+  if [[ "$DEVICE_PREFIX" == auto || -z "$DEVICE_PREFIX" ]]; then
+    DEVICE_PREFIX=$(basename "$ROOT")
+  fi
+  DEVICE_PREFIX=$(printf '%s' "$DEVICE_PREFIX" | sed 's/[^A-Za-z0-9._-]/-/g;s/^-*//;s/-*$//')
+  [[ -n "$DEVICE_PREFIX" ]] || DEVICE_PREFIX=Spide
+  [[ "$DEPLOY_WAIT" =~ ^[0-9]+$ ]] || die "DEPLOY_WAIT phai la so giay"
   [[ "$USE_PROXIES" == true ]] || die "Standalone nay can USE_PROXIES=true"
   for v in USE_SOCKS5_DNS USE_DNS_OVER_HTTPS SPIDE_VALIDATE_EGRESS SPIDE_SKIP_DUPLICATE_EGRESS; do
     [[ "${!v}" == true || "${!v}" == false ]] || die "$v phai la true hoac false"
@@ -242,7 +253,7 @@ show_keys(){
     dk inspect "$peer" >/dev/null 2>&1 || continue
     key=$(dk logs "$peer" 2>&1 | sed -n 's/^.*Device Key:[[:space:]]*//p' | tail -1 || true)
     status=$(dk logs "$peer" 2>&1 | sed -n 's/^.*Status:[[:space:]]*//p' | tail -1 || true)
-    device_name=$(printf 'spide-%03d' "$idx")
+    device_name=$(printf '%s-%03d' "$DEVICE_PREFIX" "$idx")
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$idx" "$h" "$peer" "$ip" "$mid" "${key:--}" "${status:--}"
     {
       printf 'Device name: %s\n' "$device_name"
@@ -287,6 +298,33 @@ validate_only(){
   done
 }
 
+deploy_all(){
+  prereq; load_config
+  local peers=() peer ok=0 total=0 status
+  mapfile -t peers < <(dk ps -a --filter "label=$PROJECT_LABEL" --filter "label=com.spide-standalone.role=peer" --format '{{.Names}}' | sort -V)
+  ((${#peers[@]} > 0)) || die "Chua co Spide peer; chay --create truoc"
+  log "Trien khai ${#peers[@]} peer sau khi da add Device Key..."
+  for peer in "${peers[@]}"; do
+    dk restart "$peer" >/dev/null
+    sleep 0.5
+  done
+  log "Cho ${DEPLOY_WAIT}s de Spide xac thuc..."
+  sleep "$DEPLOY_WAIT"
+  show_keys
+  printf '\n'
+  show_status
+  for peer in "${peers[@]}"; do
+    total=$((total+1))
+    status=$(dk logs "$peer" 2>&1 | sed -n 's/^.*Status:[[:space:]]*//p' | tail -1 || true)
+    [[ "$status" == OK ]] && ok=$((ok+1))
+  done
+  if (( ok == total )); then
+    log "TRIEN KHAI THANH CONG: $ok/$total node Status=OK"
+  else
+    warn "Moi co $ok/$total node Status=OK. Kiem tra key dashboard, cho them roi chay --deploy lai."
+  fi
+}
+
 backup_ids(){
   [[ -d "$DATA/nodes" ]] || die "Chua co spide-data"
   local out="$ROOT/spide-identity-backup-$(date +%Y%m%d-%H%M%S).tar.gz"
@@ -299,16 +337,42 @@ backup_ids(){
 
 main(){
   case "${1:---help}" in
-    --start) start_all ;;
-    --keys) prereq; show_keys ;;
-    --status) prereq; show_status ;;
-    --validate) validate_only ;;
-    --restart) prereq; remove_project_containers; start_all ;;
-    --stop|--delete) prereq; remove_project_containers; log "Da remove container; Machine ID van duoc giu trong spide-data" ;;
-    --backup) backup_ids ;;
-    --version) echo "$VERSION" ;;
-    --help|-h|help) usage ;;
-    *) usage; die "Tham so khong hop le: $1" ;;
+    --create|--start)
+      log "BUOC 1: Tao/recreate node, giu Machine ID cu neu proxy khong doi"
+      start_all
+      ;;
+    --deploy)
+      deploy_all
+      ;;
+    --update)
+      log "BUOC 3: Dong bo lai proxies.txt; proxy cu giu key, proxy moi tao key moi"
+      start_all
+      ;;
+    --remove|--stop|--delete)
+      prereq; remove_project_containers
+      log "Da xoa hoan toan container TUN + Spide cua folder; spide-data van duoc giu"
+      ;;
+    --keys)
+      prereq; load_config; show_keys
+      ;;
+    --status)
+      prereq; show_status
+      ;;
+    --validate)
+      validate_only
+      ;;
+    --backup)
+      backup_ids
+      ;;
+    --version)
+      echo "$VERSION"
+      ;;
+    --help|-h|help)
+      usage
+      ;;
+    *)
+      usage; die "Tham so khong hop le: $1"
+      ;;
   esac
 }
 main "$@"
