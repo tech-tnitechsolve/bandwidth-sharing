@@ -1,77 +1,54 @@
-# Spide Network Standalone
+# Spide Standalone — lệnh ngắn gọn
 
-Folder này chỉ chạy TUN proxy + Spide. Không cần và không chạy lại `setup_vps.sh` hoặc `setup_vm.sh`.
+## Device name có cần không?
 
-## Vì sao không xung đột setup cũ?
+**Có khi thêm thiết bị trên dashboard**, nhưng Linux CLI không nhận Device Name.
 
-- Entry point tên `spideNetwork.sh`, không phải `internetIncome.sh`.
-- State tên `spide-nodes.tsv`, không tạo `containernames.txt`.
-- Container dùng prefix riêng `spn-<project>-...` và Docker label riêng.
-- Không sửa sysctl, firewall, DNS host, Docker daemon, cron, swap hoặc ZRAM.
-- Không chỉnh file/folder InternetIncome khác.
-- `--stop` remove container thay vì để trạng thái exited, nên cron cũ không tự start lại.
-- Machine ID chỉ nằm trong `spide-data/nodes/` của folder này.
+- `Device name`: bạn tự đặt trên dashboard, ví dụ `spide-001`, `spide-002`…
+- `Device key`: lấy từ lệnh `--keys`.
+- Device name chỉ là nhãn quản lý; Machine ID và Device Key mới là định danh kỹ thuật.
 
-## Yêu cầu có sẵn
+## 1. Chuẩn bị bằng WinSCP
 
-- Docker đang hoạt động.
-- `/dev/net/tun` tồn tại.
-- Linux x86_64/amd64.
+Sửa hai file:
 
-Hai setup cũ của bạn đã chuẩn bị các yêu cầu này, nhưng không cần chạy lại chúng.
+```text
+proxies.txt
+properties.conf
+```
 
-## Proxy list, HTTP/SOCKS và DNS
-
-Folder có cấu hình tương tự InternetIncome:
+Cấu hình mặc định nên giữ:
 
 ```bash
 USE_PROXIES=true
 USE_SOCKS5_DNS=false
 USE_DNS_OVER_HTTPS=true
+SPIDE_MAX_INSTANCES=0
 ```
 
-`proxies.txt` hỗ trợ mỗi dòng một proxy:
-
-```text
-http://user:pass@host:port
-https://user:pass@host:port
-socks4://host:port
-socks5://user:pass@host:port
-```
-
-Mỗi dòng tạo một TUN riêng. Với cấu hình mặc định, DNS dùng chế độ `over-tcp` trong đường TUN/proxy; nếu tắt cả hai DNS option, script dùng DNS `virtual` của tun2proxy.
-
-## Chạy
+## 2. Chạy
 
 ```bash
-cd Spide-Network-Standalone
-nano proxies.txt
-nano properties.conf
+cd /root/Spide-Network-Standalone
+chmod +x spideNetwork.sh
 sudo bash spideNetwork.sh --start
 ```
 
-Lần đầu script sẽ:
-
-1. Tự xác định tier RAM.
-2. Tải/build Spide CLI chính thức có kiểm tra SHA-256.
-3. Tạo một TUN riêng cho mỗi proxy.
-4. Kiểm tra egress IP, bỏ proxy lỗi và IP trùng.
-5. Tạo Machine ID bền vững theo hash proxy.
-6. Tạo một Spide peer dùng network namespace của TUN tương ứng.
-7. In Device Key.
-
-## Lệnh
+## 3. Lấy Device Key
 
 ```bash
 sudo bash spideNetwork.sh --keys
-sudo bash spideNetwork.sh --status
-sudo bash spideNetwork.sh --validate
-sudo bash spideNetwork.sh --restart
-sudo bash spideNetwork.sh --stop
-sudo bash spideNetwork.sh --backup
 ```
 
-Đăng ký cột `DEVICE_KEY` vào dashboard, sau đó:
+Thêm từng dòng vào dashboard:
+
+```text
+INDEX 1 → Device name: spide-001 → Device key: cột DEVICE_KEY
+INDEX 2 → Device name: spide-002 → Device key: cột DEVICE_KEY
+INDEX 3 → Device name: spide-003 → Device key: cột DEVICE_KEY
+```
+
+## 4. Sau khi thêm key
 
 ```bash
 sudo bash spideNetwork.sh --restart
@@ -79,22 +56,41 @@ sleep 15
 sudo bash spideNetwork.sh --status
 ```
 
-## Resource tự động
-
-| RAM máy | Spide | Spide swap | TUN | TUN swap |
-|---:|---:|---:|---:|---:|
-| ≤2.5 GB | 96 MB | 192 MB | 64 MB | 128 MB |
-| ≤5 GB | 128 MB | 256 MB | 96 MB | 192 MB |
-| ≤9 GB | 160 MB | 320 MB | 128 MB | 256 MB |
-| >9 GB | 192 MB | 384 MB | 160 MB | 320 MB |
-
-Có thể ghi đè giá trị `auto` trong `properties.conf` nếu cần.
-
-## Dữ liệu cần giữ
+Trạng thái đúng:
 
 ```text
-spide-data/nodes/<proxy-hash>/machine-id
-spide-data/spide-nodes.tsv
+TUN_STATE=running
+PEER_STATE=running
+STATUS=OK
 ```
 
-Không xóa `spide-data` sau khi đăng ký Device Key.
+## 5. Backup một lần
+
+```bash
+sudo bash spideNetwork.sh --backup
+```
+
+## 6. Xóa container
+
+```bash
+sudo bash spideNetwork.sh --delete
+```
+
+Lệnh này giữ nguyên `spide-data` và Device Key. Chạy lại:
+
+```bash
+sudo bash spideNetwork.sh --start
+```
+
+Không xóa `spide-data` sau khi đã đăng ký thiết bị.
+
+## Toàn bộ lệnh cần nhớ
+
+```bash
+sudo bash spideNetwork.sh --start    # chạy
+sudo bash spideNetwork.sh --keys     # lấy key
+sudo bash spideNetwork.sh --status   # kiểm tra
+sudo bash spideNetwork.sh --restart  # tạo lại, giữ key
+sudo bash spideNetwork.sh --backup   # backup Machine ID
+sudo bash spideNetwork.sh --delete   # xóa container, giữ key
+```
