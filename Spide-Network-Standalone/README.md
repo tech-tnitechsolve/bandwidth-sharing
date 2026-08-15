@@ -36,6 +36,14 @@ sudo bash spideNetwork.sh --start
 
 ## 3. Lấy Device Key
 
+Sau khi `--start` hoàn tất, script tự tạo:
+
+```text
+spide-device-keys.txt
+```
+
+Mở file này bằng WinSCP để copy Device name và Device key. Muốn cập nhật lại file:
+
 ```bash
 sudo bash spideNetwork.sh --keys
 ```

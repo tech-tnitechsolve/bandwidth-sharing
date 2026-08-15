@@ -13,6 +13,7 @@ PROXIES="$ROOT/proxies.txt"
 DATA="$ROOT/spide-data"
 BUILD_DIR="$DATA/build"
 STATE="$DATA/spide-nodes.tsv"
+KEYS_FILE="$ROOT/spide-device-keys.txt"
 IMAGE="local/spide-standalone:0.15b"
 SPIDE_URL="https://pub-bf426a5300a643d2884389c8985f5181.r2.dev/spide_linux_cli.zip"
 SPIDE_SHA256="ae03e67109ba125f8b317dedb3dd31a3df745f75ed647abd57e7deef6328250c"
@@ -230,13 +231,30 @@ start_all(){
 
 show_keys(){
   [[ -s "$STATE" ]] || die "Chua co node; chay --start"
+  local tmp="$KEYS_FILE.tmp" device_name key status
+  {
+    printf '# Spide Device Keys — generated %s\n' "$(date '+%F %T %Z')"
+    printf '# Paste Device name + Device key vao Spide dashboard.\n\n'
+  } > "$tmp"
+
   printf 'INDEX\tPROXY_ID\tCONTAINER\tEGRESS\tMACHINE_ID\tDEVICE_KEY\tSTATUS\n'
   while IFS=$'\t' read -r idx h tun peer ip mid oldkey oldstatus; do
     dk inspect "$peer" >/dev/null 2>&1 || continue
     key=$(dk logs "$peer" 2>&1 | sed -n 's/^.*Device Key:[[:space:]]*//p' | tail -1 || true)
     status=$(dk logs "$peer" 2>&1 | sed -n 's/^.*Status:[[:space:]]*//p' | tail -1 || true)
+    device_name=$(printf 'spide-%03d' "$idx")
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$idx" "$h" "$peer" "$ip" "$mid" "${key:--}" "${status:--}"
+    {
+      printf 'Device name: %s\n' "$device_name"
+      printf 'Device key: %s\n' "${key:--}"
+      printf 'Egress IP: %s\n' "$ip"
+      printf 'Status: %s\n\n' "${status:--}"
+    } >> "$tmp"
   done < "$STATE"
+
+  mv "$tmp" "$KEYS_FILE"
+  chmod 600 "$KEYS_FILE"
+  log "Da xuat file key: $KEYS_FILE"
 }
 
 show_status(){
@@ -272,7 +290,10 @@ validate_only(){
 backup_ids(){
   [[ -d "$DATA/nodes" ]] || die "Chua co spide-data"
   local out="$ROOT/spide-identity-backup-$(date +%Y%m%d-%H%M%S).tar.gz"
-  tar -C "$ROOT" -czf "$out" spide-data/nodes spide-data/spide-nodes.tsv 2>/dev/null || tar -C "$ROOT" -czf "$out" spide-data/nodes
+  local items=("spide-data/nodes")
+  [[ -f "$STATE" ]] && items+=("spide-data/spide-nodes.tsv")
+  [[ -f "$KEYS_FILE" ]] && items+=("spide-device-keys.txt")
+  tar -C "$ROOT" -czf "$out" "${items[@]}"
   chmod 600 "$out"; log "Backup: $out"
 }
 
