@@ -1,7 +1,7 @@
 cat << 'MASTER_EOF' > ~/setup_vps.sh
 #!/usr/bin/env bash
 #============================================================================
-#  setup_vps.sh (2026 UNIVERSAL MASTER - ZERO DOWNTIME & SMART 50% SSD)
+#  setup_vps.sh (2026 UNIVERSAL MASTER - ZERO DOWNTIME & ZERO PROXY UDP ERROR)
 #============================================================================
 set -Eeuo pipefail
 
@@ -212,7 +212,6 @@ else
   fi
 fi
 
-# DỌN DẸP CACHE HỆ THỐNG ĐỂ SSD LUÔN RỘNG RÃI
 apt-get clean 2>/dev/null || true
 journalctl --vacuum-size=10M 2>/dev/null || true
 
@@ -249,7 +248,7 @@ if has_systemd && systemctl list-unit-files 2>/dev/null | grep -q '^systemd-reso
 fi
 
 rm -f /etc/resolv.conf
-printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\nnameserver 222.252.2.2\nnameserver 203.162.4.190\nnameserver 9.9.9.9\n' > /etc/resolv.conf
+printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\nnameserver 9.9.9.9\n' > /etc/resolv.conf
 
 modprobe nf_conntrack 2>/dev/null || true
 modprobe tcp_bbr 2>/dev/null || true
@@ -283,6 +282,7 @@ sysctl -w net.ipv6.conf.all.disable_ipv6=0 >/dev/null 2>&1 || true
 sysctl -w net.ipv6.conf.default.disable_ipv6=0 >/dev/null 2>&1 || true
 sysctl -w net.ipv6.conf.lo.disable_ipv6=0 >/dev/null 2>&1 || true
 
+# --- TỐI ƯU KERNEL CHUYÊN SÂU ĐỒNG HÓA PROXY VÀ CHỐNG DROP PACKET ---
 SYSCTL_FILE=/etc/sysctl.d/99-internetincome.conf
 cat > "$SYSCTL_FILE" <<EOF_SYSCTL
 net.core.default_qdisc = fq
@@ -447,6 +447,7 @@ ii_profile() {
 
     # ============ NHOM CHROMIUM / TRÌNH DUYỆT NẶNG (ĐỦ 200-320MB RAM) =============
     wipter*)
+      # WIPTER: Cấp chuẩn 320MB RAM (vừa vặn 200-300MB thực tế, không sợ OOM)
       P_APP="Wipter"; P_MEM=$(_p $t 320m 350m 400m 500m); P_SWAP=$(_p $t 600m 700m 800m 1000m)
       P_POLICY="on-failure:5"; P_VPS="resi"
       P_NOTE="Chromium Heap Calibrated 320MB" ;;
@@ -648,12 +649,12 @@ ln -sf /usr/local/bin/ii-autosync.sh /usr/bin/ii-autosync 2>/dev/null || true
 # Chạy quét và vá Live ngay bây giờ
 /usr/local/bin/ii-autosync.sh
 
+# --- CẤU HÌNH DOCKER DAEMON (ĐÃ XÓA HOÀN TOÀN PHẦN ÉP DNS TRÁNH LỖI PROXY UDP) ---
 mkdir -p /etc/docker
 NEW_DAEMON="$(cat <<EOF_DAEMON
 {
   "log-driver": "json-file",
   "log-opts": { "max-size": "2m", "max-file": "2" },
-  "dns": ["8.8.8.8", "1.1.1.1", "9.9.9.9"],
   "registry-mirrors": ["https://mirror.gcr.io", "https://docker.m.daocloud.io"],
   "max-concurrent-downloads": ${CONCURRENT_DOWNLOADS},
   "live-restore": true,
@@ -764,7 +765,7 @@ EOF_BOOT_SVC
   systemctl enable ii-boot-staggered.service 2>/dev/null || true
 fi
 
-# Chạy mở toàn bộ container an toàn ngay lập tức (Chỉ mở các node đang Exited, không chạm vào node đang chạy)
+# Chạy mở toàn bộ container an toàn ngay lập tức
 /usr/local/bin/ii-staggered-start.sh
 
 install_cron_stack() {
@@ -817,11 +818,11 @@ if (( DO_CRON == 1 )); then
 fi
 
 #============================================================================
-# BẢNG CHẨN ĐOÁN TINH GỌN - ĐO LƯỜNG CHÍNH XÁC CHẤT LƯỢNG 24/7
+# BẢNG CHẨN ĐOÁN TINH GỌN - ĐO LƯỜNG CHÍNH XÁC CHẤT LƯỢNG 24/7 (ĐÃ SỬA LỖI MẢNG)
 #============================================================================
 cat > /usr/local/bin/ii-status.sh <<'EOF_STATUS'
 #!/usr/bin/env bash
-set -u
+set +u
 
 if [[ -t 1 ]]; then
   C_G='\033[1;32m'; C_Y='\033[1;33m'; C_R='\033[1;31m'; C_B='\033[1;34m'; C_C='\033[1;36m'; C_0='\033[0m'
@@ -927,15 +928,18 @@ if [[ -r "$PROFILES" ]]; then
     APP_COUNT["$app_key"]=$(( ${APP_COUNT["$app_key"]:-0} + 1 ))
     APP_MEM["$app_key"]="${cmb}MB"
     APP_POL["$app_key"]="$cpol"
+    APP_ERR["$app_key"]=${APP_ERR["$app_key"]:-0}
+    APP_WARN["$app_key"]=${APP_WARN["$app_key"]:-0}
+    APP_OK["$app_key"]=${APP_OK["$app_key"]:-0}
 
     if [[ "$coom" == "true" ]] || (( cmb == 0 && app_key != "tun2socks" && app_key != "docker-in-docker" )) || [[ "$cpol" == "always" && "$P_POLICY" != "__KEEP__" ]]; then
-      APP_ERR["$app_key"]=$(( ${APP_ERR["$app_key"]:-0} + 1 ))
+      APP_ERR["$app_key"]=$(( ${APP_ERR["$app_key"]} + 1 ))
       ISSUES_COUNT=$((ISSUES_COUNT+1))
     elif (( cmb < want && want > 0 )); then
-      APP_WARN["$app_key"]=$(( ${APP_WARN["$app_key"]:-0} + 1 ))
+      APP_WARN["$app_key"]=$(( ${APP_WARN["$app_key"]} + 1 ))
       WARNINGS_COUNT=$((WARNINGS_COUNT+1))
     else
-      APP_OK["$app_key"]=$(( ${APP_OK["$app_key"]:-0} + 1 ))
+      APP_OK["$app_key"]=$(( ${APP_OK["$app_key"]} + 1 ))
     fi
 
     if ii_is_suspend_sensitive "$cn" && (( crc > 3 )); then
@@ -1124,7 +1128,7 @@ EOF_DEEP
 chmod +x /usr/local/bin/ii-deep.sh
 ln -sf /usr/local/bin/ii-deep.sh /usr/bin/ii-deep 2>/dev/null || true
 
-echo "============================= SETUP XONG (UNIVERSAL 24/7 MASTER) =============================="
+echo "============================= SETUP XONG (2026 UNIVERSAL MASTER) =============================="
 /usr/local/bin/ii-status.sh || true
 MASTER_EOF
 chmod +x ~/setup_vps.sh
