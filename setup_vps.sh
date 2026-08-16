@@ -1,7 +1,7 @@
 cat << 'MASTER_EOF' > ~/setup_vps.sh
 #!/usr/bin/env bash
 #============================================================================
-#  setup_vps.sh (2026 FULL-AUTO SYNC & OPTIMIZED RAM DENSITY MASTER)
+#  setup_vps.sh (2026 ULTRA ANTI-BAN & SMART 20GB SSD DENSITY MASTER)
 #============================================================================
 set -Eeuo pipefail
 
@@ -52,21 +52,34 @@ case "$VIRT" in lxc|lxc-libvirt|openvz) IS_CONTAINER=1 ;; esac
 
 MEM_MB=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
 CPU=$(nproc 2>/dev/null || echo 1)
+DISK_TOTAL_MB=$(df -m / | awk 'NR==2 {print $2}')
+DISK_FREE_MB=$(df -m / | awk 'NR==2 {print $4}')
 
-# --- MATRIX PHÂN BỔ TÀI NGUYÊN ĐÃ ĐƯỢC TINH CHỈNH TỐI ƯU ---
+# --- MATRIX PHÂN BỔ TÀI NGUYÊN (CHUẨN HÓA CHO Ổ SSD 20GB) ---
 TIER_NAME=""
 if (( MEM_MB <= 2500 )); then
   TIER_NAME="TIER 1 (1-2 CPU / 2GB RAM - LIGHTWEIGHT PROXIES)"
-  CONTAINER_MEM_LIMIT="35m"; CONTAINER_SWAP_LIMIT="80m"; TARGET_SWAP_MB=2048
+  CONTAINER_MEM_LIMIT="35m"; CONTAINER_SWAP_LIMIT="80m"
 elif (( MEM_MB <= 5000 )); then
   TIER_NAME="TIER 2 (2 CPU / 4GB RAM - BALANCED PROXIES)"
-  CONTAINER_MEM_LIMIT="45m"; CONTAINER_SWAP_LIMIT="100m"; TARGET_SWAP_MB=3072
+  CONTAINER_MEM_LIMIT="45m"; CONTAINER_SWAP_LIMIT="100m"
 elif (( MEM_MB <= 9000 )); then
   TIER_NAME="TIER 3 (2 CPU / 8GB RAM - HIGH DENSITY PROXIES)"
-  CONTAINER_MEM_LIMIT="60m"; CONTAINER_SWAP_LIMIT="130m"; TARGET_SWAP_MB=4096
+  CONTAINER_MEM_LIMIT="60m"; CONTAINER_SWAP_LIMIT="130m"
 else
   TIER_NAME="TIER 4 (2+ CPU / 12GB+ RAM - DEDICATED WIPTER / HEAVY APPS)"
-  CONTAINER_MEM_LIMIT="90m"; CONTAINER_SWAP_LIMIT="200m"; TARGET_SWAP_MB=4096
+  CONTAINER_MEM_LIMIT="90m"; CONTAINER_SWAP_LIMIT="200m"
+fi
+
+# TỐI ƯU SWAPFILE Ổ CỨNG: Nếu RAM >= 9GB hoặc Ổ SSD nhỏ (<= 25GB) -> Chỉ cần đúng 1024MB (1GB) Swap trên SSD!
+if (( MEM_MB >= 9000 )) || (( DISK_TOTAL_MB <= 25000 )); then
+  TARGET_SWAP_MB=1024
+elif (( MEM_MB <= 2500 )); then
+  TARGET_SWAP_MB=1024
+elif (( MEM_MB <= 5000 )); then
+  TARGET_SWAP_MB=1536
+else
+  TARGET_SWAP_MB=2048
 fi
 
 TIER_IDX=1
@@ -157,13 +170,6 @@ fi
 SWAPPINESS=100
 sysctl -w vm.swappiness=100 >/dev/null 2>&1 || true
 
-DISK_FREE_MB=$(df -m / | awk 'NR==2 {print $4}')
-MAX_SAFE_SWAP=$(( DISK_FREE_MB - 2048 ))
-if (( MAX_SAFE_SWAP < 512 )); then MAX_SAFE_SWAP=512; fi
-if (( TARGET_SWAP_MB > MAX_SAFE_SWAP )); then
-  TARGET_SWAP_MB=$MAX_SAFE_SWAP
-fi
-
 if (( CPU <= 2 )); then
   CONCURRENT_DOWNLOADS=3; SYN_BACKLOG=8192
 elif (( CPU <= 4 )); then
@@ -173,52 +179,43 @@ else
 fi
 
 echo "=============================================================="
-echo "  VPS $(hostname) | RAM ${MEM_MB}MB | ${CPU} CPU"
+echo "  VPS $(hostname) | RAM ${MEM_MB}MB | ${CPU} CPU | SSD ${DISK_TOTAL_MB}MB"
 echo "  DETECTED PROFILE : ${TIER_NAME}"
-echo "  ZRAM COMPRESSION : ZSTD (MAX DENSITY - CALIBRATED)"
-echo "  Swap target=${TARGET_SWAP_MB}MB | Standard Limit=${CONTAINER_MEM_LIMIT}/${CONTAINER_SWAP_LIMIT}"
+echo "  ZRAM COMPRESSION : ZSTD (MAX DENSITY)"
+echo "  SSD SWAP TARGET  : ${TARGET_SWAP_MB}MB (SMART 20GB SSD PROFILE)"
 echo "  PROTECTION ENFORCED: Honeygain / Repocket / Packetstream / Pawns / Wipter / EarnApp"
 echo "=============================================================="
 
-CURR_SWAP_MB=$(free -m 2>/dev/null | awk '/^Swap:/{print $2}' || echo 0)
-SWAP_USED_MB=$(free -m 2>/dev/null | awk '/^Swap:/{print $3}' || echo 0)
-RAM_AVAIL_MB=$(free -m 2>/dev/null | awk '/^Mem:/{print $7}' || echo 0)
+CURR_DISK_SWAP_MB=$(swapon --show=NAME,SIZE --bytes 2>/dev/null | awk '/swapfile/{print int($2/1024/1024)}' || echo 0)
+SWAP_USED_MB=$(swapon --show=NAME,USED --bytes 2>/dev/null | awk '/swapfile/{print int($2/1024/1024)}' || echo 0)
 
 if (( IS_CONTAINER == 1 )); then
   warn "May ${VIRT} (container) thuong KHONG tao duoc swap -> bo qua"
-elif (( CURR_SWAP_MB >= TARGET_SWAP_MB - 256 )) && (( CURR_SWAP_MB <= TARGET_SWAP_MB + 1536 )); then
-  log "Da co swap đia ${CURR_SWAP_MB}MB -> giu nguyen"
 else
-  REBUILD_SWAP=1
-  if (( CURR_SWAP_MB > TARGET_SWAP_MB + 1536 )); then
-    if (( SWAP_USED_MB > RAM_AVAIL_MB - 200 )); then
-      warn "Swap hien tai dang dung ${SWAP_USED_MB}MB -> Giu nguyen de an toan live!"
-      REBUILD_SWAP=0
-    else
-      swapoff /swapfile /swapfile2 2>/dev/null || true
-      sed -i '/\/swapfile/d' /etc/fstab 2>/dev/null || true
-      rm -f /swapfile /swapfile2 2>/dev/null || true
-      CURR_SWAP_MB=0
-    fi
+  # TỰ ĐỘNG THU NHỎ NẾU FILE SWAP ĐĨA CŨ QUÁ LỚN (> TARGET + 512MB) ĐỂ GIẢI PHÓNG 3GB SSD
+  if (( CURR_DISK_SWAP_MB > TARGET_SWAP_MB + 512 )) && (( SWAP_USED_MB == 0 )); then
+    log "Phat hien swapfile cu (${CURR_DISK_SWAP_MB}MB) qua lon tren SSD 20GB -> Thu nho xuong ${TARGET_SWAP_MB}MB de giai phong SSD..."
+    swapoff /swapfile /swapfile2 2>/dev/null || true
+    rm -f /swapfile /swapfile2 2>/dev/null || true
+    CURR_DISK_SWAP_MB=0
   fi
 
-  if (( REBUILD_SWAP == 1 )); then
-    NEEDED_SWAP_MB=$(( TARGET_SWAP_MB - CURR_SWAP_MB ))
-    SWAP_TARGET_FILE="/swapfile"
-    if [[ -f /swapfile ]] && swapon --show=NAME 2>/dev/null | grep -q '/swapfile'; then
-      SWAP_TARGET_FILE="/swapfile2"
+  if (( CURR_DISK_SWAP_MB >= TARGET_SWAP_MB - 256 )) && (( CURR_DISK_SWAP_MB <= TARGET_SWAP_MB + 512 )); then
+    log "Da co swap đia ${CURR_DISK_SWAP_MB}MB hop ly -> giu nguyen"
+  else
+    log "Tao swap đia toi uu ${TARGET_SWAP_MB}MB tren SSD (/swapfile)..."
+    swapoff /swapfile 2>/dev/null || true
+    rm -f /swapfile 2>/dev/null || true
+    
+    if ! fallocate -l "${TARGET_SWAP_MB}M" /swapfile 2>/dev/null; then
+      dd if=/dev/zero of=/swapfile bs=1M count="$TARGET_SWAP_MB" status=none
     fi
-
-    log "Tao swap ${NEEDED_SWAP_MB}MB (${SWAP_TARGET_FILE})..."
-    if ! fallocate -l "${NEEDED_SWAP_MB}M" "$SWAP_TARGET_FILE" 2>/dev/null; then
-      dd if=/dev/zero of="$SWAP_TARGET_FILE" bs=1M count="$NEEDED_SWAP_MB" status=none
-    fi
-    chmod 600 "$SWAP_TARGET_FILE"
-    if mkswap "$SWAP_TARGET_FILE" >/dev/null 2>&1 && swapon -p 0 "$SWAP_TARGET_FILE" 2>/dev/null; then
-      grep -q "^${SWAP_TARGET_FILE}" /etc/fstab || echo "${SWAP_TARGET_FILE} none swap sw,pri=0 0 0" >> /etc/fstab
-      log "Tao swap đia ${SWAP_TARGET_FILE} ${NEEDED_SWAP_MB}MB thanh cong"
+    chmod 600 /swapfile
+    if mkswap /swapfile >/dev/null 2>&1 && swapon -p 0 /swapfile 2>/dev/null; then
+      grep -q "^/swapfile" /etc/fstab || echo "/swapfile none swap sw,pri=0 0 0" >> /etc/fstab
+      log "Tao swap đia /swapfile ${TARGET_SWAP_MB}MB thanh cong!"
     else
-      rm -f "$SWAP_TARGET_FILE"
+      rm -f /swapfile
     fi
   fi
 fi
@@ -230,6 +227,11 @@ if has_systemd; then
 fi
 apt-get purge -y snapd earlyoom 2>/dev/null || true
 rm -rf /var/cache/snapd/ /var/lib/snapd/ 2>/dev/null || true
+
+if command -v docker >/dev/null 2>&1; then
+  log "Dang don dep cac container Watchtower trung lap ngom RAM..."
+  docker ps -a --format '{{.Names}}' 2>/dev/null | grep "internetincomewatchtower" | xargs -r docker rm -f >/dev/null 2>&1 || true
+fi
 
 MAIN_IF=$(ip route 2>/dev/null | grep default | awk '{print $5}' | head -n1 || echo "")
 if [[ -f /etc/vnstat.conf ]]; then
@@ -285,6 +287,7 @@ sysctl -w net.ipv6.conf.all.disable_ipv6=0 >/dev/null 2>&1 || true
 sysctl -w net.ipv6.conf.default.disable_ipv6=0 >/dev/null 2>&1 || true
 sysctl -w net.ipv6.conf.lo.disable_ipv6=0 >/dev/null 2>&1 || true
 
+# --- TỐI ƯU KERNEL CHUYÊN SÂU ĐỒNG HÓA PROXY VÀ CHỐNG DROP PACKET ---
 SYSCTL_FILE=/etc/sysctl.d/99-internetincome.conf
 cat > "$SYSCTL_FILE" <<EOF_SYSCTL
 net.core.default_qdisc = fq
@@ -466,7 +469,7 @@ ii_profile() {
     earnapp*)
       P_APP="EarnApp"; P_MEM=$(_p $t 65m 80m 100m 120m); P_SWAP=$(_p $t 130m 160m 200m 240m)
       P_POLICY="on-failure:3"; P_VPS="ban"; P_MAXIP=1
-      P_NOTE="BANNED ON VPS - Chay tren Residential Proxy" ;;
+      P_NOTE="BANNED ON VPS - Chay qua Residential Proxy" ;;
 
     *)
       P_APP=""; P_POLICY="__KEEP__"; P_NOTE="Khong co ho so - giu nguyen cau hinh goc" ;;
@@ -636,7 +639,6 @@ for cid in $(docker ps -aq 2>/dev/null); do
   cmem=$(docker inspect -f '{{.HostConfig.Memory}}' "$cid" 2>/dev/null || echo 0)
   cpol=$(docker inspect -f '{{.HostConfig.RestartPolicy.Name}}' "$cid" 2>/dev/null || echo "")
   
-  # Chi cap nhat neu container mang thong so chua chuan
   if (( cmem == 0 )) || [[ "$cpol" == "always" ]]; then
     if [[ "$P_POLICY" == "__KEEP__" ]]; then
       docker update --memory="$P_MEM" --memory-swap="$P_SWAP" "$cid" >/dev/null 2>&1 || true
@@ -1031,7 +1033,7 @@ CONN_MAX=$(cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null || echo 5242
 CONN_PCT=$(( CONN_COUNT * 100 / CONN_MAX ))
 echo -e "  Conntrack Active Streams: ${C_G}${CONN_COUNT} / ${CONN_MAX} (${CONN_PCT}% capacity)${C_0}"
 
-# --- 3. SYSTEM RAM, SWAP & ZRAM HEALTH ---
+# --- 3. SYSTEM RAM, SWAP & ZRAM ALLOCATION ---
 echo -e "\n${C_C}--- [3. SYSTEM RAM, SWAP & ZRAM ALLOCATION] ---${C_0}"
 RAM_TOTAL=$(free -m | awk '/^Mem:/{print $2}')
 RAM_USED=$(free -m | awk '/^Mem:/{print $3}')
@@ -1092,7 +1094,7 @@ if (( ISSUES_COUNT == 0 && WARNINGS_COUNT == 0 )); then
   echo -e "  STATUS        : ${C_G}[HEALTHY_SMOOTH_24_7]${C_0} No action required."
 elif (( ISSUES_COUNT == 0 )); then
   echo -e "  OVERALL SCORE : ${C_Y}${SCORE}% GOOD${C_0} - System running fine with minor warnings."
-  echo -e "  STATUS        : ${C_Y}[STABLE_WITH_WARNINGS]${C_0} System is self-optimizing in background."
+  echo -e "  STATUS        : ${C_Y}[STABLE_WITH_WARNINGS]${C_0} AutoSync engine is maintaining containers."
 else
   echo -e "  OVERALL SCORE : ${C_R}${SCORE}% UNSTABLE (${ISSUES_COUNT} Critical Issues Found!)${C_0}"
   echo -e "  STATUS        : ${C_R}[INCOME_RISK_DETECTED]${C_0} AutoSync engine is repairing containers."
@@ -1128,7 +1130,7 @@ EOF_DEEP
 chmod +x /usr/local/bin/ii-deep.sh
 ln -sf /usr/local/bin/ii-deep.sh /usr/bin/ii-deep 2>/dev/null || true
 
-echo "============================= SETUP XONG (FULL-AUTO SYNC & OPTIMIZED RAM MASTER) =============================="
+echo "============================= SETUP XONG (20GB SSD & INCOME TELEMETRY MASTER) =============================="
 /usr/local/bin/ii-status.sh || true
 MASTER_EOF
 chmod +x ~/setup_vps.sh
