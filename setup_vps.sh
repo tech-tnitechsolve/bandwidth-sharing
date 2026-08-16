@@ -1,7 +1,7 @@
 cat << 'MASTER_EOF' > ~/setup_vps.sh
 #!/usr/bin/env bash
 #============================================================================
-#  setup_vps.sh (DYNAMIC TIER MATRIX 2026 - ULTRA ANTI-BAN EDITION)
+#  setup_vps.sh (DYNAMIC TIER MATRIX 2026 - ULTRA ANTI-BAN EDITION - ZSTD CORE)
 #============================================================================
 set -Eeuo pipefail
 
@@ -123,18 +123,20 @@ if [[ -f /sys/kernel/mm/ksm/run ]]; then
   log "Da kich hoat KSM toi uu cao thanh cong!"
 fi
 
+# --- CẤU HÌNH ÉP CỨNG THUẬT TOÁN ZSTD CHO ZRAM ---
 ZRAM_SIZE_BYTES=$(( MEM_MB * 1024 * 1024 ))
-log "Kich hoat ZRAM (${MEM_MB}MB)..."
+log "Kich hoat ZRAM ZSTD (${MEM_MB}MB)..."
 modprobe zram num_devices=1 2>/dev/null || true
 if [[ -b /dev/zram0 ]]; then
   swapon --show 2>/dev/null | grep -q "/dev/zram0" && swapoff /dev/zram0 2>/dev/null || true
   
-  SELECTED_ALGO="lz4"
+  # Ưu tiên tuyệt đối ZSTD để tối đa hóa dung lượng nén
   if grep -q "zstd" /sys/block/zram0/comp_algorithm 2>/dev/null; then
     echo zstd > /sys/block/zram0/comp_algorithm 2>/dev/null || true
     SELECTED_ALGO="zstd"
   else
     echo lz4 > /sys/block/zram0/comp_algorithm 2>/dev/null || true
+    SELECTED_ALGO="lz4"
   fi
   
   echo "$ZRAM_SIZE_BYTES" > /sys/block/zram0/disksize 2>/dev/null || true
@@ -164,6 +166,7 @@ fi
 echo "=============================================================="
 echo "  VPS $(hostname) | RAM ${MEM_MB}MB | ${CPU} CPU"
 echo "  DETECTED PROFILE : ${TIER_NAME}"
+echo "  ZRAM COMPRESSION : ZSTD (MAX DENSITY)"
 echo "  Swap target=${TARGET_SWAP_MB}MB | Standard Limit=${CONTAINER_MEM_LIMIT}/${CONTAINER_SWAP_LIMIT}"
 echo "  PROTECTION ENFORCED: Honeygain / Repocket / Packetstream / Wipter"
 echo "=============================================================="
@@ -530,7 +533,6 @@ STATE=/var/lib/ii-flapguard
 mkdir -p "$STATE" 2>/dev/null || true
 
 # NGƯỠNG SIẾT CHẶT TUYỆT ĐỐI: Chỉ cho phép tối đa 2 lần restart trong 1 giờ.
-# Nếu bị lặp lại quá 2 lần -> Ép ngắt hẳn 12 Tiếng (43200s) để giữ an toàn cho Account!
 FLAP_MAX="${FLAP_MAX:-2}"
 FLAP_WINDOW="${FLAP_WINDOW:-3600}"
 COOLDOWN="${COOLDOWN:-43200}"
@@ -742,11 +744,10 @@ while ! docker info >/dev/null 2>&1; do
 done
 
 #============================================================================
-# ENGINE KHỞI ĐỘNG TỪ TỪ THÔNG MINH (BACKPRESSURE THROTTLING CHỐNG MAX CPU)
+# ENGINE KHỞI ĐỘNG TỪ TỪ TỐI ƯU CHO ZSTD (DYNAMIC LOAD PACER 24/7)
 #============================================================================
 cat > /usr/local/bin/ii-staggered-start.sh <<'EOF_STAGGER'
 #!/usr/bin/env bash
-# ii-staggered-start.sh: Khởi động container từ từ có phanh hãm theo tải CPU/RAM
 set -uo pipefail
 
 LOG=/var/log/ii-staggered-start.log
@@ -759,32 +760,29 @@ while ! docker info >/dev/null 2>&1; do
 done
 
 CPUS=$(nproc 2>/dev/null || echo 1)
-# Ngưỡng hãm phanh: Nếu Load 1m > CPUS * 2.5 thì dừng chờ hệ thống hạ nhiệt
-MAX_SAFE_LOAD=$(awk -v c="$CPUS" 'BEGIN { printf "%.2f", c * 2.5 }')
+MAX_SAFE_LOAD=$(awk -v c="$CPUS" 'BEGIN { printf "%.2f", c * 2.2 }')
 
 check_backpressure() {
   while true; do
     CURR_LOAD=$(awk '{print $1}' /proc/loadavg 2>/dev/null || echo 0)
     RAM_AVAIL=$(awk '/MemAvailable/{print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 999)
     
-    # Nếu RAM khả dụng < 80MB hoặc Load vượt quá ngưỡng an toàn -> Phanh lại ngay!
-    if (( $(echo "$CURR_LOAD > $MAX_SAFE_LOAD" | bc -l 2>/dev/null || echo 0) )) || (( RAM_AVAIL < 80 )); then
-      say ">> CPU/RAM dang chiu tai cao (Load: ${CURR_LOAD}/${MAX_SAFE_LOAD}, RAM Avail: ${RAM_AVAIL}MB). Tam nghi 4s de he thong on dinh..."
-      sleep 4
+    if (( $(echo "$CURR_LOAD > $MAX_SAFE_LOAD" | bc -l 2>/dev/null || echo 0) )) || (( RAM_AVAIL < 70 )); then
+      say ">> ZSTD dang nen du lieu (Load: ${CURR_LOAD}/${MAX_SAFE_LOAD}, RAM Avail: ${RAM_AVAIL}MB). Tam nghi 3s..."
+      sleep 3
     else
       break
     fi
   done
 }
 
-say "=== BAT DAU KHOI DONG DOCKER STAGGERED START (CHONG NGHEN CPU 24/7) ==="
+say "=== KHOI DONG DOCKER STAGGERED START (ZSTD MAX DENSITY ENGINE) ==="
 
 ROOTS=(/opt /root /home /srv /home/ubuntu /home/opc)
 mapfile -t FILES < <(find "${ROOTS[@]}" -maxdepth 4 -name containernames.txt -type f 2>/dev/null | sort -u)
 
 START_COUNT=0
 
-# Quét qua tất cả container trong danh sách cấu hình
 if (( ${#FILES[@]} > 0 )); then
   while IFS= read -r cid; do
     [[ -n "$cid" ]] || continue
@@ -797,18 +795,16 @@ if (( ${#FILES[@]} > 0 )); then
     docker start "$cid" >/dev/null 2>&1 || true
     START_COUNT=$((START_COUNT+1))
 
-    # Điều phối khoảng nghỉ (Sleep Interval) theo độ nặng của app
     if [[ "$c_name" =~ wipter|ebesucher|adnade|depinext ]]; then
-      sleep 10   # Chromium / Headless Browser cần 10s để ổn định bộ nhớ
+      sleep 8
     elif [[ "$c_name" =~ honey|repocket|packetstream|packetshare|pawns|earnfm|earnapp ]]; then
-      sleep $(( 4 + RANDOM % 4 ))  # 4-7s: Tránh bẫy spam API đồng loạt
+      sleep 4
     else
-      sleep 1.5  # Proxy node nhẹ (Traffmonetizer/Bitping/tun2socks): 1.5s
+      sleep 1.2
     fi
   done < <(cat "${FILES[@]}" 2>/dev/null | sort -u)
 fi
 
-# Quét vớt các container còn sót lại đang ở trạng thái exited
 while IFS= read -r cid; do
   [[ -n "$cid" ]] || continue
   c_name=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null | sed 's|^/||')
@@ -818,23 +814,23 @@ while IFS= read -r cid; do
   START_COUNT=$((START_COUNT+1))
 
   if [[ "$c_name" =~ wipter|ebesucher|adnade|depinext ]]; then
-    sleep 10
+    sleep 8
   elif [[ "$c_name" =~ honey|repocket|packetstream|packetshare|pawns|earnfm|earnapp ]]; then
-    sleep $(( 4 + RANDOM % 4 ))
+    sleep 4
   else
-    sleep 1.5
+    sleep 1.2
   fi
 done < <(docker ps -aq -f status=exited 2>/dev/null)
 
-say "=== KET THUC: Da kich hoat thanh cong ${START_COUNT} container mot cach an toan, CPU on dinh! ==="
+say "=== HOAN TAT: Da kich hoat ${START_COUNT} container an toan tuyet doi voi ZSTD! ==="
 EOF_STAGGER
 chmod +x /usr/local/bin/ii-staggered-start.sh
 
-# Cài đặt Systemd Boot Service tự động chạy khi khởi động lại VPS hoặc sau bảo trì
+# Cài đặt Systemd Boot Service đảm bảo tự động khởi động mượt khi VPS reboot
 if has_systemd; then
   cat > /etc/systemd/system/ii-boot-staggered.service <<'EOF_BOOT_SVC'
 [Unit]
-Description=InternetIncome Smart Staggered Container Boot (Anti CPU-Spike)
+Description=InternetIncome Staggered Container Boot for ZSTD
 After=docker.service zramswap.service
 Wants=docker.service
 
@@ -842,8 +838,6 @@ Wants=docker.service
 Type=oneshot
 ExecStart=/usr/local/bin/ii-staggered-start.sh
 RemainAfterExit=yes
-StandardOutput=journal
-StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
@@ -852,9 +846,8 @@ EOF_BOOT_SVC
   systemctl enable ii-boot-staggered.service 2>/dev/null || true
 fi
 
-# Chạy kích hoạt nếu Docker vừa restart
 if (( DOCKER_RESTARTED == 1 )); then
-  log "Dang bat lai cac container voi RANDOMIZED STAGGERED START..."
+  log "Dang bat lai cac container voi ZSTD Staggered Start..."
   /usr/local/bin/ii-staggered-start.sh
 fi
 
@@ -930,7 +923,7 @@ HAVE_CTR=0; command -v ctr >/dev/null 2>&1 && HAVE_CTR=1
     fi
   done < <(find "${ROOTS[@]}" -maxdepth 4 -name internetIncome.sh -type f 2>/dev/null | sort -u)
 
-  # Sử dụng Engine Staggered Start thông minh để giải phóng tải CPU
+  # Sử dụng Engine Staggered Start thông minh để ZSTD nén êm ái
   /usr/local/bin/ii-staggered-start.sh
 
   docker update --restart=unless-stopped $(docker ps -aq 2>/dev/null || true) >/dev/null 2>&1 || true
@@ -1320,7 +1313,7 @@ EOF_DEEP
 chmod +x /usr/local/bin/ii-deep.sh
 ln -sf /usr/local/bin/ii-deep.sh /usr/bin/ii-deep 2>/dev/null || true
 
-echo "============================= SETUP XONG (ULTRA ANTI-BAN EDITION) =============================="
+echo "============================= SETUP XONG (ULTRA ANTI-BAN EDITION - ZSTD CORE) =============================="
 /usr/local/bin/ii-status.sh || true
 MASTER_EOF
 chmod +x ~/setup_vps.sh
