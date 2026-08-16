@@ -130,7 +130,6 @@ modprobe zram num_devices=1 2>/dev/null || true
 if [[ -b /dev/zram0 ]]; then
   swapon --show 2>/dev/null | grep -q "/dev/zram0" && swapoff /dev/zram0 2>/dev/null || true
   
-  # Ưu tiên tuyệt đối ZSTD để tối đa hóa dung lượng nén
   if grep -q "zstd" /sys/block/zram0/comp_algorithm 2>/dev/null; then
     echo zstd > /sys/block/zram0/comp_algorithm 2>/dev/null || true
     SELECTED_ALGO="zstd"
@@ -429,17 +428,14 @@ ii_profile() {
 
     # ============ NHOM SIẾT CHẶT CHỐNG KHÓA ACC (ULTRA ANTI-BAN) =============
     honey*)
-      # HONEYGAIN: Đặt policy on-failure:3 (Lỗi 3 lần dừng luôn). RAM nâng 200MB.
       P_APP="Honeygain"; P_MEM=$(_p $t 200m 220m 256m 320m); P_SWAP=$(_p $t 400m 440m 512m 640m)
       P_POLICY="on-failure:3"; P_VPS="resi"; P_MAXIP=1
       P_NOTE="ULTRA ANTI-BAN: Restart 3 lần dừng hẳn. Khóa 1 device/IP" ;;
     repocket*)
-      # REPOCKET: Đặt policy on-failure:3. RAM nâng 200MB tránh Node.js OOM.
       P_APP="Repocket"; P_MEM=$(_p $t 200m 220m 256m 300m); P_SWAP=$(_p $t 400m 440m 512m 600m)
       P_POLICY="on-failure:3"; P_VPS="safe"; P_MAXIP=1
       P_NOTE="ULTRA ANTI-BAN: Node.js 200MB headroom. Max 1 device/IP" ;;
     packetstream*)
-      # PACKETSTREAM: Policy on-failure:3. Dừng ngay khi proxy có dấu hiệu đứt.
       P_APP="PacketStream"; P_MEM=$(_p $t 100m 120m 140m 180m); P_SWAP=$(_p $t 200m 240m 280m 360m)
       P_POLICY="on-failure:3"; P_VPS="resi"; P_MAXIP=1
       P_NOTE="ULTRA ANTI-BAN: Ngắt kết nối ngay khi Proxy đứt" ;;
@@ -454,7 +450,6 @@ ii_profile() {
       P_APP="EarnFM"; P_MEM=$(_p $t 140m 160m 180m 220m); P_SWAP=$(_p $t 280m 320m 360m 440m)
       P_POLICY="on-failure:3"; P_VPS="resi"; P_MAXIP=1 ;;
     wipter*)
-      # WIPTER: Nâng RAM 450MB, Policy on-failure:5 để bảo vệ Chromium.
       P_APP="Wipter"; P_MEM=$(_p $t 450m 450m 500m 600m); P_SWAP=$(_p $t 800m 800m 900m 1000m)
       P_POLICY="on-failure:5"; P_VPS="resi"
       P_NOTE="Chromium Heap Headroom 450MB" ;;
@@ -502,8 +497,6 @@ ii_profile() {
 }
 
 II_APPS="myst repocket traffmon bitping proxyrack proxybase proxylite peer2profit urnetwork titan antgain wizardgain honey pawns packetstream packetshare earnfm wipter depinext ebesucher adnade earnapp"
-
-# DANH SÁCH APP ĐƯỢC BẢO VỆ CHỐNG SUSPEND TUYỆT ĐỐI
 II_SUSPEND_SENSITIVE="honey pawns packetstream packetshare earnfm wipter depinext ebesucher adnade earnapp repocket"
 
 ii_is_suspend_sensitive() {
@@ -532,7 +525,6 @@ LOG=/var/log/ii-flapguard.log
 STATE=/var/lib/ii-flapguard
 mkdir -p "$STATE" 2>/dev/null || true
 
-# NGƯỠNG SIẾT CHẶT TUYỆT ĐỐI: Chỉ cho phép tối đa 2 lần restart trong 1 giờ.
 FLAP_MAX="${FLAP_MAX:-2}"
 FLAP_WINDOW="${FLAP_WINDOW:-3600}"
 COOLDOWN="${COOLDOWN:-43200}"
@@ -923,7 +915,6 @@ HAVE_CTR=0; command -v ctr >/dev/null 2>&1 && HAVE_CTR=1
     fi
   done < <(find "${ROOTS[@]}" -maxdepth 4 -name internetIncome.sh -type f 2>/dev/null | sort -u)
 
-  # Sử dụng Engine Staggered Start thông minh để ZSTD nén êm ái
   /usr/local/bin/ii-staggered-start.sh
 
   docker update --restart=unless-stopped $(docker ps -aq 2>/dev/null || true) >/dev/null 2>&1 || true
@@ -957,11 +948,7 @@ SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 15 4 * * 0 root /usr/local/bin/ii-restart-all.sh
-
-# [CRITICAL PATCH] FLAPGUARD ENGINE - Kiểm tra và Dừng 12 tiếng nếu phát hiện lỗi Loop Reconnect (Chạy 10p/lần)
 */10 * * * * root /usr/local/bin/ii-flapguard.sh >/dev/null 2>&1
-
-# [CRITICAL PATCH] BẢO VỆ CHỐNG BAN ACC: Loại trừ hoàn toàn nhóm nhạy cảm khỏi Auto-Start 15 phút
 */15 * * * * root for c in $(docker ps -aq -f status=exited 2>/dev/null); do n=$(docker inspect -f '{{.Name}}{{.Config.Image}}' "$c" 2>/dev/null); case "$n" in *honey*|*pawns*|*packetstream*|*packetshare*|*earnfm*|*wipter*|*depinext*|*ebesucher*|*adnade*|*earnapp*|*repocket*) ;; *) docker start "$c" >/dev/null 2>&1 ;; esac; done
 */15 * * * * root find /root /home /opt /srv /home/ubuntu /home/opc -name 'internetIncome.sh' -exec sed -i -E 's/--sysctl[ =]+net\.ipv6\.conf\.[a-zA-Z0-9_]+\.disable_ipv6=[0-9]//g' {} + >/dev/null 2>&1
 0 3 * * 0 root /usr/bin/docker network prune -f >/dev/null 2>&1
