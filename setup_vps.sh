@@ -1,7 +1,7 @@
 cat << 'MASTER_EOF' > ~/setup_vps.sh
 #!/usr/bin/env bash
 #============================================================================
-#  setup_vps.sh (2026 ULTRA ANTI-BAN & SMART 50% SSD DISK DENSITY MASTER)
+#  setup_vps.sh (2026 UNIVERSAL MASTER - ZERO DOWNTIME & SMART 50% SSD)
 #============================================================================
 set -Eeuo pipefail
 
@@ -71,7 +71,7 @@ else
   CONTAINER_MEM_LIMIT="90m"; CONTAINER_SWAP_LIMIT="200m"
 fi
 
-# TỐI ƯU SWAPFILE Ổ CỨNG: Nếu RAM >= 9GB hoặc Ổ SSD nhỏ (<= 25GB) -> Chỉ cần đúng 1024MB (1GB) Swap trên SSD!
+# TỐI ƯU SWAPFILE Ổ CỨNG: Cố định 1024MB (1GB) để giữ ổ đĩa luôn ở mức ~50%
 if (( MEM_MB >= 9000 )) || (( DISK_TOTAL_MB <= 25000 )); then
   TARGET_SWAP_MB=1024
 elif (( MEM_MB <= 2500 )); then
@@ -283,7 +283,6 @@ sysctl -w net.ipv6.conf.all.disable_ipv6=0 >/dev/null 2>&1 || true
 sysctl -w net.ipv6.conf.default.disable_ipv6=0 >/dev/null 2>&1 || true
 sysctl -w net.ipv6.conf.lo.disable_ipv6=0 >/dev/null 2>&1 || true
 
-# --- TỐI ƯU KERNEL CHUYÊN SÂU ĐỒNG HÓA PROXY VÀ CHỐNG DROP PACKET ---
 SYSCTL_FILE=/etc/sysctl.d/99-internetincome.conf
 cat > "$SYSCTL_FILE" <<EOF_SYSCTL
 net.core.default_qdisc = fq
@@ -448,7 +447,6 @@ ii_profile() {
 
     # ============ NHOM CHROMIUM / TRÌNH DUYỆT NẶNG (ĐỦ 200-320MB RAM) =============
     wipter*)
-      # WIPTER: Cấp chuẩn 320MB RAM (vừa vặn 200-300MB thực tế, không sợ OOM)
       P_APP="Wipter"; P_MEM=$(_p $t 320m 350m 400m 500m); P_SWAP=$(_p $t 600m 700m 800m 1000m)
       P_POLICY="on-failure:5"; P_VPS="resi"
       P_NOTE="Chromium Heap Calibrated 320MB" ;;
@@ -766,7 +764,7 @@ EOF_BOOT_SVC
   systemctl enable ii-boot-staggered.service 2>/dev/null || true
 fi
 
-# Chạy mở toàn bộ container an toàn ngay lập tức
+# Chạy mở toàn bộ container an toàn ngay lập tức (Chỉ mở các node đang Exited, không chạm vào node đang chạy)
 /usr/local/bin/ii-staggered-start.sh
 
 install_cron_stack() {
@@ -1126,7 +1124,7 @@ EOF_DEEP
 chmod +x /usr/local/bin/ii-deep.sh
 ln -sf /usr/local/bin/ii-deep.sh /usr/bin/ii-deep 2>/dev/null || true
 
-echo "============================= SETUP XONG (50% SSD & FULL-AUTO MASTER) =============================="
+echo "============================= SETUP XONG (UNIVERSAL 24/7 MASTER) =============================="
 /usr/local/bin/ii-status.sh || true
 MASTER_EOF
 chmod +x ~/setup_vps.sh
