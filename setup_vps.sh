@@ -53,7 +53,7 @@ case "$VIRT" in lxc|lxc-libvirt|openvz) IS_CONTAINER=1 ;; esac
 MEM_MB=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
 CPU=$(nproc 2>/dev/null || echo 1)
 
-# --- PHÂN BỔ DYNAMIC TIER THEO ĐÚNG YÊU CẦU ---
+# --- PHÂN BỔ DYNAMIC TIER THEO ĐÚNG YÊU CẦU GỐC ---
 TIER_NAME=""
 if (( MEM_MB <= 2500 )); then
   TIER_NAME="TIER 1 (1-2 CPU / 2GB RAM - LIGHTWEIGHT PROXIES)"
@@ -123,7 +123,7 @@ if [[ -f /sys/kernel/mm/ksm/run ]]; then
   log "Da kich hoat KSM toi uu cao thanh cong!"
 fi
 
-# --- CẤU HÌNH ÉP CỨNG THUẬT TOÁN ZSTD CHO ZRAM ---
+# --- CẤU HÌNH ZRAM ZSTD CHUẨN XÁC ---
 ZRAM_SIZE_BYTES=$(( MEM_MB * 1024 * 1024 ))
 log "Kich hoat ZRAM ZSTD (${MEM_MB}MB)..."
 modprobe zram num_devices=1 2>/dev/null || true
@@ -353,7 +353,7 @@ EOF_JOURNAL
 if has_systemd; then systemctl restart systemd-journald 2>/dev/null || true; fi
 
 #============================================================================
-# CAI THU VIEN HO SO APP - ULTRA ANTI-BAN ENFORCEMENT
+# CAI THU VIEN HO SO APP - ULTRA ANTI-BAN ENFORCEMENT (100% GỐC)
 #============================================================================
 mkdir -p /usr/local/lib
 cat > /usr/local/lib/ii-app-profiles.sh <<'EOF_PROFILES'
@@ -497,6 +497,8 @@ ii_profile() {
 }
 
 II_APPS="myst repocket traffmon bitping proxyrack proxybase proxylite peer2profit urnetwork titan antgain wizardgain honey pawns packetstream packetshare earnfm wipter depinext ebesucher adnade earnapp"
+
+# DANH SÁCH APP ĐƯỢC BẢO VỆ CHỐNG SUSPEND TUYỆT ĐỐI
 II_SUSPEND_SENSITIVE="honey pawns packetstream packetshare earnfm wipter depinext ebesucher adnade earnapp repocket"
 
 ii_is_suspend_sensitive() {
@@ -525,6 +527,8 @@ LOG=/var/log/ii-flapguard.log
 STATE=/var/lib/ii-flapguard
 mkdir -p "$STATE" 2>/dev/null || true
 
+# NGƯỠNG SIẾT CHẶT TUYỆT ĐỐI: Chỉ cho phép tối đa 2 lần restart trong 1 giờ.
+# Nếu bị lặp lại quá 2 lần -> Ép ngắt hẳn 12 Tiếng (43200s) để giữ an toàn cho Account!
 FLAP_MAX="${FLAP_MAX:-2}"
 FLAP_WINDOW="${FLAP_WINDOW:-3600}"
 COOLDOWN="${COOLDOWN:-43200}"
@@ -735,112 +739,48 @@ while ! docker info >/dev/null 2>&1; do
   sleep 1
 done
 
-#============================================================================
-# ENGINE KHỞI ĐỘNG TỪ TỪ TỐI ƯU CHO ZSTD (DYNAMIC LOAD PACER 24/7)
-#============================================================================
-cat > /usr/local/bin/ii-staggered-start.sh <<'EOF_STAGGER'
-#!/usr/bin/env bash
-set -uo pipefail
-
-LOG=/var/log/ii-staggered-start.log
-ts() { date '+%F %T'; }
-say() { echo "[$(ts)] $*" | tee -a "$LOG" 2>/dev/null || echo "[$(ts)] $*"; }
-
-command -v docker >/dev/null 2>&1 || exit 0
-while ! docker info >/dev/null 2>&1; do
-  sleep 2
-done
-
-CPUS=$(nproc 2>/dev/null || echo 1)
-MAX_SAFE_LOAD=$(awk -v c="$CPUS" 'BEGIN { printf "%.2f", c * 2.2 }')
-
-check_backpressure() {
-  while true; do
-    CURR_LOAD=$(awk '{print $1}' /proc/loadavg 2>/dev/null || echo 0)
-    RAM_AVAIL=$(awk '/MemAvailable/{print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 999)
-    
-    if (( $(echo "$CURR_LOAD > $MAX_SAFE_LOAD" | bc -l 2>/dev/null || echo 0) )) || (( RAM_AVAIL < 70 )); then
-      say ">> ZSTD dang nen du lieu (Load: ${CURR_LOAD}/${MAX_SAFE_LOAD}, RAM Avail: ${RAM_AVAIL}MB). Tam nghi 3s..."
-      sleep 3
-    else
-      break
-    fi
-  done
-}
-
-say "=== KHOI DONG DOCKER STAGGERED START (ZSTD MAX DENSITY ENGINE) ==="
-
-ROOTS=(/opt /root /home /srv /home/ubuntu /home/opc)
-mapfile -t FILES < <(find "${ROOTS[@]}" -maxdepth 4 -name containernames.txt -type f 2>/dev/null | sort -u)
-
-START_COUNT=0
-
-if (( ${#FILES[@]} > 0 )); then
+# --- [RANDOMIZED STAGGERED START - MÔ PHỎNG ĐĂNG NHẬP THỰC TẾ TRÁNH BẪY API & CHỐNG KẸT CPU] ---
+if (( DOCKER_RESTARTED == 1 )); then
+  log "Dang bat lai cac container voi RANDOMIZED STAGGERED START (Mô phỏng thao tác người)..."
+  
   while IFS= read -r cid; do
     [[ -n "$cid" ]] || continue
-    running=$(docker inspect -f '{{.State.Running}}' "$cid" 2>/dev/null || echo "false")
-    [[ "$running" == "true" ]] && continue
-
     c_name=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null | sed 's|^/||')
-    check_backpressure
-
     docker start "$cid" >/dev/null 2>&1 || true
-    START_COUNT=$((START_COUNT+1))
-
+    
+    RAND_WAIT=$(( 3 + RANDOM % 5 ))
     if [[ "$c_name" =~ wipter|ebesucher|adnade|depinext ]]; then
-      sleep 8
+      sleep 10
     elif [[ "$c_name" =~ honey|repocket|packetstream|packetshare|pawns|earnfm|earnapp ]]; then
-      sleep 4
+      sleep "$RAND_WAIT"
     else
-      sleep 1.2
+      sleep 0.8
     fi
-  done < <(cat "${FILES[@]}" 2>/dev/null | sort -u)
-fi
+  done < <(find /opt /root /home /srv /home/ubuntu /home/opc -maxdepth 4 -name containernames.txt -type f -exec cat {} + 2>/dev/null | sort -u)
 
-while IFS= read -r cid; do
-  [[ -n "$cid" ]] || continue
-  c_name=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null | sed 's|^/||')
-  check_backpressure
-
-  docker start "$cid" >/dev/null 2>&1 || true
-  START_COUNT=$((START_COUNT+1))
-
-  if [[ "$c_name" =~ wipter|ebesucher|adnade|depinext ]]; then
-    sleep 8
-  elif [[ "$c_name" =~ honey|repocket|packetstream|packetshare|pawns|earnfm|earnapp ]]; then
-    sleep 4
-  else
-    sleep 1.2
+  if command -v ctr >/dev/null 2>&1; then
+    for cid in $(docker ps -aq --no-trunc -f status=exited 2>/dev/null); do
+      ctr -n moby task kill -s SIGKILL "$cid" >/dev/null 2>&1 || true
+      ctr -n moby task rm "$cid" >/dev/null 2>&1 || true
+    done
   fi
-done < <(docker ps -aq -f status=exited 2>/dev/null)
 
-say "=== HOAN TAT: Da kich hoat ${START_COUNT} container an toan tuyet doi voi ZSTD! ==="
-EOF_STAGGER
-chmod +x /usr/local/bin/ii-staggered-start.sh
+  while IFS= read -r cid; do
+    [[ -n "$cid" ]] || continue
+    c_name=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null | sed 's|^/||')
+    docker start "$cid" >/dev/null 2>&1 || true
+    
+    RAND_WAIT=$(( 3 + RANDOM % 5 ))
+    if [[ "$c_name" =~ wipter|ebesucher|adnade|depinext ]]; then
+      sleep 10
+    elif [[ "$c_name" =~ honey|repocket|packetstream|packetshare|pawns|earnfm|earnapp ]]; then
+      sleep "$RAND_WAIT"
+    else
+      sleep 0.8
+    fi
+  done < <(docker ps -aq -f status=exited 2>/dev/null)
 
-# Cài đặt Systemd Boot Service đảm bảo tự động khởi động mượt khi VPS reboot
-if has_systemd; then
-  cat > /etc/systemd/system/ii-boot-staggered.service <<'EOF_BOOT_SVC'
-[Unit]
-Description=InternetIncome Staggered Container Boot for ZSTD
-After=docker.service zramswap.service
-Wants=docker.service
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/bin/ii-staggered-start.sh
-RemainAfterExit=yes
-
-[Install]
-WantedBy=multi-user.target
-EOF_BOOT_SVC
-  systemctl daemon-reload 2>/dev/null || true
-  systemctl enable ii-boot-staggered.service 2>/dev/null || true
-fi
-
-if (( DOCKER_RESTARTED == 1 )); then
-  log "Dang bat lai cac container voi ZSTD Staggered Start..."
-  /usr/local/bin/ii-staggered-start.sh
+  log "Da revive xong tat ca container mot cach an toan tuyet doi!"
 fi
 
 install_cron_stack() {
@@ -915,25 +855,76 @@ HAVE_CTR=0; command -v ctr >/dev/null 2>&1 && HAVE_CTR=1
     fi
   done < <(find "${ROOTS[@]}" -maxdepth 4 -name internetIncome.sh -type f 2>/dev/null | sort -u)
 
-  /usr/local/bin/ii-staggered-start.sh
-
-  docker update --restart=unless-stopped $(docker ps -aq 2>/dev/null || true) >/dev/null 2>&1 || true
-  for cid in $(docker ps -aq 2>/dev/null); do
-    c_img=$(docker inspect -f '{{.Config.Image}}' "$cid" 2>/dev/null || true)
-    c_name=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null || true)
-    cn=$(printf '%s' "$c_name" | sed 's|^/||')
-    ii_profile "$cn" "$c_img" "$TIER_IDX"
-    [[ -n "$P_MEM" ]] || continue
-    if [[ "$P_POLICY" == "__KEEP__" ]]; then
-      docker update --memory="$P_MEM" --memory-swap="$P_SWAP" "$cid" >/dev/null 2>&1 || true
-    else
-      docker update --memory="$P_MEM" --memory-swap="$P_SWAP" \
-                    --restart="$P_POLICY" "$cid" >/dev/null 2>&1 || true
+  mapfile -t FILES < <(find "${ROOTS[@]}" -maxdepth 4 -name containernames.txt -type f 2>/dev/null | sort -u)
+  if (( ${#FILES[@]} == 0 )); then
+    echo "[$(ts)] chua thay folder engageub nao"
+  else
+    STUCK=$(docker ps -aq --no-trunc -f status=exited 2>/dev/null || true)
+    if (( HAVE_CTR == 1 )) && [[ -n "$STUCK" ]]; then
+      for cid in $STUCK; do
+        ctr -n moby task kill -s SIGKILL "$cid" >/dev/null 2>&1
+        ctr -n moby task rm "$cid" >/dev/null 2>&1
+      done
     fi
-  done
+    TOTAL=0
+    for cn in "${FILES[@]}"; do
+      d=$(dirname "$cn")
+      [[ -f "${d}/internetIncome.sh" ]] || continue
+      n=$(grep -c . "$cn" 2>/dev/null || echo 0)
+      TOTAL=$((TOTAL+n))
+      echo "[$(ts)] >>> ${d} (${n} container - restart rải rác mô phỏng người dùng)..."
+      
+      while IFS= read -r cid; do
+        [[ -n "$cid" ]] || continue
+        c_name=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null | sed 's|^/||')
+        docker restart "$cid" >/dev/null 2>&1 || echo "[$(ts)] !! loi restart $cid"
+        
+        RAND_WAIT=$(( 3 + RANDOM % 5 ))
+        if [[ "$c_name" =~ wipter|ebesucher|adnade|depinext ]]; then
+          sleep 10
+        elif [[ "$c_name" =~ honey|repocket|packetstream|packetshare|pawns|earnfm|earnapp ]]; then
+          sleep "$RAND_WAIT"
+        else
+          sleep 0.8
+        fi
+      done < "$cn"
 
-  STILL=$(docker ps -aq -f status=exited 2>/dev/null | wc -l)
-  echo "[$(ts)] Xong dot bao tri dinh ky | Container Exited con lai: ${STILL}"
+      sleep 3
+    done
+
+    while IFS= read -r cid; do
+      [[ -n "$cid" ]] || continue
+      c_name=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null | sed 's|^/||')
+      docker start "$cid" >/dev/null 2>&1 || true
+      
+      RAND_WAIT=$(( 3 + RANDOM % 5 ))
+      if [[ "$c_name" =~ wipter|ebesucher|adnade|depinext ]]; then
+        sleep 10
+      elif [[ "$c_name" =~ honey|repocket|packetstream|packetshare|pawns|earnfm|earnapp ]]; then
+        sleep "$RAND_WAIT"
+      else
+        sleep 0.8
+      fi
+    done < <(cat "${FILES[@]}" 2>/dev/null | sort -u)
+
+    docker update --restart=unless-stopped $(docker ps -aq 2>/dev/null || true) >/dev/null 2>&1 || true
+    for cid in $(docker ps -aq 2>/dev/null); do
+      c_img=$(docker inspect -f '{{.Config.Image}}' "$cid" 2>/dev/null || true)
+      c_name=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null || true)
+      cn=$(printf '%s' "$c_name" | sed 's|^/||')
+      ii_profile "$cn" "$c_img" "$TIER_IDX"
+      [[ -n "$P_MEM" ]] || continue
+      if [[ "$P_POLICY" == "__KEEP__" ]]; then
+        docker update --memory="$P_MEM" --memory-swap="$P_SWAP" "$cid" >/dev/null 2>&1 || true
+      else
+        docker update --memory="$P_MEM" --memory-swap="$P_SWAP" \
+                      --restart="$P_POLICY" "$cid" >/dev/null 2>&1 || true
+      fi
+    done
+
+    STILL=$(docker ps -aq -f status=exited 2>/dev/null | wc -l)
+    echo "[$(ts)] xong: ${TOTAL} container | con Exited: ${STILL}"
+  fi
 } >> "$LOG" 2>&1
 EOF_RESTART
   if [[ -n "$BASE_DIR" ]]; then
@@ -948,7 +939,11 @@ SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 15 4 * * 0 root /usr/local/bin/ii-restart-all.sh
+
+# [CRITICAL PATCH] FLAPGUARD ENGINE - Kiểm tra và Dừng 12 tiếng nếu phát hiện lỗi Loop Reconnect (Chạy 10p/lần)
 */10 * * * * root /usr/local/bin/ii-flapguard.sh >/dev/null 2>&1
+
+# [CRITICAL PATCH] BẢO VỆ CHỐNG BAN ACC: Loại trừ hoàn toàn nhóm nhạy cảm khỏi Auto-Start 15 phút
 */15 * * * * root for c in $(docker ps -aq -f status=exited 2>/dev/null); do n=$(docker inspect -f '{{.Name}}{{.Config.Image}}' "$c" 2>/dev/null); case "$n" in *honey*|*pawns*|*packetstream*|*packetshare*|*earnfm*|*wipter*|*depinext*|*ebesucher*|*adnade*|*earnapp*|*repocket*) ;; *) docker start "$c" >/dev/null 2>&1 ;; esac; done
 */15 * * * * root find /root /home /opt /srv /home/ubuntu /home/opc -name 'internetIncome.sh' -exec sed -i -E 's/--sysctl[ =]+net\.ipv6\.conf\.[a-zA-Z0-9_]+\.disable_ipv6=[0-9]//g' {} + >/dev/null 2>&1
 0 3 * * 0 root /usr/bin/docker network prune -f >/dev/null 2>&1
