@@ -1,7 +1,7 @@
 cat << 'MASTER_EOF' > ~/setup_vps.sh
 #!/usr/bin/env bash
 #============================================================================
-#  setup_vps.sh (DYNAMIC TIER MATRIX 2026 - ULTRA ANTI-BAN EDITION - ZSTD MASTER)
+#  setup_vps.sh (DYNAMIC TIER MATRIX 2026 - ULTRA ANTI-BAN & PROXY SYNC MASTER)
 #============================================================================
 set -Eeuo pipefail
 
@@ -10,7 +10,7 @@ sysctl -w fs.inotify.max_user_watches=2097152 >/dev/null 2>&1 || true
 sysctl -w fs.inotify.max_user_instances=65536 >/dev/null 2>&1 || true
 
 if [[ -t 1 ]]; then
-  C_G='\033[1;32m'; C_Y='\033[1;33m'; C_R='\033[1;31m'; C_B='\033[1;34m'; C_C='\033[1;36m'; C_0='\033[0m'
+  C_G='\033[1;32m'; C_Y='\033[1;33m'; C_R='\033[1;31m'; C_B='\033[1;34m'; C_0='\033[0m'
 else
   C_G=''; C_Y=''; C_R=''; C_B=''; C_0=''
 fi
@@ -103,7 +103,7 @@ if has_systemd; then
 fi
 timedatectl set-ntp true 2>/dev/null || true
 timedatectl set-timezone Asia/Ho_Chi_Minh 2>/dev/null || true
-log "Da dong bo thoi gian NTP chuan millisecond (Anti-Ban Token Enforced)!"
+log "Da dong bo thoi gian NTP chuan millisecond (Anti-Ban JWT Enforced)!"
 
 if ! command -v docker >/dev/null 2>&1; then
   log "VPS MOI: Dang tu dong cai dat Docker official..."
@@ -176,7 +176,7 @@ echo "  VPS $(hostname) | RAM ${MEM_MB}MB | ${CPU} CPU"
 echo "  DETECTED PROFILE : ${TIER_NAME}"
 echo "  ZRAM COMPRESSION : ZSTD (MAX DENSITY)"
 echo "  Swap target=${TARGET_SWAP_MB}MB | Standard Limit=${CONTAINER_MEM_LIMIT}/${CONTAINER_SWAP_LIMIT}"
-echo "  PROTECTION ENFORCED: Honeygain / Repocket / Packetstream / Wipter"
+echo "  PROTECTION ENFORCED: Honeygain / Repocket / Packetstream / Pawns / Wipter / EarnApp"
 echo "=============================================================="
 
 CURR_SWAP_MB=$(free -m 2>/dev/null | awk '/^Swap:/{print $2}' || echo 0)
@@ -290,6 +290,7 @@ sysctl -w net.ipv6.conf.all.disable_ipv6=0 >/dev/null 2>&1 || true
 sysctl -w net.ipv6.conf.default.disable_ipv6=0 >/dev/null 2>&1 || true
 sysctl -w net.ipv6.conf.lo.disable_ipv6=0 >/dev/null 2>&1 || true
 
+# --- [TỐI ƯU KERNEL CHUYÊN SÂU ĐỒNG HÓA PROXY VÀ CHỐNG TIMEOUT SOCKET] ---
 SYSCTL_FILE=/etc/sysctl.d/99-internetincome.conf
 cat > "$SYSCTL_FILE" <<EOF_SYSCTL
 net.core.default_qdisc = fq
@@ -431,17 +432,14 @@ ii_profile() {
 
     # ============ NHOM SIẾT CHẶT CHỐNG KHÓA ACC (ULTRA ANTI-BAN) =============
     honey*)
-      # HONEYGAIN: Đặt policy on-failure:3 (Lỗi 3 lần dừng luôn). RAM nâng 200MB.
       P_APP="Honeygain"; P_MEM=$(_p $t 200m 220m 256m 320m); P_SWAP=$(_p $t 400m 440m 512m 640m)
       P_POLICY="on-failure:3"; P_VPS="resi"; P_MAXIP=1
       P_NOTE="ULTRA ANTI-BAN: Restart 3 lần dừng hẳn. Khóa 1 device/IP" ;;
     repocket*)
-      # REPOCKET: Đặt policy on-failure:3. RAM nâng 200MB tránh Node.js OOM.
       P_APP="Repocket"; P_MEM=$(_p $t 200m 220m 256m 300m); P_SWAP=$(_p $t 400m 440m 512m 600m)
       P_POLICY="on-failure:3"; P_VPS="safe"; P_MAXIP=1
       P_NOTE="ULTRA ANTI-BAN: Node.js 200MB headroom. Max 1 device/IP" ;;
     packetstream*)
-      # PACKETSTREAM: Policy on-failure:3. Dừng ngay khi proxy có dấu hiệu đứt.
       P_APP="PacketStream"; P_MEM=$(_p $t 100m 120m 140m 180m); P_SWAP=$(_p $t 200m 240m 280m 360m)
       P_POLICY="on-failure:3"; P_VPS="resi"; P_MAXIP=1
       P_NOTE="ULTRA ANTI-BAN: Ngắt kết nối ngay khi Proxy đứt" ;;
@@ -456,7 +454,6 @@ ii_profile() {
       P_APP="EarnFM"; P_MEM=$(_p $t 140m 160m 180m 220m); P_SWAP=$(_p $t 280m 320m 360m 440m)
       P_POLICY="on-failure:3"; P_VPS="resi"; P_MAXIP=1 ;;
     wipter*)
-      # WIPTER: Nâng RAM 450MB, Policy on-failure:5 để bảo vệ Chromium.
       P_APP="Wipter"; P_MEM=$(_p $t 450m 450m 500m 600m); P_SWAP=$(_p $t 800m 800m 900m 1000m)
       P_POLICY="on-failure:5"; P_VPS="resi"
       P_NOTE="Chromium Heap Headroom 450MB" ;;
@@ -473,7 +470,7 @@ ii_profile() {
     earnapp*)
       P_APP="EarnApp"; P_MEM=$(_p $t 100m 120m 140m 180m); P_SWAP=$(_p $t 200m 240m 280m 360m)
       P_POLICY="on-failure:3"; P_VPS="ban"; P_MAXIP=1
-      P_NOTE="BANNED ON VPS/VM" ;;
+      P_NOTE="BANNED ON VPS/VM - Chay tren Residential Proxy" ;;
 
     *)
       P_APP=""; P_POLICY="__KEEP__"; P_NOTE="Khong co ho so - giu nguyen cau hinh goc" ;;
@@ -504,8 +501,6 @@ ii_profile() {
 }
 
 II_APPS="myst repocket traffmon bitping proxyrack proxybase proxylite peer2profit urnetwork titan antgain wizardgain honey pawns packetstream packetshare earnfm wipter depinext ebesucher adnade earnapp"
-
-# DANH SÁCH APP ĐƯỢC BẢO VỆ CHỐNG SUSPEND TUYỆT ĐỐI
 II_SUSPEND_SENSITIVE="honey pawns packetstream packetshare earnfm wipter depinext ebesucher adnade earnapp repocket"
 
 ii_is_suspend_sensitive() {
@@ -534,8 +529,6 @@ LOG=/var/log/ii-flapguard.log
 STATE=/var/lib/ii-flapguard
 mkdir -p "$STATE" 2>/dev/null || true
 
-# NGƯỠNG SIẾT CHẶT TUYỆT ĐỐI: Chỉ cho phép tối đa 2 lần restart trong 1 giờ.
-# Nếu bị lặp lại quá 2 lần -> Ép ngắt hẳn 12 Tiếng (43200s) để giữ an toàn cho Account!
 FLAP_MAX="${FLAP_MAX:-2}"
 FLAP_WINDOW="${FLAP_WINDOW:-3600}"
 COOLDOWN="${COOLDOWN:-43200}"
@@ -739,7 +732,7 @@ while ! docker info >/dev/null 2>&1; do
 done
 
 #============================================================================
-# ENGINE KHỞI ĐỘNG TUẦN TỰ RÕ RÀNG (ANTI-BAN & CHỐNG NGHẼN CPU)
+# ENGINE KHỞI ĐỘNG TUẦN TỰ ĐỒNG HÓA PROXY (TUNNEL-FIRST ANTI-BAN)
 #============================================================================
 cat > /usr/local/bin/ii-staggered-start.sh <<'EOF_STAGGER'
 #!/usr/bin/env bash
@@ -751,8 +744,27 @@ while ! docker info >/dev/null 2>&1; do
 done
 
 TOTAL_NODES=$(docker ps -aq 2>/dev/null | wc -l)
-echo "=== BAT DAU KHOI DONG TUAN TU ${TOTAL_NODES} CONTAINER (ZSTD ENGINE) ==="
+echo "=== BAT DAU KHOI DONG TUAN TU ${TOTAL_NODES} CONTAINER (TUNNEL-FIRST PROXY SYNC) ==="
 
+# BƯỚC 1: KHỞI ĐỘNG HẠ TẦNG TUNNEL / TUN2SOCKS TRƯỚC TIÊN ĐỂ TRÁNH LỘ IP
+echo "--- [PHA 1: Kich hoat cac Tunnel mang Proxy (tun2socks / dind)] ---"
+for cid in $(docker ps -aq 2>/dev/null); do
+  cname=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null | sed 's|^/||')
+  if [[ "$cname" =~ ^tun|^dind ]]; then
+    running=$(docker inspect -f '{{.State.Running}}' "$cid" 2>/dev/null || echo "false")
+    if [[ "$running" != "true" ]]; then
+      docker start "$cid" >/dev/null 2>&1 || true
+      echo "  [TUNNEL] Da bat mang proxy: ${cname}"
+      sleep 1
+    fi
+  fi
+done
+
+# Chờ 2 giây cho card mạng ảo tun2socks hoàn tất routing
+sleep 2
+
+# BƯỚC 2: KHỞI ĐỘNG CÁC ỨNG DỤNG PROXY NODE CÓ GIÃN CÁCH KHOA HỌC
+echo "--- [PHA 2: Kich hoat cac ung dung Proxy Nodes (Anti-Ban Guard)] ---"
 IDX=0
 for cid in $(docker ps -aq 2>/dev/null); do
   cname=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null | sed 's|^/||')
@@ -760,28 +772,28 @@ for cid in $(docker ps -aq 2>/dev/null); do
   IDX=$((IDX+1))
 
   if [[ "$running" == "true" ]]; then
-    echo "  [${IDX}/${TOTAL_NODES}] Da online san: ${cname}"
+    echo "  [${IDX}/${TOTAL_NODES}] Da online: ${cname}"
     continue
   fi
 
   docker start "$cid" >/dev/null 2>&1 || true
   echo "  [${IDX}/${TOTAL_NODES}] Khoi dong: ${cname} -> [OK]"
 
-  # KHOẢNG NGHỈ AN TOÀN TRÁNH BẪY SPAM API VÀ GIỮ CPU LUÔN MÁT
+  # GIÃN CÁCH AN TOÀN TRÁNH KHÓA TÀI KHOẢN (HONEYGAIN / PAWNS / WIPTER / EARNAPP)
   if [[ "$cname" =~ wipter|ebesucher|adnade|depinext ]]; then
-    sleep 8
+    sleep 8   # Chromium Browser can 8s de on dinh Heap
   elif [[ "$cname" =~ honey|repocket|packetstream|packetshare|pawns|earnfm|earnapp ]]; then
-    sleep 3
+    sleep 3.5 # Chuyen proxy nhe nhang, khong gay spam request
   else
-    sleep 0.8
+    sleep 0.8 # Traffmonetizer / Bitping / Mysterium
   fi
 done
 
-echo "=== HOAN TAT 100%: TAT CA ${TOTAL_NODES} NODE DA ONLINE EM AI! ==="
+echo "=== HOAN TAT 100%: TAT CA ${TOTAL_NODES} NODE DA ONLINE AN TOAN TUYET DOI! ==="
 EOF_STAGGER
 chmod +x /usr/local/bin/ii-staggered-start.sh
 
-# Cài đặt Systemd Boot Service tự động chạy khi VPS reboot/bảo trì
+# Cài đặt Systemd Boot Service tự động chạy sau bảo trì / reboot
 if has_systemd; then
   cat > /etc/systemd/system/ii-boot-staggered.service <<'EOF_BOOT_SVC'
 [Unit]
@@ -801,7 +813,7 @@ EOF_BOOT_SVC
   systemctl enable ii-boot-staggered.service 2>/dev/null || true
 fi
 
-# Tự động khởi động tất cả container đang dừng
+# Chạy mở toàn bộ container an toàn ngay lập tức
 /usr/local/bin/ii-staggered-start.sh
 
 install_cron_stack() {
@@ -812,7 +824,7 @@ ROOTS=(/opt /root /home /srv /home/ubuntu /home/opc __EXTRA__)
 ts() { date '+%F %T'; }
 
 {
-  echo "[$(ts)] ==================== ii-restart-all ===================="
+  echo "[$(ts)] ==================== ii-restart-all (PROXY SYNC MASTER) ===================="
   /usr/local/bin/ii-staggered-start.sh
   STILL=$(docker ps -aq -f status=exited 2>/dev/null | wc -l)
   echo "[$(ts)] Xong bao tri | Exited con lai: ${STILL}"
@@ -968,7 +980,7 @@ if [[ -r "$PROFILES" ]]; then
       ban)  echo -e "      ${C_R}!! ${P_NOTE}${C_0}"
             echo -e "      ${C_R}!! GO NGAY app nay khoi VPS de tranh mat account${C_0}"
             ISSUES_COUNT=$((ISSUES_COUNT+1)) ;;
-      resi) echo -e "      ${C_Y}~  Chi ho tro IP residential. Tren VPS: thu nhap gan 0 va co the bi khoa.${C_0}"
+      resi) echo -e "      ${C_Y}~  Chi ho tro IP residential.${C_0}"
             WARNINGS_COUNT=$((WARNINGS_COUNT+1)) ;;
     esac
     if ii_is_suspend_sensitive "$cn"; then
@@ -1186,7 +1198,7 @@ EOF_DEEP
 chmod +x /usr/local/bin/ii-deep.sh
 ln -sf /usr/local/bin/ii-deep.sh /usr/bin/ii-deep 2>/dev/null || true
 
-echo "============================= SETUP XONG (ULTRA ANTI-BAN EDITION - ZSTD MASTER) =============================="
+echo "============================= SETUP XONG (ULTRA ANTI-BAN & PROXY SYNC MASTER) =============================="
 /usr/local/bin/ii-status.sh || true
 MASTER_EOF
 chmod +x ~/setup_vps.sh
