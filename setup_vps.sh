@@ -1,7 +1,7 @@
 cat << 'MASTER_EOF' > ~/setup_vps.sh
 #!/usr/bin/env bash
 #============================================================================
-#  setup_vps.sh (2026 ULTRA ANTI-BAN & SMART 20GB SSD DENSITY MASTER)
+#  setup_vps.sh (2026 ULTRA ANTI-BAN & SMART 50% SSD DISK DENSITY MASTER)
 #============================================================================
 set -Eeuo pipefail
 
@@ -187,25 +187,15 @@ echo "  PROTECTION ENFORCED: Honeygain / Repocket / Packetstream / Pawns / Wipte
 echo "=============================================================="
 
 CURR_DISK_SWAP_MB=$(swapon --show=NAME,SIZE --bytes 2>/dev/null | awk '/swapfile/{print int($2/1024/1024)}' || echo 0)
-SWAP_USED_MB=$(swapon --show=NAME,USED --bytes 2>/dev/null | awk '/swapfile/{print int($2/1024/1024)}' || echo 0)
 
 if (( IS_CONTAINER == 1 )); then
   warn "May ${VIRT} (container) thuong KHONG tao duoc swap -> bo qua"
 else
-  # TỰ ĐỘNG THU NHỎ NẾU FILE SWAP ĐĨA CŨ QUÁ LỚN (> TARGET + 512MB) ĐỂ GIẢI PHÓNG 3GB SSD
-  if (( CURR_DISK_SWAP_MB > TARGET_SWAP_MB + 512 )) && (( SWAP_USED_MB == 0 )); then
-    log "Phat hien swapfile cu (${CURR_DISK_SWAP_MB}MB) qua lon tren SSD 20GB -> Thu nho xuong ${TARGET_SWAP_MB}MB de giai phong SSD..."
+  # TỰ ĐỘNG XÓA VÀ THU NHỎ NẾU FILE SWAP ĐĨA KHÁC MỤC TIÊU (GIẢI PHÓNG 3GB SSD NGAY)
+  if (( CURR_DISK_SWAP_MB != TARGET_SWAP_MB )); then
+    log "Chuan hoa Swapfile ve dung muc tieu ${TARGET_SWAP_MB}MB de giu SSD o muc ~50%..."
     swapoff /swapfile /swapfile2 2>/dev/null || true
     rm -f /swapfile /swapfile2 2>/dev/null || true
-    CURR_DISK_SWAP_MB=0
-  fi
-
-  if (( CURR_DISK_SWAP_MB >= TARGET_SWAP_MB - 256 )) && (( CURR_DISK_SWAP_MB <= TARGET_SWAP_MB + 512 )); then
-    log "Da co swap đia ${CURR_DISK_SWAP_MB}MB hop ly -> giu nguyen"
-  else
-    log "Tao swap đia toi uu ${TARGET_SWAP_MB}MB tren SSD (/swapfile)..."
-    swapoff /swapfile 2>/dev/null || true
-    rm -f /swapfile 2>/dev/null || true
     
     if ! fallocate -l "${TARGET_SWAP_MB}M" /swapfile 2>/dev/null; then
       dd if=/dev/zero of=/swapfile bs=1M count="$TARGET_SWAP_MB" status=none
@@ -213,12 +203,18 @@ else
     chmod 600 /swapfile
     if mkswap /swapfile >/dev/null 2>&1 && swapon -p 0 /swapfile 2>/dev/null; then
       grep -q "^/swapfile" /etc/fstab || echo "/swapfile none swap sw,pri=0 0 0" >> /etc/fstab
-      log "Tao swap đia /swapfile ${TARGET_SWAP_MB}MB thanh cong!"
+      log "Da tao Swapfile /swapfile ${TARGET_SWAP_MB}MB thanh cong!"
     else
       rm -f /swapfile
     fi
+  else
+    log "Swapfile tren SSD da dung chuan ${CURR_DISK_SWAP_MB}MB -> Giu nguyen"
   fi
 fi
+
+# DỌN DẸP CACHE HỆ THỐNG ĐỂ SSD LUÔN RỘNG RÃI
+apt-get clean 2>/dev/null || true
+journalctl --vacuum-size=10M 2>/dev/null || true
 
 log "Dang diet cac dich vu OS ngom RAM ngam (snapd, multipathd, udisks2, earlyoom)..."
 if has_systemd; then
@@ -1130,7 +1126,7 @@ EOF_DEEP
 chmod +x /usr/local/bin/ii-deep.sh
 ln -sf /usr/local/bin/ii-deep.sh /usr/bin/ii-deep 2>/dev/null || true
 
-echo "============================= SETUP XONG (20GB SSD & INCOME TELEMETRY MASTER) =============================="
+echo "============================= SETUP XONG (50% SSD & FULL-AUTO MASTER) =============================="
 /usr/local/bin/ii-status.sh || true
 MASTER_EOF
 chmod +x ~/setup_vps.sh
