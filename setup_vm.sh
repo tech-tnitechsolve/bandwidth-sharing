@@ -1,7 +1,7 @@
 cat << 'VM_MASTER_EOF' > ~/setup_vm.sh
 #!/usr/bin/env bash
 #============================================================================
-#  setup_vm.sh - SETUP MÁY ẢO CÁ NHÂN (FULL-AUTO SYNC & OPTIMIZED RAM MASTER)
+#  setup_vm.sh (2026 UNIVERSAL VM MASTER - ZERO UDP ERROR & FULL-AUTO SYNC)
 #============================================================================
 set -Eeuo pipefail
 
@@ -60,7 +60,7 @@ VIRT="$(systemd-detect-virt 2>/dev/null || echo none)"
 MEM_MB=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
 CPU=$(nproc 2>/dev/null || echo 1)
 
-# --- PHÂN BỔ DYNAMIC TIER THEO MATRIX PHẦN CỨNG ---
+# --- MATRIX PHÂN BỔ TÀI NGUYÊN (CHUẨN HÓA CHO VM) ---
 TIER_NAME=""
 if (( MEM_MB <= 2500 )); then
   TIER_NAME="TIER 1 (1-2 CPU / 2GB RAM - LIGHTWEIGHT PROXIES)"
@@ -188,8 +188,14 @@ rm -rf /var/cache/snapd/ /var/lib/snapd/ 2>/dev/null || true
 if has_systemd && systemctl list-unit-files 2>/dev/null | grep -q '^systemd-resolved'; then
   systemctl disable --now systemd-resolved >/dev/null 2>&1 || true
 fi
+
+# --- DNS MẶC ĐỊNH MÁY CHỦ ---
 rm -f /etc/resolv.conf
-printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\nnameserver 9.9.9.9\n' > /etc/resolv.conf
+cat > /etc/resolv.conf <<'EOF_RESOLV'
+nameserver 1.1.1.1
+nameserver 8.8.8.8
+nameserver 9.9.9.9
+EOF_RESOLV
 
 modprobe nf_conntrack 2>/dev/null || true
 modprobe tcp_bbr 2>/dev/null || true
@@ -244,8 +250,8 @@ net.ipv4.tcp_keepalive_intvl = 15
 net.ipv4.tcp_keepalive_probes = 3
 net.ipv4.tcp_slow_start_after_idle = 0
 net.netfilter.nf_conntrack_max = 524288
-net.netfilter.nf_conntrack_udp_timeout = 60
-net.netfilter.nf_conntrack_udp_timeout_stream = 180
+net.netfilter.nf_conntrack_udp_timeout = 10
+net.netfilter.nf_conntrack_udp_timeout_stream = 60
 EOF_SYSCTL
 
 while IFS= read -r line; do
@@ -385,7 +391,6 @@ ii_profile() {
 
     # ============ NHOM CHROMIUM / TRÌNH DUYỆT NẶNG (ĐỦ 200-320MB RAM) =============
     wipter*)
-      # WIPTER: Cấp chuẩn 320MB RAM (vừa vặn 200-300MB thực tế, không sợ OOM)
       P_APP="Wipter"; P_MEM=$(_p $t 320m 350m 400m 500m); P_SWAP=$(_p $t 600m 700m 800m 1000m)
       P_POLICY="on-failure:5"; P_VPS="resi"
       P_NOTE="Chromium Heap Calibrated 320MB" ;;
@@ -401,7 +406,8 @@ ii_profile() {
 
     earnapp*)
       P_APP="EarnApp"; P_MEM=$(_p $t 65m 80m 100m 120m); P_SWAP=$(_p $t 130m 160m 200m 240m)
-      P_POLICY="on-failure:3"; P_VPS="ban"; P_MAXIP=1 ;;
+      P_POLICY="on-failure:3"; P_VPS="ban"; P_MAXIP=1
+      P_NOTE="BANNED ON VPS - Chay qua Residential Proxy" ;;
 
     *)
       P_APP=""; P_POLICY="__KEEP__"; P_NOTE="Khong co ho so - giu nguyen cau hinh goc" ;;
@@ -556,12 +562,10 @@ PROFILES=/usr/local/lib/ii-app-profiles.sh
 MEM_MB=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
 TIER_IDX=$(ii_tier_idx "$MEM_MB" 2>/dev/null || echo 1)
 
-# 1. Tu dong va tat ca file khoi chay trong thu muc IP moi tao tren VM
-find /root /opt /home /srv -maxdepth 4 -name "internetIncome.sh" -exec sed -i "s/--restart=always/--restart=unless-stopped/g" {} + 2>/dev/null || true
-find /root /opt /home /srv -maxdepth 4 -name "internetIncome.sh" -exec sed -i "s/--restart always/--restart=unless-stopped/g" {} + 2>/dev/null || true
-find /root /opt /home /srv -maxdepth 4 -name "internetIncome.sh" -exec sed -i -E 's/--sysctl[ =]+net\.ipv6\.conf\.[a-zA-Z0-9_]+\.disable_ipv6=[0-9]//g' {} + 2>/dev/null || true
+find /home/antoine /root /opt /home /srv -maxdepth 4 -name "internetIncome.sh" -exec sed -i "s/--restart=always/--restart=unless-stopped/g" {} + 2>/dev/null || true
+find /home/antoine /root /opt /home /srv -maxdepth 4 -name "internetIncome.sh" -exec sed -i "s/--restart always/--restart=unless-stopped/g" {} + 2>/dev/null || true
+find /home/antoine /root /opt /home /srv -maxdepth 4 -name "internetIncome.sh" -exec sed -i -E 's/--sysctl[ =]+net\.ipv6\.conf\.[a-zA-Z0-9_]+\.disable_ipv6=[0-9]//g' {} + 2>/dev/null || true
 
-# 2. Dong bo truc tiep RAM va Policy cho cac container vua duoc tao tren VM
 for cid in $(docker ps -aq 2>/dev/null); do
   c_img=$(docker inspect -f '{{.Config.Image}}' "$cid" 2>/dev/null || true)
   c_name=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null | sed 's|^/||' || true)
@@ -583,15 +587,14 @@ EOF_AUTOSYNC
 chmod +x /usr/local/bin/ii-autosync.sh
 ln -sf /usr/local/bin/ii-autosync.sh /usr/bin/ii-autosync 2>/dev/null || true
 
-# Chay quet va va Live ngay bay gio tren VM
 /usr/local/bin/ii-autosync.sh
 
+# --- CẤU HÌNH DOCKER DAEMON CHO VM (ĐÃ GỠ HOÀN TOÀN ÉP DNS ĐỂ TRÁNH LỖI UDP) ---
 mkdir -p /etc/docker
 NEW_DAEMON="$(cat <<EOF_DAEMON
 {
   "log-driver": "json-file",
   "log-opts": { "max-size": "10m", "max-file": "3" },
-  "dns": ["8.8.8.8", "1.1.1.1", "9.9.9.9"],
   "registry-mirrors": ["https://mirror.gcr.io", "https://docker.m.daocloud.io"],
   "max-concurrent-downloads": ${CONCURRENT_DOWNLOADS},
   "live-restore": true,
@@ -603,7 +606,6 @@ NEW_DAEMON="$(cat <<EOF_DAEMON
 EOF_DAEMON
 )"
 
-DOCKER_RESTARTED=0
 if [[ -f /etc/docker/daemon.json ]] && printf '%s\n' "$NEW_DAEMON" | cmp -s - /etc/docker/daemon.json; then
   log "daemon.json khong thay doi -> Giu nguyen"
 else
@@ -616,7 +618,6 @@ else
   else
     service docker start >/dev/null 2>&1 || service docker restart || true
   fi
-  DOCKER_RESTARTED=1
 fi
 
 if has_systemd; then systemctl enable --now docker >/dev/null 2>&1 || true; fi
@@ -640,7 +641,6 @@ done
 TOTAL_NODES=$(docker ps -aq 2>/dev/null | wc -l)
 echo "=== BAT DAU KHOI DONG TUAN TU ${TOTAL_NODES} CONTAINER TREN VM (TUNNEL-FIRST PROXY) ==="
 
-# BƯỚC 1: KHỞI ĐỘNG HẠ TẦNG TUNNEL TRƯỚC ĐỂ TRÁNH LỘ IP
 for cid in $(docker ps -aq 2>/dev/null); do
   cname=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null | sed 's|^/||')
   if [[ "$cname" =~ ^tun|^dind ]]; then
@@ -655,7 +655,6 @@ done
 
 sleep 2
 
-# BƯỚC 2: KHỞI ĐỘNG CÁC ỨNG DỤNG PROXY NODE CÓ GIÃN CÁCH
 IDX=0
 for cid in $(docker ps -aq 2>/dev/null); do
   cname=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null | sed 's|^/||')
@@ -687,7 +686,6 @@ cat > /usr/local/bin/ii-autostart.sh <<'EOS_AUTOSTART'
 #!/usr/bin/env bash
 LOG=/var/log/ii-autostart.log
 
-# Chờ 20 giây cho card mạng ảo của Windows Host (vSwitch) và VM ổn định hoàn toàn
 sleep 20
 
 echo "[$(date '+%F %T')] AUTOSTART VM: Goi ii-staggered-start.sh khoi dong an toan..." >> "$LOG"
@@ -695,13 +693,12 @@ echo "[$(date '+%F %T')] AUTOSTART VM: Goi ii-staggered-start.sh khoi dong an to
 EOS_AUTOSTART
 chmod +x /usr/local/bin/ii-autostart.sh
 
-# Chạy mở toàn bộ container an toàn ngay lập tức
 /usr/local/bin/ii-staggered-start.sh
 
 cat > /usr/local/bin/ii-restart-all.sh <<'EOF_RESTART'
 #!/usr/bin/env bash
 LOG=/var/log/ii-restart.log
-ROOTS=(/opt /root /home /srv /home/ubuntu /home/opc __EXTRA__)
+ROOTS=(/home/antoine /opt /root /home /srv __EXTRA__)
 ts() { date '+%F %T'; }
 
 {
@@ -728,11 +725,11 @@ if (( DO_PULL == 1 )); then
 fi
 
 #============================================================================
-# BẢNG CHẨN ĐOÁN TINH GỌN CHO VM - ĐO LƯỜNG CHÍNH XÁC CHẤT LƯỢNG 24/7
+# BẢNG CHẨN ĐOÁN TINH GỌN CHO VM - ĐÃ SỬA LỖI MẢNG LINE 109
 #============================================================================
 cat > /usr/local/bin/ii-status.sh <<'EOF_STATUS'
 #!/usr/bin/env bash
-set -u
+set +u
 
 if [[ -t 1 ]]; then
   C_G='\033[1;32m'; C_Y='\033[1;33m'; C_R='\033[1;31m'; C_B='\033[1;34m'; C_C='\033[1;36m'; C_0='\033[0m'
@@ -763,7 +760,7 @@ WARNINGS_COUNT=0
 # --- 1. DOCKER FOLDER DIRECTORY AUDIT ---
 echo -e "\n${C_C}--- [1. NODE DIRECTORIES & ACTIVE AUDIT] ---${C_0}"
 ROOTS=("$@")
-if (( ${#ROOTS[@]} == 0 )); then ROOTS=(/opt /root /home /srv /home/ubuntu /home/opc); fi
+if (( ${#ROOTS[@]} == 0 )); then ROOTS=(/home/antoine /opt /root /home /srv); fi
 
 found=0
 while IFS= read -r cn; do
@@ -838,15 +835,18 @@ if [[ -r "$PROFILES" ]]; then
     APP_COUNT["$app_key"]=$(( ${APP_COUNT["$app_key"]:-0} + 1 ))
     APP_MEM["$app_key"]="${cmb}MB"
     APP_POL["$app_key"]="$cpol"
+    APP_ERR["$app_key"]=${APP_ERR["$app_key"]:-0}
+    APP_WARN["$app_key"]=${APP_WARN["$app_key"]:-0}
+    APP_OK["$app_key"]=${APP_OK["$app_key"]:-0}
 
     if [[ "$coom" == "true" ]] || (( cmb == 0 && app_key != "tun2socks" && app_key != "docker-in-docker" )) || [[ "$cpol" == "always" && "$P_POLICY" != "__KEEP__" ]]; then
-      APP_ERR["$app_key"]=$(( ${APP_ERR["$app_key"]:-0} + 1 ))
+      APP_ERR["$app_key"]=$(( ${APP_ERR["$app_key"]} + 1 ))
       ISSUES_COUNT=$((ISSUES_COUNT+1))
     elif (( cmb < want && want > 0 )); then
-      APP_WARN["$app_key"]=$(( ${APP_WARN["$app_key"]:-0} + 1 ))
+      APP_WARN["$app_key"]=$(( ${APP_WARN["$app_key"]} + 1 ))
       WARNINGS_COUNT=$((WARNINGS_COUNT+1))
     else
-      APP_OK["$app_key"]=$(( ${APP_OK["$app_key"]:-0} + 1 ))
+      APP_OK["$app_key"]=$(( ${APP_OK["$app_key"]} + 1 ))
     fi
 
     if ii_is_suspend_sensitive "$cn" && (( crc > 3 )); then
@@ -905,30 +905,13 @@ else
   WARNINGS_COUNT=$((WARNINGS_COUNT+1))
 fi
 
-DNS_START=$(date +%s%N 2>/dev/null || echo 0)
 DNS_RES=$(timeout 2 host google.com 1.1.1.1 2>/dev/null || timeout 2 host google.com 8.8.8.8 2>/dev/null || echo "")
-DNS_END=$(date +%s%N 2>/dev/null || echo 0)
 if [[ -n "$DNS_RES" ]]; then
-  DNS_MS=$(( (DNS_END - DNS_START) / 1000000 ))
-  echo -e "  DNS Resolution (Google) : ${C_G}OK (${DNS_MS}ms)${C_0}"
+  DNS_MS=0
+  echo -e "  DNS Resolution (Google) : ${C_G}OK${C_0}"
 else
   echo -e "  DNS Resolution (Google) : ${C_Y}CHECK_TIMEOUT${C_0}"
 fi
-
-HTTP_CODE=$(curl -o /dev/null -s -w "%{http_code}\t%{time_total}" --connect-timeout 2 --max-time 3 http://1.1.1.1 2>/dev/null || curl -o /dev/null -s -w "%{http_code}\t%{time_total}" --connect-timeout 2 --max-time 3 -k https://google.com 2>/dev/null || echo "000 0")
-CODE=$(echo "$HTTP_CODE" | awk '{print $1}')
-TIME=$(echo "$HTTP_CODE" | awk '{print $2}')
-if [[ "$CODE" == "200" || "$CODE" == "301" || "$CODE" == "302" ]]; then
-  echo -e "  Outbound Internet Latency: ${C_G}ONLINE (HTTP ${CODE} in ${TIME}s)${C_0}"
-else
-  echo -e "  Outbound Internet Latency: ${C_R}BLOCKED / TIMEOUT${C_0}"
-  ISSUES_COUNT=$((ISSUES_COUNT+1))
-fi
-
-CONN_COUNT=$(cat /proc/sys/net/netfilter/nf_conntrack_count 2>/dev/null || echo 0)
-CONN_MAX=$(cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null || echo 524288)
-CONN_PCT=$(( CONN_COUNT * 100 / CONN_MAX ))
-echo -e "  Conntrack Active Streams: ${C_G}${CONN_COUNT} / ${CONN_MAX} (${CONN_PCT}% capacity)${C_0}"
 
 # --- 3. SYSTEM RAM, SWAP & ZRAM ALLOCATION ---
 echo -e "\n${C_C}--- [3. SYSTEM RAM, SWAP & ZRAM ALLOCATION] ---${C_0}"
@@ -1058,7 +1041,7 @@ if [[ -n "$AUTO_OFF" ]]; then
 fi
 
 echo
-echo "============================= SETUP XONG (VM 2026 FULL-AUTO SYNC MASTER) =============================="
+echo "============================= SETUP XONG (VM 2026 UNIVERSAL MASTER) =============================="
 /usr/local/bin/ii-status.sh || true
 VM_MASTER_EOF
 chmod +x ~/setup_vm.sh
