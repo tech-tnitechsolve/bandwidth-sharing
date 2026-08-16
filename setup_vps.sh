@@ -741,50 +741,121 @@ while ! docker info >/dev/null 2>&1; do
   sleep 1
 done
 
-# --- [RANDOMIZED STAGGERED START - MÔ PHỎNG ĐĂNG NHẬP THỰC TẾ TRÁNH BẪY API] ---
-if (( DOCKER_RESTARTED == 1 )); then
-  log "Dang bat lai cac container voi RANDOMIZED STAGGERED START (Mô phỏng thao tác người)..."
-  
+#============================================================================
+# ENGINE KHỞI ĐỘNG TỪ TỪ THÔNG MINH (BACKPRESSURE THROTTLING CHỐNG MAX CPU)
+#============================================================================
+cat > /usr/local/bin/ii-staggered-start.sh <<'EOF_STAGGER'
+#!/usr/bin/env bash
+# ii-staggered-start.sh: Khởi động container từ từ có phanh hãm theo tải CPU/RAM
+set -uo pipefail
+
+LOG=/var/log/ii-staggered-start.log
+ts() { date '+%F %T'; }
+say() { echo "[$(ts)] $*" | tee -a "$LOG" 2>/dev/null || echo "[$(ts)] $*"; }
+
+command -v docker >/dev/null 2>&1 || exit 0
+while ! docker info >/dev/null 2>&1; do
+  sleep 2
+done
+
+CPUS=$(nproc 2>/dev/null || echo 1)
+# Ngưỡng hãm phanh: Nếu Load 1m > CPUS * 2.5 thì dừng chờ hệ thống hạ nhiệt
+MAX_SAFE_LOAD=$(awk -v c="$CPUS" 'BEGIN { printf "%.2f", c * 2.5 }')
+
+check_backpressure() {
+  while true; do
+    CURR_LOAD=$(awk '{print $1}' /proc/loadavg 2>/dev/null || echo 0)
+    RAM_AVAIL=$(awk '/MemAvailable/{print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 999)
+    
+    # Nếu RAM khả dụng < 80MB hoặc Load vượt quá ngưỡng an toàn -> Phanh lại ngay!
+    if (( $(echo "$CURR_LOAD > $MAX_SAFE_LOAD" | bc -l 2>/dev/null || echo 0) )) || (( RAM_AVAIL < 80 )); then
+      say ">> CPU/RAM dang chiu tai cao (Load: ${CURR_LOAD}/${MAX_SAFE_LOAD}, RAM Avail: ${RAM_AVAIL}MB). Tam nghi 4s de he thong on dinh..."
+      sleep 4
+    else
+      break
+    fi
+  done
+}
+
+say "=== BAT DAU KHOI DONG DOCKER STAGGERED START (CHONG NGHEN CPU 24/7) ==="
+
+ROOTS=(/opt /root /home /srv /home/ubuntu /home/opc)
+mapfile -t FILES < <(find "${ROOTS[@]}" -maxdepth 4 -name containernames.txt -type f 2>/dev/null | sort -u)
+
+START_COUNT=0
+
+# Quét qua tất cả container trong danh sách cấu hình
+if (( ${#FILES[@]} > 0 )); then
   while IFS= read -r cid; do
     [[ -n "$cid" ]] || continue
-    c_name=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null | sed 's|^/||')
-    docker start "$cid" >/dev/null 2>&1 || true
-    
-    # Tạo độ trễ ngẫu nhiên từ 3-7 giây giữa các container nhạy cảm
-    RAND_WAIT=$(( 3 + RANDOM % 5 ))
-    
-    if [[ "$c_name" =~ wipter|ebesucher|adnade|depinext ]]; then
-      sleep 10  # Chromium cần 10s để ổn định hoàn toàn
-    elif [[ "$c_name" =~ honey|repocket|packetstream|packetshare|pawns|earnfm|earnapp ]]; then
-      sleep "$RAND_WAIT"
-    else
-      sleep 1.5
-    fi
-  done < <(find /opt /root /home /srv /home/ubuntu /home/opc -maxdepth 4 -name containernames.txt -type f -exec cat {} + 2>/dev/null | sort -u)
+    running=$(docker inspect -f '{{.State.Running}}' "$cid" 2>/dev/null || echo "false")
+    [[ "$running" == "true" ]] && continue
 
-  if command -v ctr >/dev/null 2>&1; then
-    for cid in $(docker ps -aq --no-trunc -f status=exited 2>/dev/null); do
-      ctr -n moby task kill -s SIGKILL "$cid" >/dev/null 2>&1 || true
-      ctr -n moby task rm "$cid" >/dev/null 2>&1 || true
-    done
+    c_name=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null | sed 's|^/||')
+    check_backpressure
+
+    docker start "$cid" >/dev/null 2>&1 || true
+    START_COUNT=$((START_COUNT+1))
+
+    # Điều phối khoảng nghỉ (Sleep Interval) theo độ nặng của app
+    if [[ "$c_name" =~ wipter|ebesucher|adnade|depinext ]]; then
+      sleep 10   # Chromium / Headless Browser cần 10s để ổn định bộ nhớ
+    elif [[ "$c_name" =~ honey|repocket|packetstream|packetshare|pawns|earnfm|earnapp ]]; then
+      sleep $(( 4 + RANDOM % 4 ))  # 4-7s: Tránh bẫy spam API đồng loạt
+    else
+      sleep 1.5  # Proxy node nhẹ (Traffmonetizer/Bitping/tun2socks): 1.5s
+    fi
+  done < <(cat "${FILES[@]}" 2>/dev/null | sort -u)
+fi
+
+# Quét vớt các container còn sót lại đang ở trạng thái exited
+while IFS= read -r cid; do
+  [[ -n "$cid" ]] || continue
+  c_name=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null | sed 's|^/||')
+  check_backpressure
+
+  docker start "$cid" >/dev/null 2>&1 || true
+  START_COUNT=$((START_COUNT+1))
+
+  if [[ "$c_name" =~ wipter|ebesucher|adnade|depinext ]]; then
+    sleep 10
+  elif [[ "$c_name" =~ honey|repocket|packetstream|packetshare|pawns|earnfm|earnapp ]]; then
+    sleep $(( 4 + RANDOM % 4 ))
+  else
+    sleep 1.5
   fi
+done < <(docker ps -aq -f status=exited 2>/dev/null)
 
-  while IFS= read -r cid; do
-    [[ -n "$cid" ]] || continue
-    c_name=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null | sed 's|^/||')
-    docker start "$cid" >/dev/null 2>&1 || true
-    
-    RAND_WAIT=$(( 3 + RANDOM % 5 ))
-    if [[ "$c_name" =~ wipter|ebesucher|adnade|depinext ]]; then
-      sleep 10
-    elif [[ "$c_name" =~ honey|repocket|packetstream|packetshare|pawns|earnfm|earnapp ]]; then
-      sleep "$RAND_WAIT"
-    else
-      sleep 1.5
-    fi
-  done < <(docker ps -aq -f status=exited 2>/dev/null)
+say "=== KET THUC: Da kich hoat thanh cong ${START_COUNT} container mot cach an toan, CPU on dinh! ==="
+EOF_STAGGER
+chmod +x /usr/local/bin/ii-staggered-start.sh
 
-  log "Da revive xong tat ca container mot cach an toan tuyet doi!"
+# Cài đặt Systemd Boot Service tự động chạy khi khởi động lại VPS hoặc sau bảo trì
+if has_systemd; then
+  cat > /etc/systemd/system/ii-boot-staggered.service <<'EOF_BOOT_SVC'
+[Unit]
+Description=InternetIncome Smart Staggered Container Boot (Anti CPU-Spike)
+After=docker.service zramswap.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/ii-staggered-start.sh
+RemainAfterExit=yes
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF_BOOT_SVC
+  systemctl daemon-reload 2>/dev/null || true
+  systemctl enable ii-boot-staggered.service 2>/dev/null || true
+fi
+
+# Chạy kích hoạt nếu Docker vừa restart
+if (( DOCKER_RESTARTED == 1 )); then
+  log "Dang bat lai cac container voi RANDOMIZED STAGGERED START..."
+  /usr/local/bin/ii-staggered-start.sh
 fi
 
 install_cron_stack() {
@@ -859,76 +930,26 @@ HAVE_CTR=0; command -v ctr >/dev/null 2>&1 && HAVE_CTR=1
     fi
   done < <(find "${ROOTS[@]}" -maxdepth 4 -name internetIncome.sh -type f 2>/dev/null | sort -u)
 
-  mapfile -t FILES < <(find "${ROOTS[@]}" -maxdepth 4 -name containernames.txt -type f 2>/dev/null | sort -u)
-  if (( ${#FILES[@]} == 0 )); then
-    echo "[$(ts)] chua thay folder engageub nao"
-  else
-    STUCK=$(docker ps -aq --no-trunc -f status=exited 2>/dev/null || true)
-    if (( HAVE_CTR == 1 )) && [[ -n "$STUCK" ]]; then
-      for cid in $STUCK; do
-        ctr -n moby task kill -s SIGKILL "$cid" >/dev/null 2>&1
-        ctr -n moby task rm "$cid" >/dev/null 2>&1
-      done
+  # Sử dụng Engine Staggered Start thông minh để giải phóng tải CPU
+  /usr/local/bin/ii-staggered-start.sh
+
+  docker update --restart=unless-stopped $(docker ps -aq 2>/dev/null || true) >/dev/null 2>&1 || true
+  for cid in $(docker ps -aq 2>/dev/null); do
+    c_img=$(docker inspect -f '{{.Config.Image}}' "$cid" 2>/dev/null || true)
+    c_name=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null || true)
+    cn=$(printf '%s' "$c_name" | sed 's|^/||')
+    ii_profile "$cn" "$c_img" "$TIER_IDX"
+    [[ -n "$P_MEM" ]] || continue
+    if [[ "$P_POLICY" == "__KEEP__" ]]; then
+      docker update --memory="$P_MEM" --memory-swap="$P_SWAP" "$cid" >/dev/null 2>&1 || true
+    else
+      docker update --memory="$P_MEM" --memory-swap="$P_SWAP" \
+                    --restart="$P_POLICY" "$cid" >/dev/null 2>&1 || true
     fi
-    TOTAL=0
-    for cn in "${FILES[@]}"; do
-      d=$(dirname "$cn")
-      [[ -f "${d}/internetIncome.sh" ]] || continue
-      n=$(grep -c . "$cn" 2>/dev/null || echo 0)
-      TOTAL=$((TOTAL+n))
-      echo "[$(ts)] >>> ${d} (${n} container - restart rải rác mô phỏng người dùng)..."
-      
-      while IFS= read -r cid; do
-        [[ -n "$cid" ]] || continue
-        c_name=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null | sed 's|^/||')
-        docker restart "$cid" >/dev/null 2>&1 || echo "[$(ts)] !! loi restart $cid"
-        
-        RAND_WAIT=$(( 3 + RANDOM % 5 ))
-        if [[ "$c_name" =~ wipter|ebesucher|adnade|depinext ]]; then
-          sleep 10
-        elif [[ "$c_name" =~ honey|repocket|packetstream|packetshare|pawns|earnfm|earnapp ]]; then
-          sleep "$RAND_WAIT"
-        else
-          sleep 1.5
-        fi
-      done < "$cn"
+  done
 
-      sleep 5
-    done
-
-    while IFS= read -r cid; do
-      [[ -n "$cid" ]] || continue
-      c_name=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null | sed 's|^/||')
-      docker start "$cid" >/dev/null 2>&1 || true
-      
-      RAND_WAIT=$(( 3 + RANDOM % 5 ))
-      if [[ "$c_name" =~ wipter|ebesucher|adnade|depinext ]]; then
-        sleep 10
-      elif [[ "$c_name" =~ honey|repocket|packetstream|packetshare|pawns|earnfm|earnapp ]]; then
-        sleep "$RAND_WAIT"
-      else
-        sleep 1.5
-      fi
-    done < <(cat "${FILES[@]}" 2>/dev/null | sort -u)
-
-    docker update --restart=unless-stopped $(docker ps -aq 2>/dev/null || true) >/dev/null 2>&1 || true
-    for cid in $(docker ps -aq 2>/dev/null); do
-      c_img=$(docker inspect -f '{{.Config.Image}}' "$cid" 2>/dev/null || true)
-      c_name=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null || true)
-      cn=$(printf '%s' "$c_name" | sed 's|^/||')
-      ii_profile "$cn" "$c_img" "$TIER_IDX"
-      [[ -n "$P_MEM" ]] || continue
-      if [[ "$P_POLICY" == "__KEEP__" ]]; then
-        docker update --memory="$P_MEM" --memory-swap="$P_SWAP" "$cid" >/dev/null 2>&1 || true
-      else
-        docker update --memory="$P_MEM" --memory-swap="$P_SWAP" \
-                      --restart="$P_POLICY" "$cid" >/dev/null 2>&1 || true
-      fi
-    done
-
-    STILL=$(docker ps -aq -f status=exited 2>/dev/null | wc -l)
-    echo "[$(ts)] xong: ${TOTAL} container | con Exited: ${STILL}"
-  fi
+  STILL=$(docker ps -aq -f status=exited 2>/dev/null | wc -l)
+  echo "[$(ts)] Xong dot bao tri dinh ky | Container Exited con lai: ${STILL}"
 } >> "$LOG" 2>&1
 EOF_RESTART
   if [[ -n "$BASE_DIR" ]]; then
