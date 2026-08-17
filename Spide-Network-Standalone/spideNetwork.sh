@@ -2,11 +2,16 @@
 # Spide Network standalone — self-contained TUN proxy + Spide peers.
 # Deliberately does not use the names internetIncome.sh or containernames.txt,
 # so existing setup_vps/setup_vm scanners do not patch or restart this folder.
+#
+# [MODIFIED] Egress IP checking via external services (api.ipify.org, etc.)
+# has been completely removed. The ONLY traffic sent through the user's proxy
+# is from the Spide peer itself, connecting to the Spide platform. No curl
+# container is ever attached to the TUN network.
 
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-VERSION="1.0.0"
+VERSION="1.1.0"
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 CONF="$ROOT/properties.conf"
 PROXIES="$ROOT/proxies.txt"
@@ -18,7 +23,6 @@ IMAGE="local/spide-standalone:0.15b"
 SPIDE_URL="https://pub-bf426a5300a643d2884389c8985f5181.r2.dev/spide_linux_cli.zip"
 SPIDE_SHA256="ae03e67109ba125f8b317dedb3dd31a3df745f75ed647abd57e7deef6328250c"
 TUN_IMAGE="ghcr.io/tun2proxy/tun2proxy:v0.8.3"
-CHECK_IMAGE="curlimages/curl:latest"
 PROJECT_ID="$(printf '%s' "$ROOT" | sha256sum | awk '{print substr($1,1,10)}')"
 PROJECT_LABEL="com.spide-standalone.project=$PROJECT_ID"
 
@@ -47,6 +51,9 @@ Spide Network — 4 lệnh chính
 
 File key tự tạo: spide-device-keys.txt
 --remove chỉ xóa container; vẫn giữ Machine ID và Device Key trong spide-data.
+
+Lưu ý: Script KHÔNG kiểm tra egress IP qua dịch vụ ngoài.
+Mọi traffic qua proxy chỉ từ Spide peer kết nối tới Spide platform.
 EOF
 }
 
@@ -64,7 +71,10 @@ load_config(){
   USE_SOCKS5_DNS=false
   USE_DNS_OVER_HTTPS=true
   SPIDE_MAX_INSTANCES=0
-  SPIDE_VALIDATE_EGRESS=true
+  # [MODIFIED] Egress validation is hard-disabled: proxies are single-machine
+  # and must never be used to call external IP-check services. Only the Spide
+  # peer itself may send traffic through the proxy to the Spide platform.
+  SPIDE_VALIDATE_EGRESS=false
   SPIDE_SKIP_DUPLICATE_EGRESS=true
   SPIDE_MAX_MEMORY=auto
   SPIDE_MEMORY_RESERVATION=auto
@@ -78,6 +88,11 @@ load_config(){
   set +x
   # shellcheck disable=SC1090
   source "$CONF"
+  # Force-disable egress validation regardless of what properties.conf says.
+  if [[ "$SPIDE_VALIDATE_EGRESS" != false ]]; then
+    warn "SPIDE_VALIDATE_EGRESS da bi tat cung (proxy chi duoc dung cho Spide platform)."
+    SPIDE_VALIDATE_EGRESS=false
+  fi
   if [[ "$DEVICE_PREFIX" == auto || -z "$DEVICE_PREFIX" ]]; then
     DEVICE_PREFIX=$(basename "$ROOT")
   fi
@@ -190,19 +205,19 @@ remove_project_containers(){
   while IFS= read -r n; do [[ -n "$n" ]] && dk rm -f "$n" >/dev/null 2>&1 || true; done < <(dk ps -a --filter "label=$PROJECT_LABEL" --format '{{.Names}}')
 }
 
-get_egress(){
-  local tun="$1"
-  dk run --rm --network "container:$tun" "$CHECK_IMAGE" -fsS --connect-timeout 8 --max-time 15 https://api.ipify.org 2>/dev/null || true
-}
+# [REMOVED] get_egress() — previously ran curlimages/curl through the TUN to
+# hit api.ipify.org. This has been deleted because proxies must never be used
+# to call external services; only the Spide peer may send traffic through them.
 
 start_all(){
   prereq; load_config; auto_resources; read_proxies; build_spide
   dk pull "$TUN_IMAGE" >/dev/null
-  [[ "$SPIDE_VALIDATE_EGRESS" == true ]] && dk pull "$CHECK_IMAGE" >/dev/null
+  # [REMOVED] No longer pulls curlimages/curl — no external egress check.
   remove_project_containers
   : > "$STATE"; chmod 600 "$STATE"
-  declare -A seen_ip=()
-  local count=${#PROXY_LIST[@]} i idx proxy h tun peer midfile mid ip status key dns_mode
+  # [REMOVED] seen_ip duplicate-IP detection — cannot compare IPs without
+  # making external calls through the proxy.
+  local count=${#PROXY_LIST[@]} i idx proxy h tun peer midfile mid status key dns_mode
   (( SPIDE_MAX_INSTANCES > 0 && SPIDE_MAX_INSTANCES < count )) && count=$SPIDE_MAX_INSTANCES
   for ((i=0;i<count;i++)); do
     idx=$((i+1)); proxy=${PROXY_LIST[$i]}; h=$(hash_proxy "$proxy"); tun=$(tun_name "$idx" "$h"); peer=$(peer_name "$idx" "$h"); dns_mode=$(tun_dns_mode "$proxy")
@@ -215,15 +230,10 @@ start_all(){
       --log-driver local --log-opt max-size=1m --log-opt max-file=2 \
       "$TUN_IMAGE" --dns "$dns_mode" --proxy "$proxy" --verbosity off >/dev/null
     sleep 1
-    ip='-'
-    if [[ "$SPIDE_VALIDATE_EGRESS" == true ]]; then
-      ip=$(get_egress "$tun")
-      if [[ -z "$ip" ]]; then warn "Bo qua proxy $idx: khong lay duoc egress IP"; dk rm -f "$tun" >/dev/null; continue; fi
-      if [[ -n "${seen_ip[$ip]:-}" && "$SPIDE_SKIP_DUPLICATE_EGRESS" == true ]]; then warn "Bo qua proxy $idx: IP $ip trung node ${seen_ip[$ip]}"; dk rm -f "$tun" >/dev/null; continue; fi
-      seen_ip[$ip]=$idx
-    fi
+    # [REMOVED] Egress IP check via curl container — proxy must only carry
+    # Spide platform traffic. We trust the proxy and proceed directly.
     midfile=$(ensure_machine_id "$h"); mid=$(tr -d '\r\n' < "$midfile")
-    log "[$idx/$count] Tao Spide peer $peer qua $tun (egress=$ip)"
+    log "[$idx/$count] Tao Spide peer $peer qua $tun"
     dk run -d --name "$peer" --restart unless-stopped \
       --label "$PROJECT_LABEL" --label "com.spide-standalone.role=peer" --label "com.spide-standalone.index=$idx" --label "com.spide-standalone.tun=$tun" \
       --network "container:$tun" --read-only --tmpfs /tmp:size=32m,mode=1777 \
@@ -234,7 +244,7 @@ start_all(){
     sleep "$START_DELAY"
     key=$(dk logs "$peer" 2>&1 | sed -n 's/^.*Device Key:[[:space:]]*//p' | tail -1 || true)
     status=$(dk logs "$peer" 2>&1 | sed -n 's/^.*Status:[[:space:]]*//p' | tail -1 || true)
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$idx" "$h" "$tun" "$peer" "$ip" "$mid" "${key:--}" "${status:--}" >> "$STATE"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$idx" "$h" "$tun" "$peer" "-" "$mid" "${key:--}" "${status:--}" >> "$STATE"
   done
   log "Da tao $(wc -l < "$STATE") Spide node. Chay --keys de lay Device Key."
   show_keys
@@ -248,17 +258,16 @@ show_keys(){
     printf '# Paste Device name + Device key vao Spide dashboard.\n\n'
   } > "$tmp"
 
-  printf 'INDEX\tPROXY_ID\tCONTAINER\tEGRESS\tMACHINE_ID\tDEVICE_KEY\tSTATUS\n'
+  printf 'INDEX\tPROXY_ID\tCONTAINER\tMACHINE_ID\tDEVICE_KEY\tSTATUS\n'
   while IFS=$'\t' read -r idx h tun peer ip mid oldkey oldstatus; do
     dk inspect "$peer" >/dev/null 2>&1 || continue
     key=$(dk logs "$peer" 2>&1 | sed -n 's/^.*Device Key:[[:space:]]*//p' | tail -1 || true)
     status=$(dk logs "$peer" 2>&1 | sed -n 's/^.*Status:[[:space:]]*//p' | tail -1 || true)
     device_name=$(printf '%s-%03d' "$DEVICE_PREFIX" "$idx")
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$idx" "$h" "$peer" "$ip" "$mid" "${key:--}" "${status:--}"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$idx" "$h" "$peer" "$mid" "${key:--}" "${status:--}"
     {
       printf 'Device name: %s\n' "$device_name"
       printf 'Device key: %s\n' "${key:--}"
-      printf 'Egress IP: %s\n' "$ip"
       printf 'Status: %s\n\n' "${status:--}"
     } >> "$tmp"
   done < "$STATE"
@@ -281,21 +290,30 @@ show_status(){
 }
 
 validate_only(){
+  # [MODIFIED] This function no longer makes ANY external call through the
+  # proxy. It only validates proxy URL format and verifies that the tun2proxy
+  # container starts successfully (i.e. does not immediately crash). No curl
+  # container is attached to the TUN, so no traffic leaves through the proxy.
   prereq; load_config; auto_resources; read_proxies
-  dk pull "$TUN_IMAGE" >/dev/null; dk pull "$CHECK_IMAGE" >/dev/null
-  declare -A seen=(); local i proxy h tun ip dns_mode
-  printf 'INDEX\tPROXY_ID\tEGRESS_IP\tRESULT\n'
+  dk pull "$TUN_IMAGE" >/dev/null
+  local i proxy h tun dns_mode state
+  printf 'INDEX\tPROXY_ID\tTUN_STATE\tRESULT\n'
   for i in "${!PROXY_LIST[@]}"; do
     proxy=${PROXY_LIST[$i]}; h=$(hash_proxy "$proxy"); tun="spn-$PROJECT_ID-check-$((i+1))"; dns_mode=$(tun_dns_mode "$proxy")
     dk rm -f "$tun" >/dev/null 2>&1 || true
     dk run -d --name "$tun" --network bridge --device /dev/net/tun --cap-add NET_ADMIN \
       --sysctl net.ipv6.conf.all.disable_ipv6=1 --memory "$TUN_MAX_MEMORY" --memory-swap "$TUN_MEMORY_SWAP" \
       "$TUN_IMAGE" --dns "$dns_mode" --proxy "$proxy" --verbosity off >/dev/null
-    sleep 1; ip=$(get_egress "$tun"); dk rm -f "$tun" >/dev/null
-    if [[ -z "$ip" ]]; then printf '%s\t%s\t-\tFAILED\n' "$((i+1))" "$h"
-    elif [[ -n "${seen[$ip]:-}" ]]; then printf '%s\t%s\t%s\tDUPLICATE_WITH_%s\n' "$((i+1))" "$h" "$ip" "${seen[$ip]}"
-    else seen[$ip]=$((i+1)); printf '%s\t%s\t%s\tOK\n' "$((i+1))" "$h" "$ip"; fi
+    sleep 2
+    state=$(dk inspect -f '{{.State.Status}}' "$tun" 2>/dev/null || echo missing)
+    dk rm -f "$tun" >/dev/null 2>&1 || true
+    if [[ "$state" == "running" ]]; then
+      printf '%s\t%s\t%s\tOK\n' "$((i+1))" "$h" "$state"
+    else
+      printf '%s\t%s\t%s\tFAILED (tun2proxy khong chay duoc)\n' "$((i+1))" "$h" "$state"
+    fi
   done
+  log "Khong co traffic ngoai nao di qua proxy. Chi kiem tra tun2proxy khoi dong."
 }
 
 deploy_all(){
