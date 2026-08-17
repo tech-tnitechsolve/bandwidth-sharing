@@ -29,7 +29,7 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-VERSION="1.4.0"
+VERSION="1.5.0"
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 CONF="$ROOT/properties.conf"
 PROXIES="$ROOT/proxies.txt"
@@ -39,8 +39,22 @@ STATE="$DATA/spide-nodes.tsv"
 KEYS_FILE="$ROOT/spide-device-keys.txt"
 LOCK_FILE="$DATA/.spide.lock"
 IMAGE="local/spide-standalone:0.15b"
-SPIDE_URL="https://pub-bf426a5300a643d2884389c8985f5181.r2.dev/spide_linux_cli.zip"
-SPIDE_SHA256="ae03e67109ba125f8b317dedb3dd31a3df745f75ed647abd57e7deef6328250c"
+# Tu dong chon ban Spide theo kien truc CPU (ho tro x86_64 va ARM64/Oracle Ampere).
+_SP_ARCH="$(uname -m)"
+case "$_SP_ARCH" in
+  x86_64|amd64)
+    SPIDE_URL="https://pub-bf426a5300a643d2884389c8985f5181.r2.dev/spide_linux_cli.zip"
+    SPIDE_SHA256="ae03e67109ba125f8b317dedb3dd31a3df745f75ed647abd57e7deef6328250c"
+    SPIDE_BIN=/usr/local/bin/spide ;;
+  aarch64|arm64)
+    # Ten file mac dinh; neu Spide doi ten, chi can sua dong duoi.
+    SPIDE_URL="https://pub-bf426a5300a643d2884389c8985f5181.r2.dev/spide_linux_arm64.zip"
+    SPIDE_SHA256=""   # chua ky hash; xac minh bang cach chay thu binary
+    SPIDE_BIN=/usr/local/bin/spide ;;
+  *)
+    SPIDE_URL="https://pub-bf426a5300a643d2884389c8985f5181.r2.dev/spide_linux_cli.zip"
+    SPIDE_SHA256=""; SPIDE_BIN=/usr/local/bin/spide ;;
+esac
 TUN_IMAGE="ghcr.io/tun2proxy/tun2proxy:v0.8.3"
 PROJECT_ID="$(printf '%s' "$ROOT" | sha256sum | awk '{print substr($1,1,10)}')"
 PROJECT_LABEL="com.spide-standalone.project=$PROJECT_ID"
@@ -56,16 +70,27 @@ trap 'rc=$?; printf "%s[XX]%s Loi dong %s (exit=%s)\n" "$R" "$N" "${BASH_LINENO[
 usage(){ cat <<'EOF'
 Spide Network — cac lenh
 
-  Tao node:                 bash spideNetwork.sh --create
-  Sau khi add key dashboard: bash spideNetwork.sh --deploy
-  Khi sua proxies.txt:      bash spideNetwork.sh --update
-  Xoa container:            bash spideNetwork.sh --remove
-  Tu phuc hoi node treo:    bash spideNetwork.sh --heal     (1 luot, dung cho cron)
-  Canh 24/7:                bash spideNetwork.sh --watch    (lap lai 60s/lan)
+CHE DO PROXY (dung proxies.txt, moi peer di qua TUN):
+  --create    Tao node (proxy moi sinh key moi, proxy cu giu Machine ID)
+  --deploy    Sau khi add key dashboard: restart peer de xac thuc
+  --update    Dong bo proxies.txt
+  --remove    Xoa container (giu spide-data)
+  --heal      1 luot tu phuc hoi (dung cron 5 phut)
+  --watch     Canh 24/7 (lap lai 60s/lan)
+  --keys | --status | --logs [n] | --validate | --backup
 
-  Ho tro: --keys | --status | --logs [index] | --validate | --backup
+CHE DO HOST (chay bang IP GOC, KHONG can proxies.txt):
+  --host          Tao/tao lai 1 Spide container di thang ra IP may
+  --host-status   Trang thai container host
+  --host-keys     Lay Device Key de add vao dashboard
+  --host-logs     Xem log realtime
+  --host-remove   Xoa container host (giu machine-id)
 
-Proxy CHI duoc Spide peer dung de ket noi toi Spide platform.
+Vi du thu tren VPS co IP tot (Oracle Free...):
+  bash spideNetwork.sh --host
+  bash spideNetwork.sh --host-keys
+
+Proxy CHI duoc Spide peer (che do proxy) dung de ket noi Spide platform.
 Khong bao gio co kiem tra IP qua dich vu ngoai.
 EOF
 }
@@ -81,6 +106,25 @@ acquire_lock(){
   mkdir -p "$DATA"
   exec 9>"$LOCK_FILE"
   flock -n 9 || die "Mot tien trinh spideNetwork dang chay (lock: $LOCK_FILE). Thoat."
+}
+
+# Canh bao moi truong Docker de chay on dinh tren nhieu loai VPS.
+docker_env_check(){
+  need docker
+  local driver tz
+  driver=$(docker info 2>/dev/null | awk -F': ' '/Storage Driver/{print $2; exit}')
+  echo "Docker storage driver: ${driver:-?}"
+  case "$driver" in
+    overlay2|btrfs|zfs) ;;   # tot
+    vfs) warn "Driver 'vfs' rat cham/ton dia. Nen dung overlay2 (kernel >=4.x ho tro).";;
+    aufs) warn "Driver 'aufs' cu; khuyen nghi overlay2.";;
+    "") warn "Khong doc duoc driver Docker.";;
+    *) :;;
+  esac
+  # Thoi gian he thong (sai gio gay loi SSL/timeout)
+  if ! timedatectl -p NTPSynchronized --value show >/dev/null 2>&1; then :; fi
+  local off; off=$(chronyc tracking 2>/dev/null | awk '/Last offset/{print $4}')
+  [[ -n "$off" ]] && echo "Do lech dong ho: ${off}s"
 }
 
 # Chuyen timestamp Docker (RFC3339 co nano giay) ve epoch.
@@ -209,7 +253,7 @@ auto_resources(){
 
 prereq(){
   for c in docker flock sha256sum awk sed grep head date; do need "$c"; done
-  case "$(uname -m)" in x86_64|amd64) ;; *) die "Spide CLI 0.15b can x86_64/amd64";; esac
+  # Spide ho tro ca x86_64 va arm64; khong chan o day.
   [[ -c /dev/net/tun ]] || die "Khong co /dev/net/tun; hay bat TUN cho VM/VPS"
   mkdir -p "$DATA/nodes"; chmod 700 "$DATA" "$DATA/nodes"
 }
@@ -256,21 +300,32 @@ node_dir(){ printf '%s/nodes/%s' "$DATA" "$1"; }
 build_spide(){
   dk image inspect "$IMAGE" >/dev/null 2>&1 && return 0
   mkdir -p "$BUILD_DIR"
+  # Chenh lech theo kien truc: sha256 chi kiem khi co gia tri (ban x86 da ky).
+  local sha_line="true"
+  [[ -n "$SPIDE_SHA256" ]] && sha_line="echo \"$SPIDE_SHA256  /tmp/spide.zip\" | sha256sum -c -"
   cat > "$BUILD_DIR/Dockerfile" <<EOF
 FROM alpine:3.22
-RUN apk add --no-cache ca-certificates wget unzip \\
- && wget -q -T 30 -t 3 -O /tmp/spide.zip "$SPIDE_URL" \\
- && echo "$SPIDE_SHA256  /tmp/spide.zip" | sha256sum -c - \\
+RUN apk add --no-cache ca-certificates wget unzip file libc6-compat \\
+ && wget -q -T 45 -t 3 -O /tmp/spide.zip "$SPIDE_URL" \\
+ && $sha_line \\
  && unzip -q /tmp/spide.zip -d /tmp/spide \\
- && install -m 0755 /tmp/spide/spide_cli/spide /usr/local/bin/spide \\
+ && BIN=\\$(find /tmp/spide -type f -name spide | head -1) \\
+ && test -n "\\$BIN" || (echo "Khong tim thay binary spide trong archive (co the URL/sai kien truc)" && exit 1) \\
+ && install -m 0755 "\\$BIN" /usr/local/bin/spide \\
+ && (file /usr/local/bin/spide | grep -qi ELF || (echo "File tai ve khong phai ELF binary - sai kien truc?" && exit 1)) \\
+ && chmod +x /usr/local/bin/spide \\
  && rm -rf /tmp/spide /tmp/spide.zip \\
  && addgroup -g 10001 spide \\
  && adduser -D -H -u 10001 -G spide spide
 USER 10001:10001
 ENTRYPOINT ["/usr/local/bin/spide"]
 EOF
-  log "Build image Spide (lan dau, chi 1 lan)..."
-  dk build --pull -t "$IMAGE" "$BUILD_DIR"
+  log "Build image Spide (lan dau, kien truc $(uname -m))..."
+  # Build thuong: Docker tu dung arch cua host (chay duoc ca x86_64 va arm64).
+  dk build --pull -t "$IMAGE" "$BUILD_DIR" || {
+    rm -rf "$BUILD_DIR"
+    die "Build image that bai. Kiem tra $SPIDE_URL co ho tro kien truc $(uname -m) khong."
+  }
   rm -rf "$BUILD_DIR"
 }
 
@@ -322,7 +377,8 @@ tun_run_args(){
 }
 
 start_all(){
-  prereq; acquire_lock; load_config; auto_resources; read_proxies; build_spide; ensure_tun_image
+  prereq; require_tun; acquire_lock; load_config; auto_resources; read_proxies; build_spide; ensure_tun_image
+  docker_env_check >&2 || true
   remove_project_containers
   : > "$STATE"; chmod 600 "$STATE"
   local total_raw=${#RAW_PROXIES[@]}
@@ -429,7 +485,7 @@ show_status(){
 }
 
 show_logs(){
-  prereq; load_config
+  prereq; require_tun; load_config
   [[ -s "$STATE" ]] || die "Chua co node; chay --create"
   local idx="${1:-}" peer
   if [[ -n "$idx" ]]; then
@@ -470,7 +526,7 @@ validate_only(){
 }
 
 deploy_all(){
-  prereq; acquire_lock; load_config
+  prereq; require_tun; acquire_lock; load_config
   [[ -s "$STATE" ]] || die "Chua co node; chay --create truoc"
 
   log "Kiem tra TUN gateway..."
@@ -586,7 +642,7 @@ __heal_body(){
 }
 
 heal_once(){
-  prereq; load_config
+  prereq; require_tun; load_config
   [[ -s "$STATE" ]] || { warn "Chua co node; chay --create truoc."; return 0; }
   (
     mkdir -p "$DATA"; exec 9>"$LOCK_FILE"
@@ -596,7 +652,7 @@ heal_once(){
 }
 
 watch_loop(){
-  prereq; load_config
+  prereq; require_tun; load_config
   [[ -s "$STATE" ]] || die "Chua co node; chay --create truoc."
   log "Watchdog chay 24/7: kiem tra moi ${WATCH_INTERVAL}s, canh treo qua ${HEAL_STALE_SEC}s. Ctrl+C de thoat."
   while true; do
@@ -615,6 +671,129 @@ backup_ids(){
   tar -C "$ROOT" -czf "$out" "${items[@]}"
   chmod 600 "$out"; log "Backup: $out"
 }
+
+
+# ==================== CHE DO HOST: chay Spide bang IP goc, khong proxy/TUN ====================
+# Tien ich khi muon thu Spide truc tiep tren VPS co IP tot (vi du Oracle Free).
+# Lenh:
+#   bash spideNetwork.sh --host           tao/tao lai 1 container Spide (ra IP goc)
+#   bash spideNetwork.sh --host-status    xem trang thai
+#   bash spideNetwork.sh --host-keys      lay Device Key de add dashboard
+#   bash spideNetwork.sh --host-logs      xem log realtime
+#   bash spideNetwork.sh --host-remove    xoa container (giu machine-id)
+
+HOST_NAME="spide-host-${PROJECT_ID}"
+HOST_DIR="$DATA/host"
+HOST_MACHINE_ID="$HOST_DIR/machine-id"
+HOST_KEY_FILE="$ROOT/spide-host-key.txt"
+
+host_require(){
+  need docker
+  docker info >/dev/null 2>&1 || die "Docker chua chay/khong quyen truy cap."
+  # Khong gioi han kien truc: build_spide tu chon theo arch.
+  mkdir -p "$HOST_DIR"; chmod 700 "$HOST_DIR"
+}
+
+host_ensure_mid(){
+  if [[ ! -s "$HOST_MACHINE_ID" ]]; then
+    head -c 64 /dev/urandom | sha256sum | awk '{print substr($1,1,32)}' > "$HOST_MACHINE_ID"
+    log "Da tao machine ID moi cho Spide host (lan dau se sinh Device Key)."
+  fi
+  local mid; mid=$(tr -d '\r\n[:space:]' < "$HOST_MACHINE_ID")
+  [[ "$mid" =~ ^[a-fA-F0-9]{32}$ ]] || die "Machine ID khong hop le: $HOST_MACHINE_ID"
+  printf '%s' "$mid"
+}
+
+host_create(){
+  host_require
+  build_spide
+  docker_env_check >&2 || true
+  local mid; mid=$(host_ensure_mid)
+
+  if dk inspect "$HOST_NAME" >/dev/null 2>&1; then
+    log "Container $HOST_NAME da ton tai -> tao lai (giu machine ID)..."; dk rm -f "$HOST_NAME" >/dev/null 2>&1 || true
+  fi
+
+  log "Tao Spide host (khong proxy, network bridge, ra IP goc): $HOST_NAME"
+  # Dung bridge mac dinh: container di thang ra bang IP goc cua may.
+  # Bind /etc/machine-id de Spide dung chung 1 dinh danh giua cac lan tai tao.
+  dk run -d \
+    --name "$HOST_NAME" \
+    --hostname "$HOST_NAME" \
+    --restart unless-stopped \
+    --memory 192m --memory-reservation 64m --memory-swap 384m --cpus 0.50 --pids-limit 64 \
+    --security-opt no-new-privileges:true --cap-drop ALL \
+    --read-only --tmpfs /tmp:size=32m,mode=1777 \
+    --ulimit nofile=65536:65536 \
+    --log-driver local --log-opt max-size=1m --log-opt max-file=2 \
+    --label "$PROJECT_LABEL" --label com.spide-standalone.role=host \
+    --mount type=bind,source="$HOST_MACHINE_ID",target=/etc/machine-id,readonly \
+    -e ID="$mid" \
+    "$IMAGE" >/dev/null
+
+  sleep 3
+  if dk inspect -f '{{.State.Running}}' "$HOST_NAME" 2>/dev/null | grep -q true; then
+    log "Spide host DANG CHAY (ra IP goc)."
+  else
+    warn "Container vua tao khong chay. Xem log:"
+    dk logs --tail 30 "$HOST_NAME" 2>&1 | sed 's/^/    /' || true
+  fi
+  echo
+  echo "Cho 5-15 giay roi lay Device Key:"
+  echo "  bash $0 --host-keys"
+  echo "  bash $0 --host-status"
+}
+
+host_keys(){
+  host_require
+  [[ -s "$HOST_MACHINE_ID" ]] || die "Chua co Spide host. Chay: bash $0 --host"
+  echo "Machine ID: $(cat "$HOST_MACHINE_ID")"
+  if dk inspect "$HOST_NAME" >/dev/null 2>&1; then
+    local key; key=$(dk logs "$HOST_NAME" 2>&1 | sed -n 's/^.*Device Key:[[:space:]]*//p' | tail -1 | tr -d '\r')
+    if [[ -n "$key" ]]; then
+      echo
+      echo "Device Key (dan vao dashboard spide.network):"
+      echo "  $key"
+      echo "$key" > "$HOST_KEY_FILE"; chmod 600 "$HOST_KEY_FILE"
+    else
+      echo "Chua thay Device Key trong log (co the chua ket noi server). Xem: bash $0 --host-logs"
+    fi
+  else
+    echo "Container chua chay. Chay: bash $0 --host"
+  fi
+}
+
+host_status(){
+  host_require
+  if ! dk inspect "$HOST_NAME" >/dev/null 2>&1; then
+    echo "Spide host: CHUA TAO (chay: bash $0 --host)"; return 0
+  fi
+  local state restarts st nm egress
+  state=$(dk inspect -f '{{.State.Status}}' "$HOST_NAME" 2>/dev/null)
+  restarts=$(dk inspect -f '{{.RestartCount}}' "$HOST_NAME" 2>/dev/null)
+  st=$(dk logs "$HOST_NAME" 2>&1 | sed -n 's/^.*Status:[[:space:]]*//p' | tail -1 | tr -d '\r')
+  nm=$(dk inspect -f '{{.HostConfig.NetworkMode}}' "$HOST_NAME" 2>/dev/null)
+  printf 'Trang thai: %s | Restart: %s | Status moi nhat: %s\n' "$state" "${restarts:-0}" "${st:--}"
+  echo "Network: $nm (ra bang IP goc)"
+}
+
+host_logs(){
+  host_require
+  dk inspect "$HOST_NAME" >/dev/null 2>&1 || die "Chua co Spide host. Chay: bash $0 --host"
+  dk logs -f --tail 100 "$HOST_NAME"
+}
+
+host_remove(){
+  host_require
+  if dk inspect "$HOST_NAME" >/dev/null 2>&1; then
+    dk rm -f "$HOST_NAME" >/dev/null 2>&1 && log "Da xoa container Spide host."
+  else
+    echo "Khong co container Spide host de xoa."
+  fi
+  echo "Machine ID giu lai: $HOST_MACHINE_ID (tao lai se dung cung Device Key)."
+  echo "Xoa han dinh danh: rm -rf $HOST_DIR $HOST_KEY_FILE"
+}
+
 
 main(){
   case "${1:---help}" in
@@ -654,6 +833,21 @@ main(){
       ;;
     --backup)
       backup_ids
+      ;;
+    --host)
+      host_create
+      ;;
+    --host-keys|--host-key)
+      host_keys
+      ;;
+    --host-status)
+      host_status
+      ;;
+    --host-logs|--host-log)
+      host_logs
+      ;;
+    --host-remove|--host-rm|--host-delete)
+      host_remove
       ;;
     --version)
       echo "$VERSION"
