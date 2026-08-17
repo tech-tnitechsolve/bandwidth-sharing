@@ -1,38 +1,35 @@
 #!/usr/bin/env bash
 # Spide Network standalone — self-contained TUN proxy + Spide peers.
 #
-# === v1.2.0 — AN TOAN ONG DINH ===
-# - GO BO HOAN TOAN moi kiem tra egress IP qua dich vu ngoai (ipify/curl).
+# === v1.4.0 — TOI UU CHO CA VPS LAN VM ===
+# - HOAN TOAN KHONG kiem tra egress IP qua dich vu ngoai (ipify/curl).
 #   Proxy CHI duoc Spide peer dung de ket noi toi Spide platform.
-#   (DNS van phai di qua proxy vi do la yeu cau co ban de mo ket noi toi Spide.)
-# - Khong con image curlimages/curl, khong con get_egress().
-# - SPIDE_VALIDATE_EGRESS bi tat cung, ke ca properties.conf bat.
+#   Moi thao tac build/pull/quan ly container di bang IP cua chinh may chu.
+# - MTU=1400 / MSS=1360 + tcp-timeout 300s: chong treo session / PMTU
+#   blackhole (nguyen nhan "log Status OK nhung dashboard bao offline"),
+#   vua an toan cho VPS datacenter vua cho VM o nha.
+# - TUN log muc warn de thay loi khi co su co.
+# - Lenh --heal / --watch: tu khoi phuc node bi treo (qua 5 phut khong
+#   co Status: OK thi restart), tu khoi dong TUN chet va noi lai peer.
+# - Chong chay trung tien trinh (flock), loc proxy trung, pull TUN chiu loi.
 #
-# On dinh:
-# - TUN duoc cho "running" thay vi sleep cung; proxy nao lam TUN chet ngay
-#   se bi bo qua va in log cuoi de debug (KHONG gui traffic qua proxy).
-# - Phat hien proxy TRUNG NHAU cuc bo (theo hash), khong can goi ngoai.
-# - deploy: khoi dong TUN truoc, sau do restart peer (dung thu tu).
-# - Lock chong chay 2 tien trinh cung luc (flock).
-# - Pull image TUN chiu loi: dung ban local neu khong pull duoc.
-# - Them lenh --logs de xem log peer de dang.
-#
-# Cac lenh:
+# Lenh:
 #   --create    Tao node va xuat Device Key
 #   --deploy    Sau khi add key tren dashboard: restart peer de xac thuc
-#   --update    Dong bo lai proxies.txt (proxy cu giu Machine ID)
-#   --remove    Xoa container cua folder (giu spide-data)
+#   --update    Dong bo proxies.txt (proxy cu giu Machine ID)
+#   --remove    Xoa container (giu spide-data)
+#   --heal      Quet 1 luot, restart node bi treo/TUN chet (dung cho cron)
+#   --watch     Chay --heal lap lai 60s/lan (canh 24/7, dung trong tmux/screen)
 #   --keys      In lai Device Key
 #   --status    Trang thai container
 #   --logs [n]  Xem log peer (n = index; bo trong xem tat ca)
-#   --validate  Kiem tra dinh dang proxy + TUN co khoi dong duoc khong
-#               (KHONG gui traffic nao qua proxy)
-#   --backup    Dong goi Machine ID + key de sao luu
+#   --validate  Kiem tra format proxy + TUN khoi dong (KHONG gui traffic qua proxy)
+#   --backup    Dong goi Machine ID + key
 
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-VERSION="1.2.0"
+VERSION="1.4.0"
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 CONF="$ROOT/properties.conf"
 PROXIES="$ROOT/proxies.txt"
@@ -59,10 +56,12 @@ trap 'rc=$?; printf "%s[XX]%s Loi dong %s (exit=%s)\n" "$R" "$N" "${BASH_LINENO[
 usage(){ cat <<'EOF'
 Spide Network — cac lenh
 
-  Tao node:                 sudo bash spideNetwork.sh --create
-  Sau khi add key dashboard: sudo bash spideNetwork.sh --deploy
-  Khi sua proxies.txt:      sudo bash spideNetwork.sh --update
-  Xoa container:            sudo bash spideNetwork.sh --remove
+  Tao node:                 bash spideNetwork.sh --create
+  Sau khi add key dashboard: bash spideNetwork.sh --deploy
+  Khi sua proxies.txt:      bash spideNetwork.sh --update
+  Xoa container:            bash spideNetwork.sh --remove
+  Tu phuc hoi node treo:    bash spideNetwork.sh --heal     (1 luot, dung cho cron)
+  Canh 24/7:                bash spideNetwork.sh --watch    (lap lai 60s/lan)
 
   Ho tro: --keys | --status | --logs [index] | --validate | --backup
 
@@ -83,6 +82,9 @@ acquire_lock(){
   exec 9>"$LOCK_FILE"
   flock -n 9 || die "Mot tien trinh spideNetwork dang chay (lock: $LOCK_FILE). Thoat."
 }
+
+# Chuyen timestamp Docker (RFC3339 co nano giay) ve epoch.
+to_epoch(){ date -d "$(printf '%s' "$1" | sed -E 's/^([0-9T:.-]+)\.[0-9]+Z/\1Z/')" +%s 2>/dev/null || echo 0; }
 
 ensure_conf(){
   [[ -f "$CONF" ]] && return 0
@@ -105,6 +107,14 @@ TUN_MEMORY_SWAP=auto
 TUN_CPU=auto
 START_DELAY=1
 TUN_READY_TIMEOUT=10
+# MTU thap tranh treo session/PMTU qua proxy (phu hop ca VPS lan VM).
+TUN_MTU=1400
+TUN_TCP_MSS=1360
+TUN_TCP_TIMEOUT=300
+TUN_VERBOSITY=warn
+# Tu phuc hoi: restart peer neu qua bao lau khong co Status: OK
+HEAL_STALE_SEC=300
+WATCH_INTERVAL=60
 EOF
   chmod 600 "$CONF"
   log "Da tao $CONF voi cau hinh mac dinh."
@@ -130,6 +140,12 @@ load_config(){
   TUN_CPU=auto
   START_DELAY=1
   TUN_READY_TIMEOUT=10
+  TUN_MTU=1400
+  TUN_TCP_MSS=1360
+  TUN_TCP_TIMEOUT=300
+  TUN_VERBOSITY=warn
+  HEAL_STALE_SEC=300
+  WATCH_INTERVAL=60
   set +x
   # shellcheck disable=SC1090
   source "$CONF"
@@ -150,6 +166,16 @@ load_config(){
   [[ "$SPIDE_MAX_INSTANCES" =~ ^[0-9]+$ ]] || die "SPIDE_MAX_INSTANCES phai la so >= 0"
   [[ "$START_DELAY" =~ ^[0-9]+([.][0-9]+)?$ ]] || die "START_DELAY khong hop le"
   [[ "$TUN_READY_TIMEOUT" =~ ^[0-9]+$ ]] || TUN_READY_TIMEOUT=10
+  [[ "$TUN_MTU" =~ ^[0-9]+$ ]] && (( TUN_MTU >= 576 && TUN_MTU <= 9000 )) || die "TUN_MTU phai la so 576..9000"
+  if [[ -z "$TUN_TCP_MSS" || "$TUN_TCP_MSS" == auto ]]; then
+    TUN_TCP_MSS=$(( TUN_MTU - 40 ))
+  fi
+  [[ "$TUN_TCP_MSS" =~ ^[0-9]+$ ]] && (( TUN_TCP_MSS >= 536 && TUN_TCP_MSS < TUN_MTU )) || die "TUN_TCP_MSS phai la so 536..$((TUN_MTU-1))"
+  [[ "$TUN_TCP_TIMEOUT" =~ ^[0-9]+$ ]] && (( TUN_TCP_TIMEOUT >= 60 )) || die "TUN_TCP_TIMEOUT phai la so giay >= 60"
+  [[ "$TUN_VERBOSITY" =~ ^(off|error|warn|info|debug|trace)$ ]] || die "TUN_VERBOSITY khong hop le"
+  [[ "$HEAL_STALE_SEC" =~ ^[0-9]+$ ]] && (( HEAL_STALE_SEC >= 60 )) || HEAL_STALE_SEC=300
+  [[ "$WATCH_INTERVAL" =~ ^[0-9]+$ ]] && (( WATCH_INTERVAL >= 15 )) || WATCH_INTERVAL=60
+  log "TUN MTU=$TUN_MTU MSS=$TUN_TCP_MSS tcp-timeout=$TUN_TCP_TIMEOUT verbosity=$TUN_VERBOSITY"
 }
 
 auto_resources(){
@@ -182,7 +208,7 @@ auto_resources(){
 }
 
 prereq(){
-  for c in docker flock sha256sum awk sed grep head; do need "$c"; done
+  for c in docker flock sha256sum awk sed grep head date; do need "$c"; done
   case "$(uname -m)" in x86_64|amd64) ;; *) die "Spide CLI 0.15b can x86_64/amd64";; esac
   [[ -c /dev/net/tun ]] || die "Khong co /dev/net/tun; hay bat TUN cho VM/VPS"
   mkdir -p "$DATA/nodes"; chmod 700 "$DATA" "$DATA/nodes"
@@ -196,14 +222,13 @@ read_proxies(){
   for p in "${RAW_PROXIES[@]}"; do
     [[ "$p" =~ ^(http|https|socks4|socks5)://.+:[0-9]{1,5}$ ]] || die "Proxy khong hop le (can protocol://user:pass@host:port): $p"
   done
-  # Loc trung cuc bo theo hash — KHONG goi ngoai.
   PROXY_LIST=()
   declare -gA seen_proxy_hash=()
   local h
   for p in "${RAW_PROXIES[@]}"; do
     h=$(hash_proxy "$p")
     if [[ -n "${seen_proxy_hash[$h]:-}" ]]; then
-      warn "Bo proxy trung (duoi day): ${p%%:*}... (da co o dong truoc)"
+      warn "Bo proxy trung: ${p%%:*}... (da co o dong truoc)"
       continue
     fi
     seen_proxy_hash[$h]=1
@@ -270,7 +295,6 @@ remove_project_containers(){
   while IFS= read -r n; do [[ -n "$n" ]] && dk rm -f "$n" >/dev/null 2>&1 || true; done < <(dk ps -a --filter "label=$PROJECT_LABEL" --format '{{.Names}}')
 }
 
-# Cho container toi trang thai "running". Khong gui bat ky traffic nao.
 wait_container_running(){
   local name="$1" timeout="${2:-10}" elapsed=0 state
   while (( elapsed < timeout )); do
@@ -284,6 +308,19 @@ wait_container_running(){
   return 1
 }
 
+# Cac co' chung cho lenh docker run TUN (truyen them vi tri sau cung).
+tun_run_args(){
+  local dns_mode="$1" proxy="$2"
+  printf '%s\n' \
+    --device /dev/net/tun --cap-add NET_ADMIN --security-opt no-new-privileges:true \
+    --sysctl net.ipv6.conf.all.disable_ipv6=1 --sysctl net.ipv6.conf.default.disable_ipv6=1 \
+    --ulimit nofile=65536:65536 \
+    --log-driver local --log-opt max-size=1m --log-opt max-file=2 \
+    "$TUN_IMAGE" --dns "$dns_mode" --proxy "$proxy" \
+    --mtu "$TUN_MTU" --tcp-mss "$TUN_TCP_MSS" --tcp-timeout "$TUN_TCP_TIMEOUT" \
+    --verbosity "$TUN_VERBOSITY"
+}
+
 start_all(){
   prereq; acquire_lock; load_config; auto_resources; read_proxies; build_spide; ensure_tun_image
   remove_project_containers
@@ -295,27 +332,25 @@ start_all(){
   for ((i=0;i<count;i++)); do
     idx=$((i+1)); proxy=${PROXY_LIST[$i]}; h=$(hash_proxy "$proxy")
     tun=$(tun_name "$idx" "$h"); peer=$(peer_name "$idx" "$h"); dns_mode=$(tun_dns_mode "$proxy")
-    log "[$idx/$count] Tao TUN gateway $tun (DNS=$dns_mode)"
+    log "[$idx/$count] Tao TUN gateway $tun (DNS=$dns_mode, MTU=$TUN_MTU)"
+    # shellcheck disable=SC2046
     dk run -d --name "$tun" --restart unless-stopped \
       --label "$PROJECT_LABEL" --label "com.spide-standalone.role=tun" --label "com.spide-standalone.proxy-hash=$h" \
-      --device /dev/net/tun --cap-add NET_ADMIN --security-opt no-new-privileges:true \
-      --sysctl net.ipv6.conf.all.disable_ipv6=1 --sysctl net.ipv6.conf.default.disable_ipv6=1 \
       --memory "$TUN_MAX_MEMORY" --memory-swap "$TUN_MEMORY_SWAP" --cpus "$TUN_CPU" --pids-limit 96 \
-      --log-driver local --log-opt max-size=1m --log-opt max-file=2 \
-      "$TUN_IMAGE" --dns "$dns_mode" --proxy "$proxy" --verbosity off >/dev/null
+      $(tun_run_args "$dns_mode" "$proxy") >/dev/null
 
     if ! wait_container_running "$tun" "$TUN_READY_TIMEOUT"; then
       local tstate
       tstate=$(dk inspect -f '{{.State.Status}}' "$tun" 2>/dev/null || echo missing)
       warn "Bo qua proxy $idx: TUN khong vay duoc (state=$tstate). Log cuoi:"
-      dk logs --tail 6 "$tun" 2>&1 | sed 's/^/    /' >&2 || true
+      dk logs --tail 8 "$tun" 2>&1 | sed 's/^/    /' >&2 || true
       dk rm -f "$tun" >/dev/null 2>&1 || true
       continue
     fi
-    sleep 1  # cho routing on dinh trong namespace
+    sleep 1
     if ! wait_container_running "$tun" 1; then
       warn "Bo qua proxy $idx: TUN vua chay da chet."
-      dk logs --tail 6 "$tun" 2>&1 | sed 's/^/    /' >&2 || true
+      dk logs --tail 8 "$tun" 2>&1 | sed 's/^/    /' >&2 || true
       dk rm -f "$tun" >/dev/null 2>&1 || true
       continue
     fi
@@ -327,6 +362,7 @@ start_all(){
       --label "com.spide-standalone.index=$idx" --label "com.spide-standalone.tun=$tun" \
       --network "container:$tun" --read-only --tmpfs /tmp:size=32m,mode=1777 \
       --security-opt no-new-privileges:true --cap-drop ALL --pids-limit 64 \
+      --ulimit nofile=65536:65536 \
       --memory "$SPIDE_MAX_MEMORY" --memory-reservation "$SPIDE_MEMORY_RESERVATION" \
       --memory-swap "$SPIDE_MEMORY_SWAP" --cpus "$SPIDE_CPU" \
       --log-driver local --log-opt max-size=1m --log-opt max-file=2 \
@@ -346,7 +382,7 @@ start_all(){
   done
 
   if (( created == 0 )); then
-    die "Khong tao duoc node nao. Kiem tra proxies.txt (dung dinh dang, TUN chet) va chay lai."
+    die "Khong tao duoc node nao. Kiem tra proxies.txt va log TUN, roi chay lai."
   fi
   log "Da tao $created node. Chay --keys de lay Device Key."
   show_keys
@@ -409,7 +445,6 @@ show_logs(){
   fi
 }
 
-# Validate CHI kiem tra dinh dang + TUN khoi dong, KHONG gui traffic qua proxy.
 validate_only(){
   prereq; acquire_lock; load_config; auto_resources; read_proxies; ensure_tun_image
   local i proxy h tun dns_mode state
@@ -418,10 +453,10 @@ validate_only(){
     proxy=${PROXY_LIST[$i]}; h=$(hash_proxy "$proxy")
     tun="spn-$PROJECT_ID-check-$((i+1))"; dns_mode=$(tun_dns_mode "$proxy")
     dk rm -f "$tun" >/dev/null 2>&1 || true
-    dk run -d --name "$tun" --network bridge --device /dev/net/tun --cap-add NET_ADMIN \
-      --sysctl net.ipv6.conf.all.disable_ipv6=1 --memory "$TUN_MAX_MEMORY" --memory-swap "$TUN_MEMORY_SWAP" \
+    # shellcheck disable=SC2046
+    dk run -d --name "$tun" --network bridge --memory "$TUN_MAX_MEMORY" --memory-swap "$TUN_MEMORY_SWAP" \
       --log-driver local --log-opt max-size=1m --log-opt max-file=1 \
-      "$TUN_IMAGE" --dns "$dns_mode" --proxy "$proxy" --verbosity off >/dev/null
+      $(tun_run_args "$dns_mode" "$proxy") >/dev/null
     sleep 2
     state=$(dk inspect -f '{{.State.Status}}' "$tun" 2>/dev/null || echo missing)
     dk rm -f "$tun" >/dev/null 2>&1 || true
@@ -438,12 +473,11 @@ deploy_all(){
   prereq; acquire_lock; load_config
   [[ -s "$STATE" ]] || die "Chua co node; chay --create truoc"
 
-  # 1) Dam bao TUN chay truoc (peer phu thuoc namespace cua TUN).
   log "Kiem tra TUN gateway..."
   local idx h tun peer ts started_tuns=0
   while IFS=$'\t' read -r idx h tun peer ip mid oldkey oldstatus; do
     if ! dk inspect "$tun" >/dev/null 2>&1; then
-      warn "TUN $tun khong ton tai; can chay --create de tao lai node $idx."
+      warn "TUN $tun khong ton tai; can chay --update de tao lai node $idx."
       continue
     fi
     ts=$(dk inspect -f '{{.State.Status}}' "$tun" 2>/dev/null || echo missing)
@@ -458,7 +492,6 @@ deploy_all(){
   done < "$STATE"
   (( started_tuns > 0 )) && log "Da khoi dong $started_tuns TUN."
 
-  # 2) Restart peer de xac thuc Device Key.
   local peers=() p ok=0 total=0 status
   mapfile -t peers < <(dk ps -a --filter "label=$PROJECT_LABEL" --filter "label=com.spide-standalone.role=peer" --format '{{.Names}}' | sort -V)
   ((${#peers[@]} > 0)) || die "Khong tim thay peer nao; chay --create."
@@ -482,8 +515,94 @@ deploy_all(){
   if (( ok == total )); then
     log "TRIEN KHAI THANH CONG: $ok/$total node Status=OK"
   else
-    warn "Moi co $ok/$total node Status=OK. Kiem tra key dashboard, doi them roi chay --deploy lai."
+    warn "Moi co $ok/$total node Status=OK. Kiem tra key dashboard, doi them roi chay --deploy hoac --heal lai."
   fi
+}
+
+# Dam bao TUN chay; tra 0 neu TUN dang chay.
+__ensure_tun_running(){
+  local tun="$1"
+  if ! dk inspect "$tun" >/dev/null 2>&1; then return 1; fi
+  local state
+  state=$(dk inspect -f '{{.State.Status}}' "$tun" 2>/dev/null || echo missing)
+  if [[ "$state" == "running" ]]; then return 0; fi
+  dk start "$tun" >/dev/null 2>&1 || return 1
+  wait_container_running "$tun" "$TUN_READY_TIMEOUT" && sleep 1
+}
+
+# Mot luot tu phuc hoi (chay trong subshell co lock, tranh xung dot voi --update).
+__heal_body(){
+  local now started started_epoch last_ok le age idx h tun peer pstate restarted=0 started_peers=0 fixed_tuns=0
+  now=$(date +%s)
+  # 1) Dam bao TUN chay (neu TUN chet/bi restart, peer mac ket namespace cu).
+  while IFS=$'\t' read -r idx h tun peer ip mid oldkey oldstatus; do
+    local tstate before
+    if ! dk inspect "$tun" >/dev/null 2>&1; then
+      warn "Heal: TUN $tun khong ton tai (node $idx). Chay --update de tao lai."
+      continue
+    fi
+    tstate=$(dk inspect -f '{{.State.Status}}' "$tun" 2>/dev/null || echo missing)
+    before="$tstate"
+    if [[ "$tstate" != "running" ]]; then
+      if __ensure_tun_running "$tun"; then
+        fixed_tuns=$((fixed_tuns+1))
+        log "Heal: da khoi dong lai TUN $tun (node $idx, trang thai cu: $before)."
+      else
+        warn "Heal: khong khoi dong duoc TUN $tun (node $idx)."
+      fi
+    fi
+  done < "$STATE"
+
+  # 2) Kiem tra tung peer.
+  while IFS=$'\t' read -r idx h tun peer ip mid oldkey oldstatus; do
+    dk inspect "$peer" >/dev/null 2>&1 || continue
+    pstate=$(dk inspect -f '{{.State.Status}}' "$peer" 2>/dev/null || echo missing)
+    if [[ "$pstate" != "running" ]]; then
+      warn "Heal: node $idx ($peer) dang $pstate -> khoi dong"
+      dk start "$peer" >/dev/null 2>&1 || true
+      started_peers=$((started_peers+1))
+      continue
+    fi
+    # Chi canh nhung node da chay qua lau, tranh restart node moi tao.
+    started=$(dk inspect -f '{{.State.StartedAt}}' "$peer" 2>/dev/null || echo "")
+    started_epoch=$(to_epoch "$started")
+    (( started_epoch > 0 && now - started_epoch >= 90 )) || continue
+
+    last_ok=$(dk logs --timestamps --tail 300 "$peer" 2>/dev/null | awk '/Status: OK/{print $1} END{print ""}')
+    if [[ -z "$last_ok" ]]; then age=999999; else le=$(to_epoch "$last_ok"); age=$(( now - le )); fi
+
+    if (( age > HEAL_STALE_SEC )); then
+      warn "Heal: node $idx qua ${age}s chua co Status: OK -> restart peer"
+      dk restart "$peer" >/dev/null 2>&1 || true
+      restarted=$((restarted+1))
+    fi
+  done < "$STATE"
+
+  if (( fixed_tuns > 0 || started_peers > 0 || restarted > 0 )); then
+    log "Heal hoan tat: TUN=$fixed_tuns, peer khoi dong=$started_peers, peer restart treo=$restarted."
+  else
+    log "Heal: tat ca node deu khoe (co Status: OK trong ${HEAL_STALE_SEC}s qua)."
+  fi
+}
+
+heal_once(){
+  prereq; load_config
+  [[ -s "$STATE" ]] || { warn "Chua co node; chay --create truoc."; return 0; }
+  (
+    mkdir -p "$DATA"; exec 9>"$LOCK_FILE"
+    flock -n 9 || exit 0   # bo qua neu --update/--deploy dang chay
+    __heal_body
+  )
+}
+
+watch_loop(){
+  prereq; load_config
+  [[ -s "$STATE" ]] || die "Chua co node; chay --create truoc."
+  log "Watchdog chay 24/7: kiem tra moi ${WATCH_INTERVAL}s, canh treo qua ${HEAL_STALE_SEC}s. Ctrl+C de thoat."
+  while true; do
+    heal_once
+    sleep "$WATCH_INTERVAL"
+  done
 }
 
 backup_ids(){
@@ -514,6 +633,12 @@ main(){
       prereq; acquire_lock; remove_project_containers
       rm -f "$LOCK_FILE"
       log "Da xoa container TUN + Spide cua folder; spide-data van duoc giu."
+      ;;
+    --heal)
+      heal_once
+      ;;
+    --watch)
+      watch_loop
       ;;
     --keys)
       prereq; load_config; show_keys
