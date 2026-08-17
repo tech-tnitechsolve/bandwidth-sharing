@@ -1,17 +1,38 @@
 #!/usr/bin/env bash
 # Spide Network standalone — self-contained TUN proxy + Spide peers.
-# Deliberately does not use the names internetIncome.sh or containernames.txt,
-# so existing setup_vps/setup_vm scanners do not patch or restart this folder.
 #
-# [MODIFIED] Egress IP checking via external services (api.ipify.org, etc.)
-# has been completely removed. The ONLY traffic sent through the user's proxy
-# is from the Spide peer itself, connecting to the Spide platform. No curl
-# container is ever attached to the TUN network.
+# === v1.2.0 — AN TOAN ONG DINH ===
+# - GO BO HOAN TOAN moi kiem tra egress IP qua dich vu ngoai (ipify/curl).
+#   Proxy CHI duoc Spide peer dung de ket noi toi Spide platform.
+#   (DNS van phai di qua proxy vi do la yeu cau co ban de mo ket noi toi Spide.)
+# - Khong con image curlimages/curl, khong con get_egress().
+# - SPIDE_VALIDATE_EGRESS bi tat cung, ke ca properties.conf bat.
+#
+# On dinh:
+# - TUN duoc cho "running" thay vi sleep cung; proxy nao lam TUN chet ngay
+#   se bi bo qua va in log cuoi de debug (KHONG gui traffic qua proxy).
+# - Phat hien proxy TRUNG NHAU cuc bo (theo hash), khong can goi ngoai.
+# - deploy: khoi dong TUN truoc, sau do restart peer (dung thu tu).
+# - Lock chong chay 2 tien trinh cung luc (flock).
+# - Pull image TUN chiu loi: dung ban local neu khong pull duoc.
+# - Them lenh --logs de xem log peer de dang.
+#
+# Cac lenh:
+#   --create    Tao node va xuat Device Key
+#   --deploy    Sau khi add key tren dashboard: restart peer de xac thuc
+#   --update    Dong bo lai proxies.txt (proxy cu giu Machine ID)
+#   --remove    Xoa container cua folder (giu spide-data)
+#   --keys      In lai Device Key
+#   --status    Trang thai container
+#   --logs [n]  Xem log peer (n = index; bo trong xem tat ca)
+#   --validate  Kiem tra dinh dang proxy + TUN co khoi dong duoc khong
+#               (KHONG gui traffic nao qua proxy)
+#   --backup    Dong goi Machine ID + key de sao luu
 
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-VERSION="1.1.0"
+VERSION="1.2.0"
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 CONF="$ROOT/properties.conf"
 PROXIES="$ROOT/proxies.txt"
@@ -19,6 +40,7 @@ DATA="$ROOT/spide-data"
 BUILD_DIR="$DATA/build"
 STATE="$DATA/spide-nodes.tsv"
 KEYS_FILE="$ROOT/spide-device-keys.txt"
+LOCK_FILE="$DATA/.spide.lock"
 IMAGE="local/spide-standalone:0.15b"
 SPIDE_URL="https://pub-bf426a5300a643d2884389c8985f5181.r2.dev/spide_linux_cli.zip"
 SPIDE_SHA256="ae03e67109ba125f8b317dedb3dd31a3df745f75ed647abd57e7deef6328250c"
@@ -29,31 +51,23 @@ PROJECT_LABEL="com.spide-standalone.project=$PROJECT_ID"
 if [[ -t 1 ]]; then
   G=$'\033[1;32m'; Y=$'\033[1;33m'; R=$'\033[1;31m'; N=$'\033[0m'
 else G=''; Y=''; R=''; N=''; fi
-log(){ printf '%s[OK]%s %s\n' "$G" "$N" "$*"; }
+log(){  printf '%s[OK]%s %s\n' "$G" "$N" "$*"; }
 warn(){ printf '%s[!!]%s %s\n' "$Y" "$N" "$*" >&2; }
-die(){ printf '%s[XX]%s %s\n' "$R" "$N" "$*" >&2; exit 1; }
+die(){  printf '%s[XX]%s %s\n' "$R" "$N" "$*" >&2; exit 1; }
 trap 'rc=$?; printf "%s[XX]%s Loi dong %s (exit=%s)\n" "$R" "$N" "${BASH_LINENO[0]:-?}" "$rc" >&2; exit "$rc"' ERR
 
 usage(){ cat <<'EOF'
-Spide Network — 4 lệnh chính
+Spide Network — cac lenh
 
-  1. Tạo node và xuất key:
-     sudo bash spideNetwork.sh --create
+  Tao node:                 sudo bash spideNetwork.sh --create
+  Sau khi add key dashboard: sudo bash spideNetwork.sh --deploy
+  Khi sua proxies.txt:      sudo bash spideNetwork.sh --update
+  Xoa container:            sudo bash spideNetwork.sh --remove
 
-  2. Sau khi add Device Key trên dashboard:
-     sudo bash spideNetwork.sh --deploy
+  Ho tro: --keys | --status | --logs [index] | --validate | --backup
 
-  3. Sau khi sửa/thêm/xóa proxies.txt:
-     sudo bash spideNetwork.sh --update
-
-  4. Xóa toàn bộ container của folder:
-     sudo bash spideNetwork.sh --remove
-
-File key tự tạo: spide-device-keys.txt
---remove chỉ xóa container; vẫn giữ Machine ID và Device Key trong spide-data.
-
-Lưu ý: Script KHÔNG kiểm tra egress IP qua dịch vụ ngoài.
-Mọi traffic qua proxy chỉ từ Spide peer kết nối tới Spide platform.
+Proxy CHI duoc Spide peer dung de ket noi toi Spide platform.
+Khong bao gio co kiem tra IP qua dich vu ngoai.
 EOF
 }
 
@@ -64,16 +78,47 @@ dk(){
   else die "Khong truy cap duoc Docker daemon"; fi
 }
 
+acquire_lock(){
+  mkdir -p "$DATA"
+  exec 9>"$LOCK_FILE"
+  flock -n 9 || die "Mot tien trinh spideNetwork dang chay (lock: $LOCK_FILE). Thoat."
+}
+
+ensure_conf(){
+  [[ -f "$CONF" ]] && return 0
+  cat > "$CONF" <<'EOF'
+# Spide Network — cau hinh (tu tao mac dinh)
+DEVICE_PREFIX=auto
+DEPLOY_WAIT=20
+USE_PROXIES=true
+USE_SOCKS5_DNS=false
+USE_DNS_OVER_HTTPS=true
+SPIDE_MAX_INSTANCES=0
+SPIDE_VALIDATE_EGRESS=false
+SPIDE_SKIP_DUPLICATE_EGRESS=true
+SPIDE_MAX_MEMORY=auto
+SPIDE_MEMORY_RESERVATION=auto
+SPIDE_MEMORY_SWAP=auto
+SPIDE_CPU=auto
+TUN_MAX_MEMORY=auto
+TUN_MEMORY_SWAP=auto
+TUN_CPU=auto
+START_DELAY=1
+TUN_READY_TIMEOUT=10
+EOF
+  chmod 600 "$CONF"
+  log "Da tao $CONF voi cau hinh mac dinh."
+}
+
 load_config(){
+  ensure_conf
   DEVICE_PREFIX=auto
   DEPLOY_WAIT=20
   USE_PROXIES=true
   USE_SOCKS5_DNS=false
   USE_DNS_OVER_HTTPS=true
   SPIDE_MAX_INSTANCES=0
-  # [MODIFIED] Egress validation is hard-disabled: proxies are single-machine
-  # and must never be used to call external IP-check services. Only the Spide
-  # peer itself may send traffic through the proxy to the Spide platform.
+  # Egress check BA TAT CUNG: khong bao gio dung proxy goi dich vu ngoai.
   SPIDE_VALIDATE_EGRESS=false
   SPIDE_SKIP_DUPLICATE_EGRESS=true
   SPIDE_MAX_MEMORY=auto
@@ -84,13 +129,12 @@ load_config(){
   TUN_MEMORY_SWAP=auto
   TUN_CPU=auto
   START_DELAY=1
-  [[ -f "$CONF" ]] || die "Khong tim thay $CONF"
+  TUN_READY_TIMEOUT=10
   set +x
   # shellcheck disable=SC1090
   source "$CONF"
-  # Force-disable egress validation regardless of what properties.conf says.
   if [[ "$SPIDE_VALIDATE_EGRESS" != false ]]; then
-    warn "SPIDE_VALIDATE_EGRESS da bi tat cung (proxy chi duoc dung cho Spide platform)."
+    warn "SPIDE_VALIDATE_EGRESS da bi tat cung (proxy chi dung cho Spide platform)."
     SPIDE_VALIDATE_EGRESS=false
   fi
   if [[ "$DEVICE_PREFIX" == auto || -z "$DEVICE_PREFIX" ]]; then
@@ -105,6 +149,7 @@ load_config(){
   done
   [[ "$SPIDE_MAX_INSTANCES" =~ ^[0-9]+$ ]] || die "SPIDE_MAX_INSTANCES phai la so >= 0"
   [[ "$START_DELAY" =~ ^[0-9]+([.][0-9]+)?$ ]] || die "START_DELAY khong hop le"
+  [[ "$TUN_READY_TIMEOUT" =~ ^[0-9]+$ ]] || TUN_READY_TIMEOUT=10
 }
 
 auto_resources(){
@@ -137,7 +182,7 @@ auto_resources(){
 }
 
 prereq(){
-  for c in docker sha256sum awk sed grep head; do need "$c"; done
+  for c in docker flock sha256sum awk sed grep head; do need "$c"; done
   case "$(uname -m)" in x86_64|amd64) ;; *) die "Spide CLI 0.15b can x86_64/amd64";; esac
   [[ -c /dev/net/tun ]] || die "Khong co /dev/net/tun; hay bat TUN cho VM/VPS"
   mkdir -p "$DATA/nodes"; chmod 700 "$DATA" "$DATA/nodes"
@@ -145,17 +190,28 @@ prereq(){
 
 read_proxies(){
   [[ -f "$PROXIES" ]] || die "Khong tim thay $PROXIES"
-  mapfile -t PROXY_LIST < <(sed 's/\r$//;s/^[[:space:]]*//;s/[[:space:]]*$//' "$PROXIES" | grep -vE '^(#|$)')
-  ((${#PROXY_LIST[@]})) || die "proxies.txt dang rong"
+  mapfile -t RAW_PROXIES < <(sed 's/\r$//;s/^[[:space:]]*//;s/[[:space:]]*$//' "$PROXIES" | grep -vE '^(#|$)')
+  ((${#RAW_PROXIES[@]})) || die "proxies.txt dang rong"
   local p
-  for p in "${PROXY_LIST[@]}"; do
-    [[ "$p" =~ ^(http|https|socks4|socks5)://.+:[0-9]{1,5}$ ]] || die "Proxy khong hop le (can protocol://...:port)"
+  for p in "${RAW_PROXIES[@]}"; do
+    [[ "$p" =~ ^(http|https|socks4|socks5)://.+:[0-9]{1,5}$ ]] || die "Proxy khong hop le (can protocol://user:pass@host:port): $p"
   done
+  # Loc trung cuc bo theo hash — KHONG goi ngoai.
+  PROXY_LIST=()
+  declare -gA seen_proxy_hash=()
+  local h
+  for p in "${RAW_PROXIES[@]}"; do
+    h=$(hash_proxy "$p")
+    if [[ -n "${seen_proxy_hash[$h]:-}" ]]; then
+      warn "Bo proxy trung (duoi day): ${p%%:*}... (da co o dong truoc)"
+      continue
+    fi
+    seen_proxy_hash[$h]=1
+    PROXY_LIST+=("$p")
+  done
+  ((${#PROXY_LIST[@]})) || die "Sau khi loc trung, proxies.txt khong con proxy hop le"
 }
 
-# Chọn DNS mode giống luồng TUN của InternetIncome main:
-# - over-tcp: DNS TCP đi trong TUN/proxy, dùng khi bật DNS option.
-# - virtual: tun2proxy ánh xạ DNS ảo khi cả hai option đều tắt.
 tun_dns_mode(){
   local proxy="$1"
   if [[ "$USE_SOCKS5_DNS" == true && "$proxy" == socks5://* ]]; then
@@ -188,8 +244,17 @@ RUN apk add --no-cache ca-certificates wget unzip \\
 USER 10001:10001
 ENTRYPOINT ["/usr/local/bin/spide"]
 EOF
+  log "Build image Spide (lan dau, chi 1 lan)..."
   dk build --pull -t "$IMAGE" "$BUILD_DIR"
   rm -rf "$BUILD_DIR"
+}
+
+ensure_tun_image(){
+  if dk image inspect "$TUN_IMAGE" >/dev/null 2>&1; then
+    dk pull "$TUN_IMAGE" >/dev/null 2>&1 || warn "Khong pull duoc $TUN_IMAGE; dung ban local da cache."
+  else
+    dk pull "$TUN_IMAGE" >/dev/null 2>&1 || die "Khong pull duoc $TUN_IMAGE va khong co ban local."
+  fi
 }
 
 ensure_machine_id(){
@@ -205,22 +270,31 @@ remove_project_containers(){
   while IFS= read -r n; do [[ -n "$n" ]] && dk rm -f "$n" >/dev/null 2>&1 || true; done < <(dk ps -a --filter "label=$PROJECT_LABEL" --format '{{.Names}}')
 }
 
-# [REMOVED] get_egress() — previously ran curlimages/curl through the TUN to
-# hit api.ipify.org. This has been deleted because proxies must never be used
-# to call external services; only the Spide peer may send traffic through them.
+# Cho container toi trang thai "running". Khong gui bat ky traffic nao.
+wait_container_running(){
+  local name="$1" timeout="${2:-10}" elapsed=0 state
+  while (( elapsed < timeout )); do
+    state=$(dk inspect -f '{{.State.Status}}' "$name" 2>/dev/null || echo missing)
+    case "$state" in
+      running) return 0 ;;
+      exited|dead) return 1 ;;
+    esac
+    sleep 1; elapsed=$((elapsed+1))
+  done
+  return 1
+}
 
 start_all(){
-  prereq; load_config; auto_resources; read_proxies; build_spide
-  dk pull "$TUN_IMAGE" >/dev/null
-  # [REMOVED] No longer pulls curlimages/curl — no external egress check.
+  prereq; acquire_lock; load_config; auto_resources; read_proxies; build_spide; ensure_tun_image
   remove_project_containers
   : > "$STATE"; chmod 600 "$STATE"
-  # [REMOVED] seen_ip duplicate-IP detection — cannot compare IPs without
-  # making external calls through the proxy.
-  local count=${#PROXY_LIST[@]} i idx proxy h tun peer midfile mid status key dns_mode
+  local total_raw=${#RAW_PROXIES[@]}
+  local count=${#PROXY_LIST[@]} i idx proxy h tun peer midfile mid status key dns_mode created=0
   (( SPIDE_MAX_INSTANCES > 0 && SPIDE_MAX_INSTANCES < count )) && count=$SPIDE_MAX_INSTANCES
+  log "Bat dau tao $count node (tu $total_raw proxy sau khi loc trung)..."
   for ((i=0;i<count;i++)); do
-    idx=$((i+1)); proxy=${PROXY_LIST[$i]}; h=$(hash_proxy "$proxy"); tun=$(tun_name "$idx" "$h"); peer=$(peer_name "$idx" "$h"); dns_mode=$(tun_dns_mode "$proxy")
+    idx=$((i+1)); proxy=${PROXY_LIST[$i]}; h=$(hash_proxy "$proxy")
+    tun=$(tun_name "$idx" "$h"); peer=$(peer_name "$idx" "$h"); dns_mode=$(tun_dns_mode "$proxy")
     log "[$idx/$count] Tao TUN gateway $tun (DNS=$dns_mode)"
     dk run -d --name "$tun" --restart unless-stopped \
       --label "$PROJECT_LABEL" --label "com.spide-standalone.role=tun" --label "com.spide-standalone.proxy-hash=$h" \
@@ -229,29 +303,57 @@ start_all(){
       --memory "$TUN_MAX_MEMORY" --memory-swap "$TUN_MEMORY_SWAP" --cpus "$TUN_CPU" --pids-limit 96 \
       --log-driver local --log-opt max-size=1m --log-opt max-file=2 \
       "$TUN_IMAGE" --dns "$dns_mode" --proxy "$proxy" --verbosity off >/dev/null
-    sleep 1
-    # [REMOVED] Egress IP check via curl container — proxy must only carry
-    # Spide platform traffic. We trust the proxy and proceed directly.
+
+    if ! wait_container_running "$tun" "$TUN_READY_TIMEOUT"; then
+      local tstate
+      tstate=$(dk inspect -f '{{.State.Status}}' "$tun" 2>/dev/null || echo missing)
+      warn "Bo qua proxy $idx: TUN khong vay duoc (state=$tstate). Log cuoi:"
+      dk logs --tail 6 "$tun" 2>&1 | sed 's/^/    /' >&2 || true
+      dk rm -f "$tun" >/dev/null 2>&1 || true
+      continue
+    fi
+    sleep 1  # cho routing on dinh trong namespace
+    if ! wait_container_running "$tun" 1; then
+      warn "Bo qua proxy $idx: TUN vua chay da chet."
+      dk logs --tail 6 "$tun" 2>&1 | sed 's/^/    /' >&2 || true
+      dk rm -f "$tun" >/dev/null 2>&1 || true
+      continue
+    fi
+
     midfile=$(ensure_machine_id "$h"); mid=$(tr -d '\r\n' < "$midfile")
-    log "[$idx/$count] Tao Spide peer $peer qua $tun"
+    log "[$idx/$count] Tao Spide peer $peer"
     dk run -d --name "$peer" --restart unless-stopped \
-      --label "$PROJECT_LABEL" --label "com.spide-standalone.role=peer" --label "com.spide-standalone.index=$idx" --label "com.spide-standalone.tun=$tun" \
+      --label "$PROJECT_LABEL" --label "com.spide-standalone.role=peer" \
+      --label "com.spide-standalone.index=$idx" --label "com.spide-standalone.tun=$tun" \
       --network "container:$tun" --read-only --tmpfs /tmp:size=32m,mode=1777 \
       --security-opt no-new-privileges:true --cap-drop ALL --pids-limit 64 \
-      --memory "$SPIDE_MAX_MEMORY" --memory-reservation "$SPIDE_MEMORY_RESERVATION" --memory-swap "$SPIDE_MEMORY_SWAP" --cpus "$SPIDE_CPU" \
+      --memory "$SPIDE_MAX_MEMORY" --memory-reservation "$SPIDE_MEMORY_RESERVATION" \
+      --memory-swap "$SPIDE_MEMORY_SWAP" --cpus "$SPIDE_CPU" \
       --log-driver local --log-opt max-size=1m --log-opt max-file=2 \
       --mount "type=bind,source=$midfile,target=/etc/machine-id,readonly" "$IMAGE" >/dev/null
     sleep "$START_DELAY"
+
+    local pstate
+    pstate=$(dk inspect -f '{{.State.Status}}' "$peer" 2>/dev/null || echo missing)
+    if [[ "$pstate" != "running" ]]; then
+      warn "Peer $peer vua tao khong chay (state=$pstate). Xem log: bash spideNetwork.sh --logs $idx"
+    fi
+
     key=$(dk logs "$peer" 2>&1 | sed -n 's/^.*Device Key:[[:space:]]*//p' | tail -1 || true)
     status=$(dk logs "$peer" 2>&1 | sed -n 's/^.*Status:[[:space:]]*//p' | tail -1 || true)
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$idx" "$h" "$tun" "$peer" "-" "$mid" "${key:--}" "${status:--}" >> "$STATE"
+    created=$((created+1))
   done
-  log "Da tao $(wc -l < "$STATE") Spide node. Chay --keys de lay Device Key."
+
+  if (( created == 0 )); then
+    die "Khong tao duoc node nao. Kiem tra proxies.txt (dung dinh dang, TUN chet) va chay lai."
+  fi
+  log "Da tao $created node. Chay --keys de lay Device Key."
   show_keys
 }
 
 show_keys(){
-  [[ -s "$STATE" ]] || die "Chua co node; chay --start"
+  [[ -s "$STATE" ]] || die "Chua co node; chay --create"
   local tmp="$KEYS_FILE.tmp" device_name key status
   {
     printf '# Spide Device Keys — generated %s\n' "$(date '+%F %T %Z')"
@@ -281,6 +383,7 @@ show_status(){
   [[ -s "$STATE" ]] || die "Chua co node; chay --start"
   printf 'INDEX\tTUN_STATE\tPEER_STATE\tNETWORK_MODE\tSTATUS\n'
   while IFS=$'\t' read -r idx h tun peer ip mid oldkey oldstatus; do
+    local ts ps nm st
     ts=$(dk inspect -f '{{.State.Status}}' "$tun" 2>/dev/null || echo missing)
     ps=$(dk inspect -f '{{.State.Status}}' "$peer" 2>/dev/null || echo missing)
     nm=$(dk inspect -f '{{.HostConfig.NetworkMode}}' "$peer" 2>/dev/null || echo -)
@@ -289,61 +392,102 @@ show_status(){
   done < "$STATE"
 }
 
+show_logs(){
+  prereq; load_config
+  [[ -s "$STATE" ]] || die "Chua co node; chay --create"
+  local idx="${1:-}" peer
+  if [[ -n "$idx" ]]; then
+    [[ "$idx" =~ ^[0-9]+$ ]] || die "Index phai la so"
+    peer=$(awk -F'\t' -v i="$idx" '$1==i{print $4; exit}' "$STATE")
+    [[ -n "$peer" ]] || die "Khong tim thay node index $idx"
+    dk logs -f --tail 100 "$peer"
+  else
+    while IFS=$'\t' read -r idx h tun peer ip mid oldkey oldstatus; do
+      printf '\n===== Node %s (peer=%s) =====\n' "$idx" "$peer"
+      dk logs --tail 20 "$peer" 2>&1 || true
+    done < "$STATE"
+  fi
+}
+
+# Validate CHI kiem tra dinh dang + TUN khoi dong, KHONG gui traffic qua proxy.
 validate_only(){
-  # [MODIFIED] This function no longer makes ANY external call through the
-  # proxy. It only validates proxy URL format and verifies that the tun2proxy
-  # container starts successfully (i.e. does not immediately crash). No curl
-  # container is attached to the TUN, so no traffic leaves through the proxy.
-  prereq; load_config; auto_resources; read_proxies
-  dk pull "$TUN_IMAGE" >/dev/null
+  prereq; acquire_lock; load_config; auto_resources; read_proxies; ensure_tun_image
   local i proxy h tun dns_mode state
   printf 'INDEX\tPROXY_ID\tTUN_STATE\tRESULT\n'
   for i in "${!PROXY_LIST[@]}"; do
-    proxy=${PROXY_LIST[$i]}; h=$(hash_proxy "$proxy"); tun="spn-$PROJECT_ID-check-$((i+1))"; dns_mode=$(tun_dns_mode "$proxy")
+    proxy=${PROXY_LIST[$i]}; h=$(hash_proxy "$proxy")
+    tun="spn-$PROJECT_ID-check-$((i+1))"; dns_mode=$(tun_dns_mode "$proxy")
     dk rm -f "$tun" >/dev/null 2>&1 || true
     dk run -d --name "$tun" --network bridge --device /dev/net/tun --cap-add NET_ADMIN \
       --sysctl net.ipv6.conf.all.disable_ipv6=1 --memory "$TUN_MAX_MEMORY" --memory-swap "$TUN_MEMORY_SWAP" \
+      --log-driver local --log-opt max-size=1m --log-opt max-file=1 \
       "$TUN_IMAGE" --dns "$dns_mode" --proxy "$proxy" --verbosity off >/dev/null
     sleep 2
     state=$(dk inspect -f '{{.State.Status}}' "$tun" 2>/dev/null || echo missing)
     dk rm -f "$tun" >/dev/null 2>&1 || true
     if [[ "$state" == "running" ]]; then
-      printf '%s\t%s\t%s\tOK\n' "$((i+1))" "$h" "$state"
+      printf '%s\t%s\t%s\tOK (TUN khoi dong duoc)\n' "$((i+1))" "$h" "$state"
     else
-      printf '%s\t%s\t%s\tFAILED (tun2proxy khong chay duoc)\n' "$((i+1))" "$h" "$state"
+      printf '%s\t%s\t%s\tFAILED (TUN chet ngay; kiem tra proxy/auth)\n' "$((i+1))" "$h" "$state"
     fi
   done
-  log "Khong co traffic ngoai nao di qua proxy. Chi kiem tra tun2proxy khoi dong."
+  log "Khong co traffic nao di qua proxy. Chi kiem tra TUN khoi dong."
 }
 
 deploy_all(){
-  prereq; load_config
-  local peers=() peer ok=0 total=0 status
+  prereq; acquire_lock; load_config
+  [[ -s "$STATE" ]] || die "Chua co node; chay --create truoc"
+
+  # 1) Dam bao TUN chay truoc (peer phu thuoc namespace cua TUN).
+  log "Kiem tra TUN gateway..."
+  local idx h tun peer ts started_tuns=0
+  while IFS=$'\t' read -r idx h tun peer ip mid oldkey oldstatus; do
+    if ! dk inspect "$tun" >/dev/null 2>&1; then
+      warn "TUN $tun khong ton tai; can chay --create de tao lai node $idx."
+      continue
+    fi
+    ts=$(dk inspect -f '{{.State.Status}}' "$tun" 2>/dev/null || echo missing)
+    if [[ "$ts" != "running" ]]; then
+      log "Khoi dong TUN $tun (node $idx)..."
+      if dk start "$tun" >/dev/null 2>&1 && wait_container_running "$tun" "$TUN_READY_TIMEOUT"; then
+        sleep 1; started_tuns=$((started_tuns+1))
+      else
+        warn "Khong khoi dong duoc TUN $tun; node $idx co the loi."
+      fi
+    fi
+  done < "$STATE"
+  (( started_tuns > 0 )) && log "Da khoi dong $started_tuns TUN."
+
+  # 2) Restart peer de xac thuc Device Key.
+  local peers=() p ok=0 total=0 status
   mapfile -t peers < <(dk ps -a --filter "label=$PROJECT_LABEL" --filter "label=com.spide-standalone.role=peer" --format '{{.Names}}' | sort -V)
-  ((${#peers[@]} > 0)) || die "Chua co Spide peer; chay --create truoc"
-  log "Trien khai ${#peers[@]} peer sau khi da add Device Key..."
-  for peer in "${peers[@]}"; do
-    dk restart "$peer" >/dev/null
+  ((${#peers[@]} > 0)) || die "Khong tim thay peer nao; chay --create."
+  log "Restart ${#peers[@]} peer de xac thuc..."
+  for p in "${peers[@]}"; do
+    dk restart "$p" >/dev/null
     sleep 0.5
   done
   log "Cho ${DEPLOY_WAIT}s de Spide xac thuc..."
   sleep "$DEPLOY_WAIT"
+
   show_keys
   printf '\n'
   show_status
-  for peer in "${peers[@]}"; do
+
+  for p in "${peers[@]}"; do
     total=$((total+1))
-    status=$(dk logs "$peer" 2>&1 | sed -n 's/^.*Status:[[:space:]]*//p' | tail -1 || true)
+    status=$(dk logs "$p" 2>&1 | sed -n 's/^.*Status:[[:space:]]*//p' | tail -1 || true)
     [[ "$status" == OK ]] && ok=$((ok+1))
   done
   if (( ok == total )); then
     log "TRIEN KHAI THANH CONG: $ok/$total node Status=OK"
   else
-    warn "Moi co $ok/$total node Status=OK. Kiem tra key dashboard, cho them roi chay --deploy lai."
+    warn "Moi co $ok/$total node Status=OK. Kiem tra key dashboard, doi them roi chay --deploy lai."
   fi
 }
 
 backup_ids(){
+  prereq; acquire_lock
   [[ -d "$DATA/nodes" ]] || die "Chua co spide-data"
   local out="$ROOT/spide-identity-backup-$(date +%Y%m%d-%H%M%S).tar.gz"
   local items=("spide-data/nodes")
@@ -356,25 +500,29 @@ backup_ids(){
 main(){
   case "${1:---help}" in
     --create|--start)
-      log "BUOC 1: Tao/recreate node, giu Machine ID cu neu proxy khong doi"
+      log "BUOC 1: Tao/recreate node (giu Machine ID cu neu proxy khong doi)"
       start_all
       ;;
     --deploy)
       deploy_all
       ;;
     --update)
-      log "BUOC 3: Dong bo lai proxies.txt; proxy cu giu key, proxy moi tao key moi"
+      log "Dong bo proxies.txt: proxy cu giu key, proxy moi tao key moi"
       start_all
       ;;
     --remove|--stop|--delete)
-      prereq; remove_project_containers
-      log "Da xoa hoan toan container TUN + Spide cua folder; spide-data van duoc giu"
+      prereq; acquire_lock; remove_project_containers
+      rm -f "$LOCK_FILE"
+      log "Da xoa container TUN + Spide cua folder; spide-data van duoc giu."
       ;;
     --keys)
       prereq; load_config; show_keys
       ;;
     --status)
       prereq; show_status
+      ;;
+    --logs)
+      show_logs "${2:-}"
       ;;
     --validate)
       validate_only
