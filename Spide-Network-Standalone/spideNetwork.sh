@@ -29,7 +29,7 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-VERSION="1.5.0"
+VERSION="1.6.0"
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 CONF="$ROOT/properties.conf"
 PROXIES="$ROOT/proxies.txt"
@@ -301,18 +301,25 @@ build_spide(){
   dk image inspect "$IMAGE" >/dev/null 2>&1 && return 0
   mkdir -p "$BUILD_DIR"
   # Chenh lech theo kien truc: sha256 chi kiem khi co gia tri (ban x86 da ky).
+  # Tao chuoi lenh wget thu lan luot tat ca mirror, dung ngay khi tai duoc.
+  _DL=""
+  for _u in "${SPIDE_URLS[@]}"; do
+    _DL="$_DL wget -q -T 45 -t 2 -O /tmp/spide.zip '$_u' && break ||"
+  done
+  _DL="${_DL% ||}"
   local sha_line="true"
   [[ -n "$SPIDE_SHA256" ]] && sha_line="echo \"$SPIDE_SHA256  /tmp/spide.zip\" | sha256sum -c -"
   cat > "$BUILD_DIR/Dockerfile" <<EOF
 FROM alpine:3.22
 RUN apk add --no-cache ca-certificates wget unzip file libc6-compat \\
- && wget -q -T 45 -t 3 -O /tmp/spide.zip "$SPIDE_URL" \\
+ && ( $_DL ) \\
+ && test -s /tmp/spide.zip \\
  && $sha_line \\
  && unzip -q /tmp/spide.zip -d /tmp/spide \\
  && BIN=\\$(find /tmp/spide -type f -name spide | head -1) \\
- && test -n "\\$BIN" || (echo "Khong tim thay binary spide trong archive (co the URL/sai kien truc)" && exit 1) \\
+ && test -n "\\$BIN" || (echo "Khong tim thay binary spide (sai kien truc?)" && exit 1) \\
  && install -m 0755 "\\$BIN" /usr/local/bin/spide \\
- && (file /usr/local/bin/spide | grep -qi ELF || (echo "File tai ve khong phai ELF binary - sai kien truc?" && exit 1)) \\
+ && (file /usr/local/bin/spide | grep -qi ELF || (echo "File khong phai ELF binary" && exit 1)) \\
  && chmod +x /usr/local/bin/spide \\
  && rm -rf /tmp/spide /tmp/spide.zip \\
  && addgroup -g 10001 spide \\
