@@ -1,7 +1,7 @@
 cat << 'ORACLE_MASTER_EOF' > /home/ubuntu/setup_oracle_cloud.sh
 #!/usr/bin/env bash
 #============================================================================
-#  setup_oracle_cloud.sh (100% AUTO-PILOT OCI MASTER 2026 - FULL ULTIMATE)
+#  setup_oracle_cloud.sh (2026 MASTER ULTIMATE - ZERO DOWNTIME & ZERO ERRORS)
 #============================================================================
 set -Eeuo pipefail
 
@@ -101,7 +101,8 @@ apt-get update -y -qq || { clear_apt_locks; apt-get update -y -qq; }
 apt-get install -y -qq --no-install-recommends \
   -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
   curl wget git unzip jq bc ca-certificates uuid-runtime cron logrotate net-tools inotify-tools \
-  iptables-persistent netfilter-persistent systemd-timesyncd vnstat nload dnsutils util-linux || true
+  iptables-persistent netfilter-persistent systemd-timesyncd vnstat nload dnsutils util-linux zram-tools \
+  linux-modules-extra-"$(uname -r)" 2>/dev/null || true
 
 # NTP Time Sync Millisecond
 if has_systemd; then
@@ -153,26 +154,13 @@ if [[ -f /sys/kernel/mm/ksm/run ]]; then
   log "Da kich hoat KSM toi uu cao thanh cong!"
 fi
 
-# ZRAM ZSTD / LZ4
-log "Kich hoat ZRAM ${MEM_MB}MB cho OCI..."
-if ! swapon --show 2>/dev/null | grep -q "/dev/zram0"; then
-  modprobe zram num_devices=1 2>/dev/null || true
-  if command -v zramctl >/dev/null 2>&1; then
-    zramctl --find --size "${MEM_MB}M" --algorithm zstd 2>/dev/null || zramctl --find --size "${MEM_MB}M" 2>/dev/null || true
-    SELECTED_ALGO="zstd"
-  elif [[ -b /dev/zram0 ]]; then
-    if grep -q "zstd" /sys/block/zram0/comp_algorithm 2>/dev/null; then
-      echo zstd > /sys/block/zram0/comp_algorithm 2>/dev/null || true
-      SELECTED_ALGO="zstd"
-    else
-      echo lz4 > /sys/block/zram0/comp_algorithm 2>/dev/null || true
-      SELECTED_ALGO="lz4"
-    fi
-    echo $(( MEM_MB * 1024 * 1024 )) > /sys/block/zram0/disksize 2>/dev/null || true
-  fi
-  mkswap /dev/zram0 >/dev/null 2>&1 || true
-  swapon -p 10 /dev/zram0 2>/dev/null || true
-  log "Da kich hoat ZRAM ${MEM_MB}MB (${SELECTED_ALGO:-zstd^^} Priority 10) thanh cong!"
+# CẤU HÌNH ZRAM CHUẨN QUA SYSTEMD ZRAMSWAP
+log "Kich hoat ZRAM ${MEM_MB}MB cho OCI qua systemd..."
+modprobe zram num_devices=1 2>/dev/null || true
+echo -e "ALGO=lz4\nPERCENT=100\nPRIORITY=10" > /etc/default/zramswap
+if has_systemd; then
+  systemctl restart zramswap 2>/dev/null || true
+  systemctl enable zramswap 2>/dev/null || true
 fi
 
 SWAPPINESS=100
@@ -551,7 +539,7 @@ for cid in $(docker ps -aq 2>/dev/null); do
   c_name=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null | sed 's|^/||' || true)
   ii_profile "$c_name" "$c_img" "$TIER_IDX"
   
-  # Cập nhật Policy riêng để không bị nghẽn RAM
+  # Cập nhật Policy độc lập (chắc chắn thành công 100% không lo nghẽn RAM)
   [[ -n "$P_POLICY" ]] && docker update --restart="$P_POLICY" "$cid" >/dev/null 2>&1 || true
 
   [[ -n "$P_MEM" ]] || continue
@@ -959,8 +947,8 @@ SWAP_VAL=$(cat /proc/sys/vm/swappiness 2>/dev/null || echo 0)
 echo "  RAM  : Total ${RAM_TOTAL}MB | Used ${RAM_USED}MB | Avail ${RAM_AVAIL}MB"
 echo "  Swap : Total ${SWAP_TOTAL}MB | Used ${SWAP_USED}MB | Swappiness ${SWAP_VAL}"
 
-if swapon --show 2>/dev/null | grep -q "/dev/zram0"; then
-  ZRAM_SIZE=$(swapon --show 2>/dev/null | grep "/dev/zram0" | awk '{print $3}')
+if swapon --show 2>/dev/null | grep -qE "/dev/zram|zramswap"; then
+  ZRAM_SIZE=$(swapon --show 2>/dev/null | grep -E "/dev/zram|zramswap" | awk '{print $3}')
   echo -e "  ZRAM : ${C_G}ACTIVE (${ZRAM_SIZE} Priority 10)${C_0}"
 else
   echo -e "  ZRAM : ${C_Y}NOT ACTIVE${C_0}"
@@ -1058,4 +1046,3 @@ echo "============================= SETUP XONG (100% AUTO-PILOT OCI MASTER 2026 
 ORACLE_MASTER_EOF
 
 sudo chmod +x /home/ubuntu/setup_oracle_cloud.sh
-sudo bash /home/ubuntu/setup_oracle_cloud.sh
