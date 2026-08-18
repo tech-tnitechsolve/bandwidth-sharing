@@ -10,9 +10,9 @@ sysctl -w fs.inotify.max_user_watches=2097152 >/dev/null 2>&1 || true
 sysctl -w fs.inotify.max_user_instances=65536 >/dev/null 2>&1 || true
 
 if [[ -t 1 ]]; then
-  C_G='\033[1;32m'; C_Y='\033[1;33m'; C_R='\033[1;31m'; C_B='\033[1;34m'; C_0='\033[0m'
+  C_G='\033[1;32m'; C_Y='\033[1;33m'; C_R='\033[1;31m'; C_B='\033[1;34m'; C_C='\033[1;36m'; C_0='\033[0m'
 else
-  C_G=''; C_Y=''; C_R=''; C_B=''; C_0=''
+  C_G=''; C_Y=''; C_R=''; C_B=''; C_C=''; C_0=''
 fi
 log()  { echo -e "${C_G}[OK]${C_0} $*"; }
 warn() { echo -e "${C_Y}[!!]${C_0} $*"; }
@@ -124,7 +124,7 @@ if ! swapon --show 2>/dev/null | grep -q "/dev/zram0"; then
   modprobe zram num_devices=1 2>/dev/null || true
   if [[ -b /dev/zram0 ]]; then
     swapoff /dev/zram0 2>/dev/null || true
-    echo lz4 > /sys/block/zram0/comp_algorithm 2>/dev/null || true
+    echo zstd > /sys/block/zram0/comp_algorithm 2>/dev/null || echo lz4 > /sys/block/zram0/comp_algorithm 2>/dev/null || true
     echo "$ZRAM_SIZE_BYTES" > /sys/block/zram0/disksize 2>/dev/null || true
     mkswap /dev/zram0 >/dev/null 2>&1
     swapon -p 10 /dev/zram0 2>/dev/null || true
@@ -237,7 +237,6 @@ fi
 echo never > /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || true
 echo never > /sys/kernel/mm/transparent_hugepage/defrag 2>/dev/null || true
 
-# TỰ ĐỘNG BẬT PROCFS IPV6 ĐỂ DOCKER 29 KHÔNG BỊ LỖI OCI RUNTIME
 sysctl -w net.ipv6.conf.all.disable_ipv6=0 >/dev/null 2>&1 || true
 sysctl -w net.ipv6.conf.default.disable_ipv6=0 >/dev/null 2>&1 || true
 
@@ -317,7 +316,6 @@ auto_patch_engageub_repo() {
     if [[ -f "$sh_file" ]]; then
       cp -n "$sh_file" "${sh_file}.bak" 2>/dev/null || true
       
-      # TỰ ĐỘNG BỎ CỜ SYSCTL IPV6 GÂY LỖI RUNC TRÊN DOCKER 29
       sed -i 's/--sysctl net.ipv6.conf.[a-z0-9_]*.disable_ipv6=[0-9]//g' "$sh_file" 2>/dev/null || true
 
       if ! grep -q "\--restart" "$sh_file"; then
@@ -736,3 +734,7 @@ cp -f /root/setup_oracle_cloud.sh /home/opc/setup_oracle_cloud.sh 2>/dev/null ||
 
 echo "============================= SETUP XONG (100% AUTO-PILOT OCI MASTER 2026 - ULTIMATE) =============================="
 /usr/local/bin/ii-status.sh || true
+ORACLE_MASTER_EOF
+
+chmod +x /root/setup_oracle_cloud.sh /home/ubuntu/setup_oracle_cloud.sh 2>/dev/null || true
+sudo bash /home/ubuntu/setup_oracle_cloud.sh
