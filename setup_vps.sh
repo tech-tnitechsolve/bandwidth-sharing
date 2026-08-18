@@ -71,7 +71,6 @@ else
   CONTAINER_MEM_LIMIT="90m"; CONTAINER_SWAP_LIMIT="200m"
 fi
 
-# TỐI ƯU SWAPFILE Ổ CỨNG: Cố định 1024MB (1GB) để giữ ổ đĩa luôn ở mức ~50%
 if (( MEM_MB >= 9000 )) || (( DISK_TOTAL_MB <= 25000 )); then
   TARGET_SWAP_MB=1024
 elif (( MEM_MB <= 2500 )); then
@@ -100,7 +99,7 @@ apt-get update -y -qq || { clear_apt_locks; apt-get update -y -qq; }
 apt-get install -y -qq --no-install-recommends \
   -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
   curl wget git unzip jq bc ca-certificates uuid-runtime cron logrotate net-tools inotify-tools \
-  iptables-persistent netfilter-persistent systemd-timesyncd systemd-resolved vnstat nload speedtest-cli dnsutils || true
+  iptables-persistent netfilter-persistent systemd-timesyncd vnstat nload speedtest-cli dnsutils || true
 
 # --- [BẢO VỆ CHỐNG BAN ACC] ĐỒNG BỘ THỜI GIAN NTP CHUẨN XÁC ---
 if has_systemd; then
@@ -112,32 +111,30 @@ timedatectl set-ntp true 2>/dev/null || true
 timedatectl set-timezone Asia/Ho_Chi_Minh 2>/dev/null || true
 log "Da dong bo thoi gian NTP chuan millisecond (Anti-Ban Token Enforced)!"
 
-# --- [TỐI ƯU DNS ĐA TẦNG SIÊU TỐC & BẢO TOÀN GEOIP THU NHẬP] ---
-log "Toi uu Smart Local DNS Cache (systemd-resolved) - Latency < 2ms..."
-if has_systemd; then
-  mkdir -p /etc/systemd/resolved.conf.d
-  cat > /etc/systemd/resolved.conf.d/99-income-dns.conf <<'EOF_RESOLV_CONF'
-[Resolve]
-DNS=1.1.1.1 8.8.8.8
-FallbackDNS=1.0.0.1 9.9.9.9
-DNSStubListener=yes
-Cache=yes
-CacheFromLocalhost=yes
-EOF_RESOLV_CONF
-  systemctl unmask systemd-resolved 2>/dev/null || true
-  systemctl enable --now systemd-resolved 2>/dev/null || true
-  systemctl restart systemd-resolved 2>/dev/null || true
-  
-  if [[ -f /run/systemd/resolve/stub-resolv.conf ]]; then
-    ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf 2>/dev/null || true
-  fi
-else
-  cat > /etc/resolv.conf <<'EOF_FALLBACK_RESOLV'
-nameserver 1.1.1.1
-nameserver 8.8.8.8
-options timeout:1 attempts:2 rotate
-EOF_FALLBACK_RESOLV
+#============================================================================
+# [TỐI ƯU DNS THÔNG MINH - CHỐNG LỆCH GEOIP & CHỐNG LỖI PROXY SOCKS5 UDP]
+#============================================================================
+log "Cau hinh DNS Direct-Upstream (Bao toan GeoIP & Loai bo loi 127.0.0.53)..."
+
+# 1. Trích xuất DNS Upstream gốc của nhà mạng VPS (nếu có)
+UPSTREAM_DNS=""
+if [[ -f /run/systemd/resolve/resolv.conf ]]; then
+  UPSTREAM_DNS=$(grep -E '^nameserver' /run/systemd/resolve/resolv.conf 2>/dev/null | grep -v '127.0.0.53' | awk '{print $2}' || true)
 fi
+
+# 2. Xây dựng resolv.conf trực tiếp bằng Real Nameservers
+rm -f /etc/resolv.conf
+{
+  echo "# Generated for High Density Income Nodes (Direct Upstream Mode)"
+  echo "options timeout:1 attempts:2 rotate"
+  for dns in $UPSTREAM_DNS; do
+    echo "nameserver $dns"
+  done
+  echo "nameserver 1.1.1.1"
+  echo "nameserver 8.8.8.8"
+  echo "nameserver 9.9.9.9"
+} | awk '!seen[$0]++' > /etc/resolv.conf
+chmod 644 /etc/resolv.conf
 
 if ! command -v docker >/dev/null 2>&1; then
   log "VPS MOI: Dang tu dong cai dat Docker official..."
@@ -203,7 +200,7 @@ echo "  VPS $(hostname) | RAM ${MEM_MB}MB | ${CPU} CPU | SSD ${DISK_TOTAL_MB}MB"
 echo "  DETECTED PROFILE : ${TIER_NAME}"
 echo "  ZRAM COMPRESSION : ZSTD (MAX DENSITY)"
 echo "  SSD SWAP TARGET  : ${TARGET_SWAP_MB}MB (SMART 20GB SSD PROFILE)"
-echo "  DNS RESOLVER     : SYSTEMD-RESOLVED LOCAL CACHE (<2ms)"
+echo "  DNS ARCHITECTURE : DIRECT NON-LOOPBACK (ANTI-UDP-DROP READY)"
 echo "=============================================================="
 
 CURR_DISK_SWAP_MB=$(swapon --show=NAME,SIZE --bytes 2>/dev/null | awk '/swapfile/{print int($2/1024/1024)}' || echo 0)
@@ -591,7 +588,6 @@ for cid in $(docker ps -aq 2>/dev/null); do
   
   want_bytes=$(( ${P_MEM%m} * 1024 * 1024 ))
   
-  # Neu chua set RAM hoac Policy sai lech -> Update ngay
   if (( cmem == 0 || cmem < (want_bytes - 2097152) )) || [[ "$cpol" == "always" ]]; then
     docker update --memory="$P_MEM" --memory-swap="$P_SWAP" --restart="$P_POLICY" "$cid" >/dev/null 2>&1 || \
     docker update --memory="$P_MEM" --restart="$P_POLICY" "$cid" >/dev/null 2>&1 || true
@@ -603,7 +599,7 @@ ln -sf /usr/local/bin/ii-autosync.sh /usr/bin/ii-autosync 2>/dev/null || true
 
 /usr/local/bin/ii-autosync.sh
 
-# --- DOCKER DAEMON CONFIG (KHÔNG HARDCODE DNS VÀO DOCKER ĐỂ TRÁNH LỖI UDP) ---
+# --- CẤU HÌNH DOCKER DAEMON (KHÔNG ÉP DNS CỐ ĐỊNH TRÁNH NGHẼN UDP PROXY) ---
 mkdir -p /etc/docker
 cat > /etc/docker/daemon.json <<EOF_DAEMON
 {
@@ -731,7 +727,7 @@ EOF_CRON
 if (( DO_CRON == 1 )); then install_cron_stack; fi
 
 #============================================================================
-# BẢNG CHẨN ĐOÁN TINH GỌN (ĐÃ FIX LỖI TÍNH TOÁN WARNINGS & LOCAL DNS)
+# BẢNG CHẨN ĐOÁN (ĐO DNS DIRECT & KIỂM SOÁT THU NHẬP)
 #============================================================================
 cat > /usr/local/bin/ii-status.sh <<'EOF_STATUS'
 #!/usr/bin/env bash
@@ -917,14 +913,15 @@ else
   WARNINGS_COUNT=$((WARNINGS_COUNT+1))
 fi
 
+# Đo tốc độ DNS Direct thực tế
 DNS_START=$(date +%s%N 2>/dev/null || echo 0)
-DNS_RES=$(timeout 2 host google.com 127.0.0.53 2>/dev/null || timeout 2 host google.com 1.1.1.1 2>/dev/null || timeout 2 host google.com 8.8.8.8 2>/dev/null || echo "")
+DNS_RES=$(timeout 2 host -W 1 google.com 2>/dev/null || echo "")
 DNS_END=$(date +%s%N 2>/dev/null || echo 0)
 if [[ -n "$DNS_RES" ]]; then
   DNS_MS=$(( (DNS_END - DNS_START) / 1000000 ))
-  echo -e "  DNS Resolution (Local Cache): ${C_G}OK (${DNS_MS}ms)${C_0}"
+  echo -e "  DNS Resolution (Direct) : ${C_G}OK (${DNS_MS}ms)${C_0}"
 else
-  echo -e "  DNS Resolution (Local Cache): ${C_Y}CHECK_TIMEOUT${C_0}"
+  echo -e "  DNS Resolution (Direct) : ${C_Y}CHECK_TIMEOUT${C_0}"
 fi
 
 HTTP_CODE=$(curl -o /dev/null -s -w "%{http_code}\t%{time_total}" --connect-timeout 2 --max-time 3 http://1.1.1.1 2>/dev/null || curl -o /dev/null -s -w "%{http_code}\t%{time_total}" --connect-timeout 2 --max-time 3 -k https://google.com 2>/dev/null || echo "000 0")
