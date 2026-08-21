@@ -1,14 +1,14 @@
 cat << 'ORACLE_ARM64_MASTER_EOF' > /home/ubuntu/setup_oracle_ARM64.sh
 #!/usr/bin/env bash
 #============================================================================
-#  setup_oracle_ARM64.sh (2026 MASTER ULTIMATE - 100% FULL FOR ORACLE ARM64)
-#  Target Arch  : aarch64 / ARM64 (Ampere A1 Compute 1-4 OCPU / 6-24GB RAM)
-#  Features     : QEMU Multiarch, ZRAM LZ4, KSM, Anti-Leak IPv6, FlapGuard,
-#                 Auto-Patching, Staggered Boot, Full 5-Part Telemetry
+#  setup_oracle_ARM64.sh (2026 MASTER ULTIMATE - 100% FULL & ZERO MISSING)
+#  Target Arch  : aarch64 / ARM64 (Oracle Ampere A1 1-4 OCPU / 6-24GB RAM)
+#  Integrations : QEMU Multiarch, ZRAM LZ4, KSM, Anti-Leak IPv6, FlapGuard,
+#                 Auto-Patching, Staggered Boot, Full 5-Part Telemetry Engine
 #============================================================================
 set -Eeuo pipefail
 
-# 1. TỐI ƯU HỆ THỐNG CỐT LÕI
+# 1. TỐI ƯU FILE DESCRIPTORS VÀ INOTIFY HỆ THỐNG
 ulimit -n 1048576 2>/dev/null || true
 sysctl -w fs.inotify.max_user_watches=2097152 >/dev/null 2>&1 || true
 sysctl -w fs.inotify.max_user_instances=65536 >/dev/null 2>&1 || true
@@ -26,7 +26,7 @@ die()  { echo -e "${C_R}[ARM64-ERR]${C_0} $*"; exit 1; }
 
 has_systemd() { command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; }
 
-# 2. KHÓA HOÀN TOÀN CÁC POPUP TƯƠNG TÁC CỦA UBUNTU/NEEDRESTART
+# 2. KHÓA HOÀN TOÀN CÁC POPUP TƯƠNG TÁC NEEDRESTART & DEBCONF
 export DEBIAN_FRONTEND=noninteractive
 export NEEDRESTART_MODE=a
 if [[ -f /etc/needrestart/needrestart.conf ]]; then
@@ -39,9 +39,9 @@ $nrconf{restart} = 'a';
 $nrconf{ui} = 'NeedRestart::UI::stdio';
 EOF_NR
 
-# 3. GIẢI PHÓNG KHÓA APT LOCK CỦA ORACLE CLOUD
+# 3. GIẢI PHÓNG KHÓA APT LOCK NGẦM CỦA ORACLE CLOUD
 clear_apt_locks() {
-  log "Dang giai phong khoa APT Lock ngam..."
+  log "Dang giai phong tien trinh va khoa APT ngam cua Oracle Cloud..."
   if has_systemd; then
     systemctl stop apt-daily.service apt-daily-upgrade.service unattended-upgrades.service 2>/dev/null || true
     systemctl disable apt-daily.service apt-daily-upgrade.service unattended-upgrades.service 2>/dev/null || true
@@ -55,8 +55,8 @@ clear_apt_locks
 echo iptables-persistent iptables-persistent/autosave_v4 boolean true | debconf-set-selections 2>/dev/null || true
 echo iptables-persistent iptables-persistent/autosave_v6 boolean true | debconf-set-selections 2>/dev/null || true
 
-# 4. CÀI ĐẶT CÁC GÓI BỔ TRỢ + QEMU MULTIARCH CHO CHIP ARM64
-log "Cap nhat he thong va cai dat QEMU Multi-Arch..."
+# 4. CÀI ĐẶT CÁC GÓI CỐT LÕI + QEMU MULTI-ARCH CHO ARM64
+log "Cap nhat APT va cai dat QEMU Multi-Arch x86_64 tren nen ARM64..."
 apt-get update -y -qq || { clear_apt_locks; apt-get update -y -qq; }
 apt-get install -y -qq --no-install-recommends \
   -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
@@ -64,8 +64,8 @@ apt-get install -y -qq --no-install-recommends \
   iptables-persistent netfilter-persistent systemd-timesyncd vnstat nload dnsutils util-linux zram-tools \
   qemu-user-static binfmt-support linux-modules-extra-"$(uname -r)" 2>/dev/null || true
 
-# 5. DỌN DẸP TIẾN TRÌNH RÁC NGỐN RAM CỦA OS (SNAPD, MULTIPATHD)
-log "Tat cac dich vu rac giup giai phong RAM..."
+# 5. DỌN DẸP DỊCH VỤ RÁC OS (SNAPD, MULTIPATHD) GIẢI PHÓNG RAM
+log "Dang tat cac tien trinh OS ngom RAM ngam (snapd, multipathd)..."
 if has_systemd; then
   systemctl stop snapd multipathd udisks2 accountsservice earlyoom 2>/dev/null || true
   systemctl disable snapd multipathd udisks2 accountsservice earlyoom 2>/dev/null || true
@@ -73,7 +73,8 @@ fi
 apt-get purge -y snapd earlyoom 2>/dev/null || true
 rm -rf /var/cache/snapd/ /var/lib/snapd/ 2>/dev/null || true
 
-# 6. CẤU HÌNH THIẾT BỊ MẠNG TUN & CHỐNG LỘ IPV6 DATA CENTER
+# 6. THIẾT LẬP MẠNG TUN (/dev/net/tun) & CHỐNG LỘ IPV6 DATA CENTER
+log "Cau hinh thiet bi Mang TUN (/dev/net/tun) va Khoa ro ri IPv6 Data Center..."
 modprobe tun 2>/dev/null || true
 if [[ ! -c /dev/net/tun ]]; then
   mkdir -p /dev/net 2>/dev/null || true
@@ -81,6 +82,7 @@ if [[ ! -c /dev/net/tun ]]; then
   chmod 666 /dev/net/tun 2>/dev/null || true
 fi
 
+# Chống rò rỉ IP Oracle Data Center qua giao thức IPv6
 sysctl -w net.ipv6.conf.all.disable_ipv6=1 >/dev/null 2>&1 || true
 sysctl -w net.ipv6.conf.default.disable_ipv6=1 >/dev/null 2>&1 || true
 sysctl -w net.ipv6.conf.lo.disable_ipv6=1 >/dev/null 2>&1 || true
@@ -103,10 +105,11 @@ nameserver 8.8.8.8
 nameserver 9.9.9.9
 EOF_RESOLV
 chmod 644 /etc/resolv.conf
+log "Dong bo gio NTP mili-giay & DNS Direct Upstream hoan tat!"
 
-# 8. CÀI ĐẶT & TỐI ƯU DOCKER ENGINE CHO ARM64
+# 8. CÀI ĐẶT & TỐI ƯU DOCKER ENGINE CHO CHIP ARM64
 if ! command -v docker >/dev/null 2>&1; then
-  log "Dang cai dat Docker Engine cho ARM64..."
+  log "Dang cai dat Docker Official Engine..."
   curl -fsSL https://get.docker.com | sh || apt-get install -y -qq docker.io
 fi
 
@@ -143,7 +146,7 @@ EOF_DOCKER_SVC
 fi
 chmod 666 /var/run/docker.sock 2>/dev/null || true
 
-# Kích hoạt QEMU Multi-Arch
+# Kích hoạt bộ dịch QEMU Multi-Arch
 docker run --rm --privileged multiarch/qemu-user-static --reset -p yes >/dev/null 2>&1 || true
 
 cat > /etc/systemd/system/ii-qemu-arm64.service << 'EOF_QEMU_SVC'
@@ -165,7 +168,7 @@ if has_systemd; then
   systemctl enable ii-qemu-arm64.service 2>/dev/null || true
 fi
 
-# 9. PHÂN BỔ TÀI NGUYÊN CHO ORACLE AMPERE A1 (ARM64)
+# 9. PHÂN BỔ TÀI NGUYÊN DÀNH RIÊNG CHO ORACLE AMPERE A1 (ARM64)
 MEM_MB=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
 CPU=$(nproc 2>/dev/null || echo 1)
 
@@ -188,7 +191,7 @@ else
   TARGET_SWAP_MB=4096
 fi
 
-# KSM Deduplication
+# KSM Deduplication (Gộp RAM ngầm)
 if [[ -f /sys/kernel/mm/ksm/run ]]; then
   echo 1 > /sys/kernel/mm/ksm/run 2>/dev/null || true
   echo 200 > /sys/kernel/mm/ksm/sleep_millisecs 2>/dev/null || true
@@ -196,7 +199,7 @@ if [[ -f /sys/kernel/mm/ksm/run ]]; then
   log "Da kich hoat KSM (Kernel Samepage Merging) cho ARM64!"
 fi
 
-# ZRAM LZ4 & Swapfile
+# ZRAM LZ4 & Swapfile SSD
 log "Kich hoat ZRAM LZ4 ${MEM_MB}MB va Swapfile SSD ${TARGET_SWAP_MB}MB..."
 modprobe zram num_devices=1 2>/dev/null || true
 echo -e "ALGO=lz4\nPERCENT=100\nPRIORITY=10" > /etc/default/zramswap
@@ -213,7 +216,7 @@ if ! swapon --show 2>/dev/null | grep -q "/swapfile"; then
   grep -q "^/swapfile" /etc/fstab || echo "/swapfile none swap sw,pri=0 0 0" >> /etc/fstab
 fi
 
-# 10. TỐI ƯU KERNEL & SOCKET NETWORK
+# 10. TỐI ƯU KERNEL TCP BBR & CONTRACK NETWORK
 modprobe nf_conntrack 2>/dev/null || true
 modprobe tcp_bbr 2>/dev/null || true
 
@@ -292,19 +295,19 @@ ii_profile() {
     bitping*)
       P_APP="Bitping";        P_MEM=$(_p $t 60m 80m 100m 120m); P_SWAP=$(_p $t 120m 160m 200m 240m) ;;
     pawns*)
-      P_APP="IPRoyal Pawns";  P_MEM=$(_p $t 75m 90m 120m 150m); P_SWAP=$(_p $t 150m 180m 240m 300m) ;;
+      P_APP="IPRoyal Pawns";  P_MEM=$(_p $t 75m 90m 120m 150m); P_SWAP=$(_p $t 150m 180m 240m 300m); P_POLICY="on-failure:3" ;;
     packetstream*)
-      P_APP="PacketStream";   P_MEM=$(_p $t 75m 90m 120m 150m); P_SWAP=$(_p $t 150m 180m 240m 300m) ;;
+      P_APP="PacketStream";   P_MEM=$(_p $t 75m 90m 120m 150m); P_SWAP=$(_p $t 150m 180m 240m 300m); P_POLICY="on-failure:3" ;;
     earnapp*)
-      P_APP="EarnApp";        P_MEM=$(_p $t 75m 90m 120m 150m); P_SWAP=$(_p $t 150m 180m 240m 300m) ;;
+      P_APP="EarnApp";        P_MEM=$(_p $t 75m 90m 120m 150m); P_SWAP=$(_p $t 150m 180m 240m 300m); P_POLICY="on-failure:3" ;;
     earnfm*)
-      P_APP="EarnFM";         P_MEM=$(_p $t 90m 120m 150m 180m); P_SWAP=$(_p $t 180m 240m 300m 360m) ;;
+      P_APP="EarnFM";         P_MEM=$(_p $t 90m 120m 150m 180m); P_SWAP=$(_p $t 180m 240m 300m 360m); P_POLICY="on-failure:3" ;;
     honey*)
-      P_APP="Honeygain";      P_MEM=$(_p $t 120m 140m 160m 200m); P_SWAP=$(_p $t 240m 280m 320m 400m) ;;
+      P_APP="Honeygain";      P_MEM=$(_p $t 120m 140m 160m 200m); P_SWAP=$(_p $t 240m 280m 320m 400m); P_POLICY="on-failure:3" ;;
     repocket*)
-      P_APP="Repocket";       P_MEM=$(_p $t 120m 140m 160m 200m); P_SWAP=$(_p $t 240m 280m 320m 400m) ;;
+      P_APP="Repocket";       P_MEM=$(_p $t 120m 140m 160m 200m); P_SWAP=$(_p $t 240m 280m 320m 400m); P_POLICY="on-failure:3" ;;
     wipter*)
-      P_APP="Wipter";         P_MEM=$(_p $t 350m 400m 500m 600m); P_SWAP=$(_p $t 700m 800m 1000m 1200m) ;;
+      P_APP="Wipter";         P_MEM=$(_p $t 350m 400m 500m 600m); P_SWAP=$(_p $t 700m 800m 1000m 1200m); P_POLICY="on-failure:5" ;;
     *)
       P_APP=""; P_POLICY="unless-stopped" ;;
   esac
@@ -358,7 +361,7 @@ auto_patch_engageub_repo() {
 }
 auto_patch_engageub_repo
 
-# 13. FLAPGUARD - BẢO VỆ CHỐNG BAN TÀI KHOẢN KHI RECONNECT LOOP
+# 13. FLAPGUARD - BẢO VỆ CHỐNG RECONNECT STORM & BAN TÀI KHOẢN
 cat > /usr/local/bin/ii-flapguard.sh << 'EOF_FLAPGUARD'
 #!/usr/bin/env bash
 set -uo pipefail
@@ -488,63 +491,86 @@ EOF_FIX
 chmod +x /usr/local/bin/ii-fix-arm.sh
 ln -sf /usr/local/bin/ii-fix-arm.sh /usr/bin/ii-fix-arm 2>/dev/null || true
 
-# 17. BẢNG CHẨN ĐOÁN TIÊU CHUẨN 5 PHẦN (II-STATUS)
+# 17. BẢNG CHẨN ĐOÁN TIÊU CHUẨN 5 PHẦN ĐẦY ĐỦ NHẤT (II-STATUS)
 cat > /usr/local/bin/ii-status.sh << 'EOF_STATUS'
 #!/usr/bin/env bash
 set +u
+
 if [[ -t 1 ]]; then
   C_G='\033[1;32m'; C_Y='\033[1;33m'; C_R='\033[1;31m'; C_B='\033[1;34m'; C_C='\033[1;36m'; C_0='\033[0m'
 else
   C_G=''; C_Y=''; C_R=''; C_B=''; C_C=''; C_0=''
 fi
 
-echo -e "${C_B}==================== [ORACLE ARM64 24/7 TELEMETRY DIAGNOSTIC] ====================${C_0}"
+echo -e "${C_B}==================== [ORACLE CLOUD 24/7 TELEMETRY DIAGNOSTIC] ====================${C_0}"
 echo "TIMESTAMP    : $(date '+%Y-%m-%d %H:%M:%S %Z')"
 echo "HOSTNAME     : $(hostname)"
-echo "ARCH/KERNEL  : $(uname -m) / $(uname -r)"
+echo "UPTIME       : $(uptime -p 2>/dev/null || uptime)"
+echo "KERNEL/ARCH  : $(uname -r) ($(uname -m))"
 
 MEM_MB=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
 ISSUES_COUNT=0
+WARNINGS_COUNT=0
 
-# --- 1. AUDIT TỪNG THƯ MỤC NODE ---
+# --- 1. DOCKER FOLDER DIRECTORY AUDIT ---
 echo -e "\n${C_C}--- [1. NODE DIRECTORIES & ACTIVE AUDIT] ---${C_0}"
-ROOTS=(/opt /root /home /srv /home/ubuntu /home/opc)
+ROOTS=("$@")
+if (( ${#ROOTS[@]} == 0 )); then ROOTS=(/opt /root /home /srv /home/ubuntu /home/opc); fi
+
 found=0
 while IFS= read -r cn; do
   d=$(dirname "$cn")
   [[ -f "${d}/internetIncome.sh" ]] || continue
   found=1
-  total=0; running=0; stopped=0
+  total=0; running=0; stopped=0; oom_cnt=0; high_restart=0
   while IFS= read -r c; do
     [[ -z "$c" ]] && continue
     state=$(docker inspect -f '{{.State.Running}}' "$c" 2>/dev/null || echo "not_found")
     if [[ "$state" == "true" ]]; then
-      running=$((running+1)); total=$((total+1))
+      running=$((running+1))
+      total=$((total+1))
+      oom=$(docker inspect -f '{{.State.OOMKilled}}' "$c" 2>/dev/null || echo "false")
+      rc=$(docker inspect -f '{{.RestartCount}}' "$c" 2>/dev/null || echo "0")
+      [[ "$oom" == "true" ]] && oom_cnt=$((oom_cnt+1))
+      (( rc > 10 )) && high_restart=$((high_restart+1))
     elif [[ "$state" == "false" ]]; then
-      stopped=$((stopped+1)); total=$((total+1))
+      stopped=$((stopped+1))
+      total=$((total+1))
     fi
   done < "$cn"
 
-  mark="${C_G}[100% HEALTHY]${C_0}"
+  mark=""
   if (( stopped > 0 )); then
-    mark="${C_R}[${stopped} STOPPED]${C_0}"
+    mark="${mark} ${C_R}[${stopped} STOPPED]${C_0}"
     ISSUES_COUNT=$((ISSUES_COUNT+stopped))
   fi
+  if (( oom_cnt > 0 )); then
+    mark="${mark} ${C_R}[${oom_cnt} OOM KILLED]${C_0}"
+    ISSUES_COUNT=$((ISSUES_COUNT+oom_cnt))
+  fi
+  if (( high_restart > 0 )); then
+    mark="${mark} ${C_Y}[${high_restart} UNSTABLE RESTARTS]${C_0}"
+    WARNINGS_COUNT=$((WARNINGS_COUNT+high_restart))
+  fi
+  (( total > 0 && stopped == 0 && oom_cnt == 0 && high_restart == 0 )) && mark="${C_G}[100% HEALTHY]${C_0}"
+
   printf "  %-42s %3s/%-3s running  %b\n" "$d" "$running" "$total" "$mark"
 done < <(find "${ROOTS[@]}" -maxdepth 4 -name containernames.txt -type f 2>/dev/null | sort -u)
+
+if (( found == 0 )); then echo "  (Chua khoi tao folder engageub nao)"; fi
 
 RUNNING_CTRS=$(docker ps -q 2>/dev/null | wc -l)
 TOTAL_CTRS=$(docker ps -aq 2>/dev/null | wc -l)
 EXITED_CTRS=$(docker ps -aq -f status=exited 2>/dev/null | wc -l)
 echo "  TOTAL SUMMARY: ${RUNNING_CTRS} running / ${TOTAL_CTRS} total (Exited: ${EXITED_CTRS})"
 
-# --- 1B. BẢNG TỔNG HỢP NỀN TẢNG ---
+# --- 1B. BẢNG TỔNG HỢP THEO TỪNG NỀN TẢNG ---
 echo -e "\n${C_C}--- [1b. PLATFORMS AGGREGATION & ANTI-BAN AUDIT] ---${C_0}"
 PROFILES=/usr/local/lib/ii-app-profiles.sh
 if [[ -r "$PROFILES" ]]; then
   . "$PROFILES"
   TIER_IDX=$(ii_tier_idx "$MEM_MB")
-  declare -A APP_COUNT APP_MEM APP_POL
+  declare -A APP_COUNT APP_MEM APP_POL APP_OK APP_WARN APP_ERR
 
   while IFS= read -r cid; do
     [[ -z "$cid" ]] && continue
@@ -556,41 +582,176 @@ if [[ -r "$PROFILES" ]]; then
     cmem=$(docker inspect -f '{{.HostConfig.Memory}}' "$cid" 2>/dev/null || echo 0)
     cmb=$(( (cmem + 1048575) / 1024 / 1024 ))
     cpol=$(docker inspect -f '{{.HostConfig.RestartPolicy.Name}}' "$cid" 2>/dev/null || echo "?")
+    coom=$(docker inspect -f '{{.State.OOMKilled}}' "$cid" 2>/dev/null || echo false)
+    crc=$(docker inspect -f '{{.RestartCount}}' "$cid" 2>/dev/null || echo 0)
 
     APP_COUNT["$app_key"]=$(( ${APP_COUNT["$app_key"]:-0} + 1 ))
     APP_MEM["$app_key"]="${cmb}MB"
     APP_POL["$app_key"]="$cpol"
+    APP_ERR["$app_key"]=${APP_ERR["$app_key"]:-0}
+    APP_WARN["$app_key"]=${APP_WARN["$app_key"]:-0}
+    APP_OK["$app_key"]=${APP_OK["$app_key"]:-0}
+
+    if [[ "$coom" == "true" ]] || [[ "$cpol" == "always" ]]; then
+      APP_ERR["$app_key"]=$(( ${APP_ERR["$app_key"]} + 1 ))
+      ISSUES_COUNT=$((ISSUES_COUNT+1))
+    else
+      APP_OK["$app_key"]=$(( ${APP_OK["$app_key"]} + 1 ))
+    fi
+
+    if (( crc > 3 )); then
+      WARNINGS_COUNT=$((WARNINGS_COUNT+1))
+    fi
   done < <(docker ps -aq 2>/dev/null)
 
   printf "  %-18s %-7s %-9s %-16s %s\n" "PLATFORM" "NODES" "RAM/NODE" "POLICY" "STATUS"
   for app in "${!APP_COUNT[@]}"; do
-    printf "  ${C_G}%-18s %-7s %-9s %-16s %s${C_0}\n" "$app" "${APP_COUNT["$app"]}" "${APP_MEM["$app"]}" "${APP_POL["$app"]}" "[100% HEALTHY]"
+    err_cnt=${APP_ERR["$app"]:-0}
+    warn_cnt=${APP_WARN["$app"]:-0}
+    total_cnt=${APP_COUNT["$app"]}
+    mem_val=${APP_MEM["$app"]}
+    pol_val=${APP_POL["$app"]}
+    
+    st_col="$C_G"; st_text="[100% HEALTHY]"
+    if (( err_cnt > 0 )); then
+      st_col="$C_R"; st_text="[${err_cnt} RISK DETECTED]"
+    elif (( warn_cnt > 0 )); then
+      st_col="$C_Y"; st_text="[${warn_cnt} WARNINGS]"
+    fi
+    printf "  ${st_col}%-18s %-7s %-9s %-16s %s${C_0}\n" "$app" "$total_cnt" "$mem_val" "$pol_val" "$st_text"
   done
 fi
 
-# --- 2. HẠ TẦNG MẠNG & CHỐNG LỘ IP ---
-echo -e "\n${C_C}--- [2. NETWORK, PROXY & ANTI-LEAK HEALTH] ---${C_0}"
-echo -e "  IP Forwarding (Routing)  : ${C_G}ENABLED (1)${C_0}"
-echo -e "  NTP Time Sync Status    : ${C_G}ACTIVE (Strict millisecond accuracy)${C_0}"
-echo -e "  IPv6 Data Center Leak   : ${C_G}BLOCKED / DISABLED (Anti-Ban Safe)${C_0}"
-echo -e "  QEMU ARM64 Multiarch    : ${C_G}ACTIVE (x86_64 Emulation Ready)${C_0}"
+if [[ -d /var/lib/ii-flapguard ]]; then
+  _held=0
+  for f in /var/lib/ii-flapguard/*.state; do
+    [[ -e "$f" ]] || continue
+    read -r _rc _t _stopped < "$f" 2>/dev/null || continue
+    if [[ "${_stopped:-0}" != "0" ]]; then
+      _left=$(( (${_stopped} + 43200 - $(date +%s)) / 3600 ))
+      (( _left < 0 )) && _left=0
+      echo -e "  ${C_Y}FLAPGUARD PROTECTION: $(basename "$f" .state) đang tạm dừng 12h (Còn ~${_left}h)${C_0}"
+      _held=1
+    fi
+  done
+  (( _held == 0 )) && echo -e "  FLAPGUARD ENGINE: ${C_G}Khong co container nao bi loi Reconnect Loop${C_0}"
+fi
 
-# --- 3. BỘ NHỚ RAM, ZRAM & SWAP ---
+if [[ -c /dev/net/tun ]]; then
+  echo -e "  Host TUN Device        : ${C_G}/dev/net/tun OK (WireGuard / Mysterium Ready)${C_0}"
+fi
+
+# --- 2. NETWORK, PROXY & ROUTING HEALTH ---
+echo -e "\n${C_C}--- [2. NETWORK, PROXY & ROUTING HEALTH] ---${C_0}"
+IP_FWD=$(sysctl -n net.ipv4.ip_forward 2>/dev/null || echo 0)
+if [[ "$IP_FWD" == "1" ]]; then
+  echo -e "  IP Forwarding (Routing)  : ${C_G}ENABLED (1)${C_0}"
+else
+  echo -e "  IP Forwarding (Routing)  : ${C_R}DISABLED (0)${C_0}"
+  ISSUES_COUNT=$((ISSUES_COUNT+1))
+fi
+
+NTP_ACTIVE=0
+if systemctl is-active systemd-timesyncd >/dev/null 2>&1 || [[ "$(timedatectl status 2>/dev/null | grep -i 'NTP service' | awk '{print $3}')" =~ active|yes ]]; then
+  NTP_ACTIVE=1
+fi
+if (( NTP_ACTIVE == 1 )); then
+  echo -e "  NTP Time Sync Status    : ${C_G}ACTIVE (Strict millisecond accuracy)${C_0}"
+else
+  echo -e "  NTP Time Sync Status    : ${C_Y}INACTIVE (Syncing...)${C_0}"
+  WARNINGS_COUNT=$((WARNINGS_COUNT+1))
+fi
+
+DNS_START=$(date +%s%N 2>/dev/null || echo 0)
+DNS_RES=$(timeout 2 host -W 1 google.com 2>/dev/null || echo "")
+DNS_END=$(date +%s%N 2>/dev/null || echo 0)
+if [[ -n "$DNS_RES" ]]; then
+  DNS_MS=$(( (DNS_END - DNS_START) / 1000000 ))
+  echo -e "  DNS Resolution (Direct) : ${C_G}OK (${DNS_MS}ms)${C_0}"
+else
+  echo -e "  DNS Resolution (Direct) : ${C_Y}CHECK_TIMEOUT${C_0}"
+fi
+
+HTTP_CODE=$(curl -o /dev/null -s -w "%{http_code}\t%{time_total}" --connect-timeout 2 --max-time 3 http://1.1.1.1 2>/dev/null || curl -o /dev/null -s -w "%{http_code}\t%{time_total}" --connect-timeout 2 --max-time 3 -k https://google.com 2>/dev/null || echo "000 0")
+CODE=$(echo "$HTTP_CODE" | awk '{print $1}')
+TIME=$(echo "$HTTP_CODE" | awk '{print $2}')
+if [[ "$CODE" == "200" || "$CODE" == "301" || "$CODE" == "302" ]]; then
+  echo -e "  Outbound Internet Latency: ${C_G}ONLINE (HTTP ${CODE} in ${TIME}s)${C_0}"
+else
+  echo -e "  Outbound Internet Latency: ${C_R}BLOCKED / TIMEOUT${C_0}"
+  ISSUES_COUNT=$((ISSUES_COUNT+1))
+fi
+
+CONN_COUNT=$(cat /proc/sys/net/netfilter/nf_conntrack_count 2>/dev/null || echo 0)
+CONN_MAX=$(cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null || echo 1048576)
+CONN_PCT=$(( CONN_COUNT * 100 / CONN_MAX ))
+echo -e "  Conntrack Active Streams: ${C_G}${CONN_COUNT} / ${CONN_MAX} (${CONN_PCT}% capacity)${C_0}"
+
+# --- 3. SYSTEM RAM, SWAP & ZRAM ALLOCATION ---
 echo -e "\n${C_C}--- [3. SYSTEM RAM, SWAP & ZRAM ALLOCATION] ---${C_0}"
-free -m | awk 'NR<=2{print "  "$0}'
-ZRAM_STAT=$(swapon --show 2>/dev/null | grep zram || echo "Not Active")
-echo "  ZRAM Status : $ZRAM_STAT"
+RAM_TOTAL=$(free -m | awk '/^Mem:/{print $2}')
+RAM_USED=$(free -m | awk '/^Mem:/{print $3}')
+RAM_AVAIL=$(free -m | awk '/^Mem:/{print $7}')
+SWAP_TOTAL=$(free -m | awk '/^Swap:/{print $2}')
+SWAP_USED=$(free -m | awk '/^Swap:/{print $3}')
+SWAP_VAL=$(cat /proc/sys/vm/swappiness 2>/dev/null || echo 0)
 
-# --- 4. TỔNG KẾT ---
+echo "  RAM  : Total ${RAM_TOTAL}MB | Used ${RAM_USED}MB | Avail ${RAM_AVAIL}MB"
+echo "  Swap : Total ${SWAP_TOTAL}MB | Used ${SWAP_USED}MB | Swappiness ${SWAP_VAL}"
+
+if swapon --show 2>/dev/null | grep -qE "/dev/zram|zramswap"; then
+  ZRAM_SIZE=$(swapon --show 2>/dev/null | grep -E "/dev/zram|zramswap" | awk '{print $3}')
+  echo -e "  ZRAM : ${C_G}ACTIVE (${ZRAM_SIZE} Priority 10)${C_0}"
+else
+  echo -e "  ZRAM : ${C_Y}NOT ACTIVE${C_0}"
+  WARNINGS_COUNT=$((WARNINGS_COUNT+1))
+fi
+
+OOM_LOGS=$(dmesg 2>/dev/null | grep -i "out of memory" | tail -n 3 || echo "")
+if [[ -n "$OOM_LOGS" ]]; then
+  echo -e "  Kernel OOM Kills        : ${C_R}DETECTED RECENT OOM KILLS!${C_0}"
+  ISSUES_COUNT=$((ISSUES_COUNT+1))
+else
+  echo -e "  Kernel OOM Kills        : ${C_G}NONE (Clean kernel memory log)${C_0}"
+fi
+
+# --- 4. CPU LOAD & DISK / FILESYSTEM HEALTH ---
+echo -e "\n${C_C}--- [4. CPU LOAD & DISK / FILESYSTEM HEALTH] ---${C_0}"
+LOAD_1=$(cat /proc/loadavg | awk '{print $1}')
+CPUS=$(nproc 2>/dev/null || echo 1)
+echo "  CPU Cores: ${CPUS} | Load Avg (1m): ${LOAD_1}"
+
+if touch /tmp/ii_rw_test 2>/dev/null; then
+  rm -f /tmp/ii_rw_test
+  echo -e "  Filesystem Write Mode  : ${C_G}READ-WRITE (Normal)${C_0}"
+else
+  echo -e "  Filesystem Write Mode  : ${C_R}READ-ONLY (CRITICAL!)${C_0}"
+  ISSUES_COUNT=$((ISSUES_COUNT+1))
+fi
+
+DISK_USE_PCT=$(df / | awk 'NR==2{print $5}' | tr -d '%')
+INODE_USE_PCT=$(df -i / | awk 'NR==2{print $5}' | tr -d '%')
+echo -e "  Disk Storage Usage     : ${C_G}${DISK_USE_PCT}% used${C_0} | Inode Usage: ${C_G}${INODE_USE_PCT}% used${C_0}"
+
+# --- 5. TỔNG KẾT ---
 echo -e "\n${C_B}---------------- [24/7 INCOME QUALITY DIAGNOSTIC SUMMARY] ----------------${C_0}"
-if (( ISSUES_COUNT == 0 )); then
+SCORE=100
+SCORE=$(( SCORE - (ISSUES_COUNT * 20) - (WARNINGS_COUNT * 5) ))
+if (( SCORE < 0 )); then SCORE=0; fi
+
+if (( ISSUES_COUNT == 0 && WARNINGS_COUNT == 0 )); then
   echo -e "  OVERALL SCORE : ${C_G}100% PERFECT${C_0} - System is 100% stable & optimal for maximum earnings!"
   echo -e "  STATUS        : ${C_G}[HEALTHY_SMOOTH_24_7]${C_0} No action required."
+elif (( ISSUES_COUNT == 0 )); then
+  echo -e "  OVERALL SCORE : ${C_Y}${SCORE}% GOOD${C_0} - System running fine with minor warnings."
+  echo -e "  STATUS        : ${C_Y}[STABLE_WITH_WARNINGS]${C_0} AutoSync engine is maintaining containers."
 else
-  echo -e "  OVERALL SCORE : ${C_R}${ISSUES_COUNT} Issues Detected${C_0}"
+  echo -e "  OVERALL SCORE : ${C_R}${SCORE}% UNSTABLE (${ISSUES_COUNT} Critical Issues Found!)${C_0}"
+  echo -e "  STATUS        : ${C_R}[INCOME_RISK_DETECTED]${C_0} AutoSync engine is repairing containers."
 fi
 echo -e "${C_B}==========================================================================${C_0}"
 EOF_STATUS
+
 chmod +x /usr/local/bin/ii-status.sh
 ln -sf /usr/local/bin/ii-status.sh /usr/bin/ii-status 2>/dev/null || true
 
@@ -600,22 +761,89 @@ cat > /usr/local/bin/ii-deep.sh << 'EOF_DEEP'
 echo "==================== [ARM64 PRO DEEP DIAGNOSTIC] ===================="
 echo "TIMESTAMP : $(date '+%Y-%m-%d %H:%M:%S')"
 echo "HOSTNAME  : $(hostname)"
+echo "UPTIME    : $(uptime -p 2>/dev/null || uptime)"
 echo ""
 echo "--- [1. MEMORY PRESSURE STALLS (PSI)] ---"
 cat /proc/pressure/memory 2>/dev/null || echo "PSI not supported"
 echo ""
-echo "--- [2. KERNEL DMESG ERROR LOGS] ---"
-ERRS=$(dmesg 2>/dev/null | grep -iE "error|fail|oom" | tail -n 6 || true)
+echo "--- [2. KERNEL DMESG RECENT ERROR LOGS] ---"
+ERRS=$(dmesg 2>/dev/null | grep -iE "error|fail|oom|read-only" | tail -n 8 || true)
 if [[ -n "$ERRS" ]]; then echo "$ERRS"; else echo "Clean (No recent kernel errors)"; fi
 echo ""
-echo "--- [3. BANDWIDTH STATS (vnstat)] ---"
+echo "--- [3. BANDWIDTH TRAFFIC STATS (vnstat)] ---"
 vnstat -d 3 2>/dev/null || vnstat 2>/dev/null || echo "vnstat initializing..."
+echo ""
+echo "--- [4. TOP RESTARTING CONTAINERS] ---"
+docker ps -a --format "table {{.Names}}\t{{.Status}}" 2>/dev/null | head -n 6
 echo "======================================================================"
 EOF_DEEP
 chmod +x /usr/local/bin/ii-deep.sh
 ln -sf /usr/local/bin/ii-deep.sh /usr/bin/ii-deep 2>/dev/null || true
 
-# 19. CRONJOB VẬN HÀNH TỰ HÀNH 24/7 (AUTO-PILOT)
+# 19. CÔNG CỤ CHẨN ĐOÁN & ĐO ĐỘ NGHẼN CPU (II-CPU)
+cat > /usr/local/bin/ii-cpu << 'EOF_CPU'
+#!/usr/bin/env bash
+set -u
+if [[ -t 1 ]]; then
+  C_G='\033[1;32m'; C_Y='\033[1;33m'; C_R='\033[1;31m'; C_B='\033[1;34m'; C_C='\033[1;36m'; C_0='\033[0m'
+else
+  C_G=''; C_Y=''; C_R=''; C_B=''; C_C=''; C_0=''
+fi
+echo -e "${C_B}==================== [KIỂM TRA SỨC KHỎE CPU & ĐỘ NGHẼN 24/7] ====================${C_0}"
+echo "THỜI GIAN  : $(date '+%Y-%m-%d %H:%M:%S %Z')"
+echo "MÁY CHỦ    : $(hostname) | $(uname -m) ($(nproc) Core CPU)"
+LOAD=$(cat /proc/loadavg | awk '{print $1", "$2", "$3}')
+echo "LOAD AVG   : ${LOAD} (1m, 5m, 15m)"
+
+echo -e "\n${C_C}--- [1. ÁP LỰC NGHẼN CPU (LINUX KERNEL PSI)] ---${C_0}"
+if [[ -f /proc/pressure/cpu ]]; then
+  PSI_RAW=$(cat /proc/pressure/cpu | grep "some")
+  AVG10=$(echo "$PSI_RAW" | awk -F'avg10=' '{print $2}' | awk '{print $1}')
+  AVG60=$(echo "$PSI_RAW" | awk -F'avg60=' '{print $2}' | awk '{print $1}')
+  AVG300=$(echo "$PSI_RAW" | awk -F'avg300=' '{print $2}' | awk '{print $1}')
+
+  VAL_INT=${AVG10%.*}
+  VAL_INT=${VAL_INT:-0}
+  if (( VAL_INT < 5 )); then EVAL_PSI="${C_G}[100% MƯỢT - KHÔNG NGHẼN]${C_0}";
+  elif (( VAL_INT < 20 )); then EVAL_PSI="${C_Y}[BÌNH THƯỜNG - TẢI ỔN ĐỊNH]${C_0}";
+  else EVAL_PSI="${C_R}[CẢNH BÁO: CPU ĐANG BỊ NGHẼN!]${C_0}"; fi
+
+  echo "  Chỉ số PSI : avg10=${AVG10}% | avg60=${AVG60}% | avg300=${AVG300}%"
+  echo -e "  Đánh giá   : $EVAL_PSI"
+fi
+
+echo -e "\n${C_C}--- [2. HÀNG ĐỢI XỬ LÝ & BẢO TOÀN HIỆU NĂNG (vmstat)] ---${C_0}"
+VM_LINE=$(vmstat 1 2 | tail -n 1)
+R_QUEUE=$(echo "$VM_LINE" | awk '{print $1}')
+US_CPU=$(echo "$VM_LINE" | awk '{print $13}')
+SY_CPU=$(echo "$VM_LINE" | awk '{print $14}')
+ID_CPU=$(echo "$VM_LINE" | awk '{print $15}')
+ST_CPU=$(echo "$VM_LINE" | awk '{print $17}')
+TOTAL_USED=$(( US_CPU + SY_CPU ))
+
+echo "  Hàng đợi chờ (r)      : ${R_QUEUE} task (Chuẩn mượt <= 2)"
+echo "  Tổng tải CPU đang dùng: ${TOTAL_USED}% (User: ${US_CPU}%, System: ${SY_CPU}%, Rảnh: ${ID_CPU}%)"
+if (( ST_CPU == 0 )); then echo -e "  Oracle Steal Time (st): ${C_G}0% (Oracle cấp trọn 100% công suất chip)${C_0}";
+else echo -e "  Oracle Steal Time (st): ${C_Y}${ST_CPU}% (Đang bị chia sẻ tài nguyên)${C_0}"; fi
+
+echo -e "\n${C_C}--- [3. TOP 8 CONTAINER ĂN NHIỀU CPU NHẤT] ---${C_0}"
+if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+  printf "  %-32s %-10s %-16s %-16s\n" "TÊN CONTAINER" "CPU %" "RAM ĐANG DÙNG" "NETWORK I/O"
+  docker stats --no-stream --format "{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.NetIO}}" | sort -k2 -hr | head -n 8 | while IFS=$'\t' read -r name cpu mem net; do
+    printf "  %-32s %-10s %-16s %-16s\n" "$name" "$cpu" "$mem" "$net"
+  done
+fi
+
+echo -e "\n${C_B}---------------------------- [KẾT LUẬN TẢI CPU] ----------------------------${C_0}"
+if (( TOTAL_USED <= 50 )); then echo -e "  KẾT QUẢ: ${C_G}[SIÊU MƯỢT] CPU chỉ dùng ~${TOTAL_USED}%. Dư sức cắm thêm IP!${C_0}";
+elif (( TOTAL_USED <= 80 )); then echo -e "  KẾT QUẢ: ${C_G}[TỐT - CHUẨN 24/7] CPU chạy ~${TOTAL_USED}%. Đạt chuẩn ngưỡng an toàn <= 80%.${C_0}";
+else echo -e "  KẾT QUẢ: ${C_R}[TẢI CAO > 80%] CPU chạy ~${TOTAL_USED}%. Khuyến nghị không cắm thêm IP!${C_0}"; fi
+echo -e "${C_B}==============================================================================${C_0}"
+EOF_CPU
+chmod +x /usr/local/bin/ii-cpu
+ln -sf /usr/local/bin/ii-cpu /usr/bin/ii-cpu 2>/dev/null || true
+
+# 20. CRONJOB VẬN HÀNH TỰ HÀNH 24/7 (AUTO-PILOT)
 cat > /etc/cron.d/internetincome_arm64 << 'EOF_CRON'
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
@@ -629,7 +857,7 @@ chmod 644 /etc/cron.d/internetincome_arm64
 
 echo "=========================================================================="
 echo "  CÀI ĐẶT HOÀN TẤT: PROFILE ${TIER_NAME}"
-echo "  BẢN CHUYÊN BIỆT CHO CHIP ARM64 ĐÃ ĐƯỢC TỐI ƯU 100% ĐẦY ĐỦ NHẤT!"
+echo "  BẢN CHUYÊN BIỆT CHO CHIP ARM64 ĐÃ TÍCH HỢP 100% ĐẦY ĐỦ NHẤT!"
 echo "=========================================================================="
 /usr/local/bin/ii-status.sh || true
 ORACLE_ARM64_MASTER_EOF
