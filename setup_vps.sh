@@ -446,8 +446,8 @@ ii_profile() {
       P_APP="Adnade"; P_MEM=$(_p $t 320m 350m 400m 500m); P_SWAP=$(_p $t 600m 700m 800m 1000m)
       P_POLICY="on-failure:5"; P_VPS="resi" ;;
     earnapp*)
-      P_APP="EarnApp"; P_MEM=$(_p $t 65m 80m 100m 120m); P_SWAP=$(_p $t 130m 160m 200m 240m)
-      P_POLICY="on-failure:3"; P_VPS="ban"; P_MAXIP=1 ;;
+      P_APP="EarnApp"; P_MEM=$(_p $t 96m 128m 160m 192m); P_SWAP=$(_p $t 192m 256m 320m 384m)
+      P_POLICY="always"; P_VPS="ban"; P_MAXIP=1 ;;
 
     *)
       P_APP=""; P_POLICY="unless-stopped"; P_NOTE="Khong co ho so - giu mac dinh" ;;
@@ -477,7 +477,7 @@ ii_profile() {
   fi
 }
 
-II_SUSPEND_SENSITIVE="honey pawns packetstream packetshare earnfm wipter depinext ebesucher adnade earnapp repocket"
+II_SUSPEND_SENSITIVE="honey pawns packetstream packetshare earnfm wipter depinext ebesucher adnade repocket"
 ii_is_suspend_sensitive() {
   local n="${1:-}"
   for a in $II_SUSPEND_SENSITIVE; do
@@ -574,8 +574,6 @@ PROFILES=/usr/local/lib/ii-app-profiles.sh
 MEM_MB=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
 TIER_IDX=$(ii_tier_idx "$MEM_MB" 2>/dev/null || echo 1)
 
-find /root /opt /home /srv -maxdepth 4 -name "internetIncome.sh" -exec sed -i "s/--restart=always/--restart=unless-stopped/g" {} + 2>/dev/null || true
-find /root /opt /home /srv -maxdepth 4 -name "internetIncome.sh" -exec sed -i "s/--restart always/--restart=unless-stopped/g" {} + 2>/dev/null || true
 
 for cid in $(docker ps -aq 2>/dev/null); do
   c_img=$(docker inspect -f '{{.Config.Image}}' "$cid" 2>/dev/null || true)
