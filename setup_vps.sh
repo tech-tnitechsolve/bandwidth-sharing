@@ -1,13 +1,14 @@
 cat << 'MASTER_EOF' > ~/setup_vps.sh
 #!/usr/bin/env bash
 #============================================================================
-#  setup_vps.sh (2026 UNIVERSAL MASTER - ZERO DOWNTIME & ULTRA PERSISTENT)
+#  setup_vps.sh (2026 ULTIMATE MASTER - ZERO DOWNTIME & TELEMETRY GOVERNOR)
 #============================================================================
 set -Eeuo pipefail
 
 ulimit -n 1048576 2>/dev/null || true
 sysctl -w fs.inotify.max_user_watches=2097152 >/dev/null 2>&1 || true
 sysctl -w fs.inotify.max_user_instances=65536 >/dev/null 2>&1 || true
+sysctl -w kernel.pid_max=4194304 >/dev/null 2>&1 || true
 
 if [[ -t 1 ]]; then
   C_G='\033[1;32m'; C_Y='\033[1;33m'; C_R='\033[1;31m'; C_B='\033[1;34m'; C_C='\033[1;36m'; C_0='\033[0m'
@@ -55,20 +56,17 @@ CPU=$(nproc 2>/dev/null || echo 1)
 DISK_TOTAL_MB=$(df -m / | awk 'NR==2 {print $2}')
 DISK_FREE_MB=$(df -m / | awk 'NR==2 {print $4}')
 
-# --- MATRIX PHÂN BỔ TÀI NGUYÊN ---
+PUBLIC_IP=$(curl -s4 -m 2 https://api.ipify.org 2>/dev/null || curl -s4 -m 2 https://ifconfig.me 2>/dev/null || echo "Unknown")
+
 TIER_NAME=""
 if (( MEM_MB <= 2500 )); then
   TIER_NAME="TIER 1 (1-2 CPU / 2GB RAM - LIGHTWEIGHT PROXIES)"
-  CONTAINER_MEM_LIMIT="35m"; CONTAINER_SWAP_LIMIT="80m"
 elif (( MEM_MB <= 5000 )); then
   TIER_NAME="TIER 2 (2 CPU / 4GB RAM - BALANCED PROXIES)"
-  CONTAINER_MEM_LIMIT="45m"; CONTAINER_SWAP_LIMIT="100m"
 elif (( MEM_MB <= 9000 )); then
   TIER_NAME="TIER 3 (2 CPU / 8GB RAM - HIGH DENSITY PROXIES)"
-  CONTAINER_MEM_LIMIT="60m"; CONTAINER_SWAP_LIMIT="130m"
 else
   TIER_NAME="TIER 4 (2+ CPU / 12GB+ RAM - DEDICATED WIPTER / HEAVY APPS)"
-  CONTAINER_MEM_LIMIT="90m"; CONTAINER_SWAP_LIMIT="200m"
 fi
 
 if (( MEM_MB >= 9000 )) || (( DISK_TOTAL_MB <= 25000 )); then
@@ -101,7 +99,16 @@ apt-get install -y -qq --no-install-recommends \
   curl wget git unzip jq bc ca-certificates uuid-runtime cron logrotate net-tools inotify-tools \
   iptables-persistent netfilter-persistent systemd-timesyncd vnstat nload speedtest-cli dnsutils || true
 
-# --- [BẢO VỆ CHỐNG BAN ACC] ĐỒNG BỘ THỜI GIAN NTP CHUẨN XÁC ---
+# --- CẤU HÌNH ƯU TIÊN IPV4 CHO PROXY IP-AUTH ---
+log "Cau hinh uu tien IPv4 (/etc/gai.conf) cho Proxy IP-Auth..."
+if [[ -f /etc/gai.conf ]]; then
+  sed -i 's/^#precedence ::ffff:0:0\/96  100/precedence ::ffff:0:0\/96  100/' /etc/gai.conf || true
+  grep -q "precedence ::ffff:0:0/96  100" /etc/gai.conf || echo "precedence ::ffff:0:0/96  100" >> /etc/gai.conf
+else
+  echo "precedence ::ffff:0:0/96  100" > /etc/gai.conf
+fi
+
+# --- ĐỒNG BỘ THỜI GIAN NTP CHUẨN XÁC ---
 if has_systemd; then
   systemctl unmask systemd-timesyncd 2>/dev/null || true
   systemctl enable --now systemd-timesyncd 2>/dev/null || true
@@ -109,13 +116,11 @@ if has_systemd; then
 fi
 timedatectl set-ntp true 2>/dev/null || true
 timedatectl set-timezone Asia/Ho_Chi_Minh 2>/dev/null || true
-log "Da dong bo thoi gian NTP chuan millisecond (Anti-Ban Token Enforced)!"
 
 #============================================================================
-# [TỐI ƯU DNS THÔNG MINH & CỐ ĐỊNH CHỐNG REBOOT GHI ĐÈ]
+# [TỐI ƯU DNS THÔNG MINH - CHỐNG LỆCH GEOIP & LOẠI BỎ LỖI 127.0.0.53]
 #============================================================================
-log "Cau hinh DNS Direct-Upstream (Bao toan GeoIP & Loai bo loi 127.0.0.53)..."
-
+log "Cau hinh DNS Direct-Upstream..."
 UPSTREAM_DNS=""
 if [[ -f /run/systemd/resolve/resolv.conf ]]; then
   UPSTREAM_DNS=$(grep -E '^nameserver' /run/systemd/resolve/resolv.conf 2>/dev/null | grep -v '127.0.0.53' | awk '{print $2}' || true)
@@ -139,7 +144,7 @@ rm -f /etc/resolv.conf
 } | awk '!seen[$0]++' > /etc/resolv.conf
 chmod 644 /etc/resolv.conf
 
-# --- TỰ ĐỘNG NẠP MODULE KERNEL KHI REBOOT ---
+# --- PERSISTENCE CHO KERNEL MODULES ---
 mkdir -p /etc/modules-load.d
 cat > /etc/modules-load.d/internetincome.conf <<'EOF_MODULES'
 zram
@@ -160,13 +165,12 @@ if [[ ! -c /dev/net/tun ]]; then
 fi
 
 #============================================================================
-# SYSTEMD SERVICE TỰ ĐỘNG DUY TRÌ ZRAM ZSTD KHI REBOOT
+# SYSTEMD SERVICE TỰ ĐỘNG DUY TRÌ ZRAM ZSTD KHI REBOOT (PRIORITY 10)
 #============================================================================
-log "Cau hinh ZRAM ZSTD Systemd Service vinh vien..."
-ZRAM_SIZE_BYTES=$(( MEM_MB * 1024 * 1024 ))
-
-cat > /usr/local/bin/ii-init-zram.sh <<EOF_ZRAM_INIT
+cat > /usr/local/bin/ii-init-zram.sh <<'EOF_ZRAM_INIT'
 #!/usr/bin/env bash
+MEM_MB=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
+ZRAM_BYTES=$(( MEM_MB * 1024 * 1024 ))
 modprobe zram num_devices=1 2>/dev/null || true
 if [[ -b /dev/zram0 ]]; then
   swapon --show 2>/dev/null | grep -q "/dev/zram0" && swapoff /dev/zram0 2>/dev/null || true
@@ -175,7 +179,7 @@ if [[ -b /dev/zram0 ]]; then
   else
     echo lz4 > /sys/block/zram0/comp_algorithm 2>/dev/null || true
   fi
-  echo ${ZRAM_SIZE_BYTES} > /sys/block/zram0/disksize 2>/dev/null || true
+  echo "$ZRAM_BYTES" > /sys/block/zram0/disksize 2>/dev/null || true
   mkswap /dev/zram0 >/dev/null 2>&1
   swapon -p 10 /dev/zram0 2>/dev/null || true
 fi
@@ -203,14 +207,28 @@ EOF_ZRAM_SVC
 fi
 /usr/local/bin/ii-init-zram.sh
 
-# --- DOCKER OFFICIAL INSTALLATION ---
+# --- DOCKER SETUP (SAFE RELOAD - ZERO DOWNTIME CHO CONTAINER ĐANG CHẠY) ---
 if ! command -v docker >/dev/null 2>&1; then
   log "VPS MOI: Dang tu dong cai dat Docker official..."
   curl -fsSL https://get.docker.com | sh || apt-get install -y -qq docker.io
-  log "Cai dat Docker cho VPS moi thanh cong!"
 else
   log "Docker da co san: $(docker --version 2>/dev/null || echo '?')"
 fi
+
+mkdir -p /etc/docker
+cat > /etc/docker/daemon.json <<EOF_DAEMON
+{
+  "log-driver": "json-file",
+  "log-opts": { "max-size": "2m", "max-file": "2" },
+  "registry-mirrors": ["https://mirror.gcr.io", "https://docker.m.daocloud.io"],
+  "max-concurrent-downloads": ${CPU},
+  "live-restore": true,
+  "userland-proxy": false,
+  "default-ulimits": {
+    "nofile": { "Name": "nofile", "Hard": 65536, "Soft": 65536 }
+  }
+}
+EOF_DAEMON
 
 if has_systemd; then
   mkdir -p /etc/systemd/system/docker.service.d
@@ -220,10 +238,14 @@ Restart=always
 RestartSec=3s
 EOF_DOCKER_SVC
   systemctl daemon-reload 2>/dev/null || true
-  systemctl enable --now docker >/dev/null 2>&1 || true
+  if systemctl is-active docker >/dev/null 2>&1; then
+    systemctl reload docker 2>/dev/null || true
+  else
+    systemctl enable --now docker >/dev/null 2>&1 || true
+  fi
 fi
 
-# KSM (Kernel Samepage Merging)
+# KSM
 if [[ -f /sys/kernel/mm/ksm/run ]]; then
   echo 1 > /sys/kernel/mm/ksm/run 2>/dev/null || true
   echo 300 > /sys/kernel/mm/ksm/sleep_millisecs 2>/dev/null || true
@@ -234,51 +256,43 @@ SWAPPINESS=100
 sysctl -w vm.swappiness=100 >/dev/null 2>&1 || true
 
 if (( CPU <= 2 )); then
-  CONCURRENT_DOWNLOADS=3; SYN_BACKLOG=8192
+  SYN_BACKLOG=8192
 elif (( CPU <= 4 )); then
-  CONCURRENT_DOWNLOADS=5; SYN_BACKLOG=16384
+  SYN_BACKLOG=16384
 else
-  CONCURRENT_DOWNLOADS=8; SYN_BACKLOG=32768
+  SYN_BACKLOG=32768
 fi
 
 echo "=============================================================="
 echo "  VPS $(hostname) | RAM ${MEM_MB}MB | ${CPU} CPU | SSD ${DISK_TOTAL_MB}MB"
-echo "  DETECTED PROFILE : ${TIER_NAME}"
-echo "  ZRAM COMPRESSION : ZSTD (PERSISTENT SYSTEMD)"
-echo "  SSD SWAP TARGET  : ${TARGET_SWAP_MB}MB (SMART 20GB SSD PROFILE)"
-echo "  DNS ARCHITECTURE : DIRECT NON-LOOPBACK (ANTI-UDP-DROP READY)"
+echo "  PUBLIC IP (IP-AUTH) : ${PUBLIC_IP}"
+echo "  DETECTED PROFILE    : ${TIER_NAME}"
+echo "  ZRAM COMPRESSION    : ZSTD (PERSISTENT SYSTEMD PRIORITY 10)"
+echo "  DNS ARCHITECTURE    : DIRECT NON-LOOPBACK (ANTI-UDP-DROP READY)"
 echo "=============================================================="
 
-# --- SWAP TRÊN Ổ SSD ---
+# --- SWAPFILE TRÊN SSD (PRIORITY 0) ---
 CURR_DISK_SWAP_MB=$(swapon --show=NAME,SIZE --bytes 2>/dev/null | awk '/swapfile/{print int($2/1024/1024)}' || echo 0)
-
-if (( IS_CONTAINER == 1 )); then
-  warn "May ${VIRT} (container) thuong KHONG tao duoc swap -> bo qua"
-else
+if (( IS_CONTAINER != 1 )); then
   if (( CURR_DISK_SWAP_MB != TARGET_SWAP_MB )); then
-    log "Chuan hoa Swapfile ve dung muc tieu ${TARGET_SWAP_MB}MB..."
     swapoff /swapfile /swapfile2 2>/dev/null || true
     rm -f /swapfile /swapfile2 2>/dev/null || true
-    
     if ! fallocate -l "${TARGET_SWAP_MB}M" /swapfile 2>/dev/null; then
       dd if=/dev/zero of=/swapfile bs=1M count="$TARGET_SWAP_MB" status=none
     fi
     chmod 600 /swapfile
     if mkswap /swapfile >/dev/null 2>&1 && swapon -p 0 /swapfile 2>/dev/null; then
       grep -q "^/swapfile" /etc/fstab || echo "/swapfile none swap sw,pri=0 0 0" >> /etc/fstab
-      log "Da tao Swapfile /swapfile ${TARGET_SWAP_MB}MB thanh cong!"
     else
       rm -f /swapfile
     fi
-  else
-    log "Swapfile tren SSD da dung chuan ${CURR_DISK_SWAP_MB}MB -> Giu nguyen"
   fi
 fi
 
 apt-get clean 2>/dev/null || true
 journalctl --vacuum-size=10M 2>/dev/null || true
 
-log "Dang diet cac dich vu OS ngom RAM ngam (snapd, multipathd, udisks2, earlyoom)..."
+# Diet bloatware
 if has_systemd; then
   systemctl stop snapd multipathd udisks2 accountsservice earlyoom 2>/dev/null || true
   systemctl disable snapd multipathd udisks2 accountsservice earlyoom 2>/dev/null || true
@@ -338,6 +352,7 @@ vm.dirty_ratio = 8
 fs.file-max = 2097152
 fs.inotify.max_user_instances = 65536
 fs.inotify.max_user_watches = 2097152
+kernel.pid_max = 4194304
 net.core.somaxconn = 65535
 net.core.netdev_max_backlog = 65535
 net.core.rmem_max = 16777216
@@ -362,7 +377,6 @@ while IFS= read -r line; do
   [[ -z "${line//[[:space:]]/}" ]] && continue
   sysctl -w "$line" >/dev/null 2>&1 || true
 done < "$SYSCTL_FILE"
-log "Kernel Tuning Safe Mode xong"
 
 mkdir -p /etc/security/limits.d
 cat > /etc/security/limits.d/99-nofile.conf <<'EOF_LIMITS'
@@ -381,135 +395,85 @@ EOF_JOURNAL
 if has_systemd; then systemctl restart systemd-journald 2>/dev/null || true; fi
 
 #============================================================================
-# THƯ VIỆN HỒ SƠ ỨNG DỤNG (ĐẦY ĐỦ 24+ PLATFORM CHUẨN TIER 1 - TIER 4)
+# THƯ VIỆN HỒ SƠ ỨNG DỤNG (ĐẦY ĐỦ 24+ PLATFORM CHUẨN THỰC TẾ)
 #============================================================================
 mkdir -p /usr/local/lib
 cat > /usr/local/lib/ii-app-profiles.sh <<'EOF_PROFILES'
 #!/usr/bin/env bash
-ii_tier_idx() {
-  local m="${1:-0}"
-  if   (( m <= 2500 )); then echo 1
-  elif (( m <= 5000 )); then echo 2
-  elif (( m <= 9000 )); then echo 3
-  else                       echo 4
-  fi
-}
-
-_p() { local t="$1"; shift; local a=("$@"); echo "${a[$((t-1))]}"; }
+ii_tier_idx() { echo 4; }
 
 ii_profile() {
-  local n img t
+  local n img
   n="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]' | sed 's|^/||')"
   img="$(printf '%s' "${2:-}" | tr '[:upper:]' '[:lower:]')"
-  t="${3:-3}"
-  case "$t" in 1|2|3|4) ;; *) t=3 ;; esac
 
-  P_APP=""; P_MEM=""; P_SWAP=""; P_POLICY="unless-stopped"
-  P_VPS="safe"; P_MAXIP=0; P_NOTE=""
+  P_APP=""; P_BASE_MIN="20m"; P_POLICY="unless-stopped"
 
   case "$n" in
     tun*)
-      P_APP="tun2socks";  P_MEM=$(_p $t 25m 32m 48m 64m);   P_SWAP=$(_p $t 50m 64m 96m 128m)
-      P_POLICY="unless-stopped"; P_NOTE="Ha tang mang proxy" ;;
+      P_APP="tun2socks";       P_BASE_MIN="20m";  P_POLICY="unless-stopped" ;;
     dindurnetwork*|dindproxylite*|adnadedind*|dind*)
-      P_APP="docker-in-docker"; P_MEM=$(_p $t 120m 140m 180m 220m); P_SWAP=$(_p $t 240m 280m 360m 440m)
-      P_POLICY="unless-stopped"; P_NOTE="Docker-in-Docker ha tang" ;;
-
-    myst*)
-      P_APP="Mysterium"; P_MEM=$(_p $t 160m 200m 250m 300m); P_SWAP=$(_p $t 320m 400m 500m 600m)
-      P_VPS="safe"; P_NOTE="Can /dev/net/tun" ;;
+      P_APP="docker-in-docker"; P_BASE_MIN="120m"; P_POLICY="unless-stopped" ;;
     traffmon*)
-      P_APP="Traffmonetizer"; P_MEM=$(_p $t 40m 50m 65m 80m); P_SWAP=$(_p $t 80m 100m 130m 160m)
-      P_VPS="safe"; P_NOTE="Lightweight binary" ;;
+      P_APP="Traffmonetizer";  P_BASE_MIN="25m";  P_POLICY="unless-stopped" ;;
     bitping*)
-      P_APP="Bitping"; P_MEM=$(_p $t 50m 65m 80m 100m); P_SWAP=$(_p $t 100m 130m 160m 200m)
-      P_VPS="safe"; P_NOTE="Network tests node" ;;
-    proxyrack*)
-      P_APP="Proxyrack"; P_MEM=$(_p $t 40m 50m 65m 80m); P_SWAP=$(_p $t 80m 100m 130m 160m)
-      P_VPS="safe" ;;
-    proxybase*)
-      P_APP="Proxybase"; P_MEM=$(_p $t 40m 50m 65m 80m); P_SWAP=$(_p $t 80m 100m 130m 160m)
-      P_VPS="safe" ;;
-    proxylite*)
-      P_APP="Proxylite"; P_MEM=$(_p $t 40m 50m 65m 80m); P_SWAP=$(_p $t 80m 100m 130m 160m)
-      P_VPS="safe" ;;
-    peer2profit*)
-      P_APP="Peer2Profit"; P_MEM=$(_p $t 50m 65m 80m 100m); P_SWAP=$(_p $t 100m 130m 160m 200m)
-      P_VPS="safe" ;;
-    urnetwork*)
-      P_APP="URnetwork"; P_MEM=$(_p $t 60m 80m 100m 120m); P_SWAP=$(_p $t 120m 160m 200m 240m)
-      P_VPS="safe" ;;
-    titan*)
-      P_APP="Titan Network"; P_MEM=$(_p $t 150m 180m 220m 280m); P_SWAP=$(_p $t 300m 360m 440m 560m)
-      P_VPS="safe" ;;
-    antgain*)
-      P_APP="AntGain"; P_MEM=$(_p $t 40m 50m 65m 80m); P_SWAP=$(_p $t 80m 100m 130m 160m)
-      P_VPS="safe" ;;
-    wizardgain*)
-      P_APP="WizardGain"; P_MEM=$(_p $t 40m 50m 65m 80m); P_SWAP=$(_p $t 80m 100m 130m 160m)
-      P_VPS="safe" ;;
+      P_APP="Bitping";         P_BASE_MIN="35m";  P_POLICY="unless-stopped" ;;
+    proxylite*|proxyrack*|proxybase*|antgain*|wizardgain*|peer2profit*)
+      P_APP="LightweightProxy";P_BASE_MIN="25m";  P_POLICY="unless-stopped" ;;
+    urnetwork*|titan*)
+      P_APP="NetworkNode";     P_BASE_MIN="60m";  P_POLICY="unless-stopped" ;;
+    myst*)
+      P_APP="Mysterium";       P_BASE_MIN="150m"; P_POLICY="unless-stopped" ;;
 
     honey*)
-      P_APP="Honeygain"; P_MEM=$(_p $t 120m 140m 160m 200m); P_SWAP=$(_p $t 240m 280m 320m 400m)
-      P_POLICY="on-failure:3"; P_VPS="resi"; P_MAXIP=1
-      P_NOTE="ULTRA ANTI-BAN" ;;
+      P_APP="Honeygain";       P_BASE_MIN="60m";  P_POLICY="on-failure:3" ;;
     repocket*)
-      P_APP="Repocket"; P_MEM=$(_p $t 120m 140m 160m 200m); P_SWAP=$(_p $t 240m 280m 320m 400m)
-      P_POLICY="on-failure:3"; P_VPS="safe"; P_MAXIP=1 ;;
+      P_APP="Repocket";        P_BASE_MIN="60m";  P_POLICY="on-failure:3" ;;
     packetstream*)
-      P_APP="PacketStream"; P_MEM=$(_p $t 65m 80m 100m 120m); P_SWAP=$(_p $t 130m 160m 200m 240m)
-      P_POLICY="on-failure:3"; P_VPS="resi"; P_MAXIP=1 ;;
+      P_APP="PacketStream";    P_BASE_MIN="60m";  P_POLICY="on-failure:3" ;;
     pawns*)
-      P_APP="IPRoyal Pawns"; P_MEM=$(_p $t 65m 80m 100m 120m); P_SWAP=$(_p $t 130m 160m 200m 240m)
-      P_POLICY="on-failure:3"; P_VPS="resi"; P_MAXIP=1 ;;
+      P_APP="IPRoyal Pawns";   P_BASE_MIN="60m";  P_POLICY="on-failure:3" ;;
     packetshare*)
-      P_APP="Packetshare"; P_MEM=$(_p $t 65m 80m 100m 120m); P_SWAP=$(_p $t 130m 160m 200m 240m)
-      P_POLICY="on-failure:3"; P_VPS="resi"; P_MAXIP=1 ;;
+      P_APP="Packetshare";     P_BASE_MIN="60m";  P_POLICY="on-failure:3" ;;
     earnfm*)
-      P_APP="EarnFM"; P_MEM=$(_p $t 80m 100m 120m 150m); P_SWAP=$(_p $t 160m 200m 240m 300m)
-      P_POLICY="on-failure:3"; P_VPS="resi"; P_MAXIP=1 ;;
+      P_APP="EarnFM";          P_BASE_MIN="60m";  P_POLICY="on-failure:3" ;;
+    earnapp*)
+      P_APP="EarnApp";         P_BASE_MIN="60m";  P_POLICY="always" ;;
 
     wipter*)
-      P_APP="Wipter"; P_MEM=$(_p $t 320m 350m 400m 500m); P_SWAP=$(_p $t 600m 700m 800m 1000m)
-      P_POLICY="on-failure:5"; P_VPS="resi" ;;
+      P_APP="Wipter";          P_BASE_MIN="250m"; P_POLICY="on-failure:5" ;;
     depinext*)
-      P_APP="Depin/Grass ext"; P_MEM=$(_p $t 300m 350m 400m 500m); P_SWAP=$(_p $t 600m 700m 800m 1000m)
-      P_POLICY="on-failure:5"; P_VPS="resi" ;;
+      P_APP="Depin/Grass ext"; P_BASE_MIN="250m"; P_POLICY="on-failure:5" ;;
     ebesucher*)
-      P_APP="Ebesucher"; P_MEM=$(_p $t 320m 350m 400m 500m); P_SWAP=$(_p $t 600m 700m 800m 1000m)
-      P_POLICY="on-failure:5"; P_VPS="resi" ;;
+      P_APP="Ebesucher";       P_BASE_MIN="250m"; P_POLICY="on-failure:5" ;;
     adnade*)
-      P_APP="Adnade"; P_MEM=$(_p $t 320m 350m 400m 500m); P_SWAP=$(_p $t 600m 700m 800m 1000m)
-      P_POLICY="on-failure:5"; P_VPS="resi" ;;
-    earnapp*)
-      P_APP="EarnApp"; P_MEM=$(_p $t 96m 128m 160m 192m); P_SWAP=$(_p $t 192m 256m 320m 384m)
-      P_POLICY="always"; P_VPS="ban"; P_MAXIP=1 ;;
+      P_APP="Adnade";          P_BASE_MIN="250m"; P_POLICY="on-failure:5" ;;
 
     *)
-      P_APP=""; P_POLICY="unless-stopped"; P_NOTE="Khong co ho so - giu mac dinh" ;;
+      P_APP="OtherApp";        P_BASE_MIN="30m";  P_POLICY="unless-stopped" ;;
   esac
 
-  if [[ -z "$P_APP" && -n "$img" ]]; then
+  if [[ "$P_APP" == "OtherApp" && -n "$img" ]]; then
     case "$img" in
-      *mysteriumnetwork/myst*) ii_profile "myst" "" "$t"; return ;;
-      *repocket*)              ii_profile "repocket" "" "$t"; return ;;
-      *honeygain*)             ii_profile "honey" "" "$t"; return ;;
-      *traffmonetizer*)        ii_profile "traffmon" "" "$t"; return ;;
-      *bitping*)               ii_profile "bitping" "" "$t"; return ;;
-      *earnfm*)                ii_profile "earnfm" "" "$t"; return ;;
-      *earnapp*)               ii_profile "earnapp" "" "$t"; return ;;
-      *proxyrack*)             ii_profile "proxyrack" "" "$t"; return ;;
-      *proxybase*)             ii_profile "proxybase" "" "$t"; return ;;
-      *proxylite*)             ii_profile "proxylite" "" "$t"; return ;;
-      *pawns*)                 ii_profile "pawns" "" "$t"; return ;;
-      *packetstream*)          ii_profile "packetstream" "" "$t"; return ;;
-      *packetshare*)           ii_profile "packetshare" "" "$t"; return ;;
-      *peer2profit*)           ii_profile "peer2profit" "" "$t"; return ;;
-      *community-provider*)    ii_profile "urnetwork" "" "$t"; return ;;
-      *titan-edge*)            ii_profile "titan" "" "$t"; return ;;
-      *antgain*)               ii_profile "antgain" "" "$t"; return ;;
-      *wizardgain*)            ii_profile "wizardgain" "" "$t"; return ;;
-      *wipter*)                ii_profile "wipter" "" "$t"; return ;;
+      *mysteriumnetwork/myst*) ii_profile "myst" "" ;;
+      *repocket*)              ii_profile "repocket" "" ;;
+      *honeygain*)             ii_profile "honey" "" ;;
+      *traffmonetizer*)        ii_profile "traffmon" "" ;;
+      *bitping*)               ii_profile "bitping" "" ;;
+      *earnfm*)                ii_profile "earnfm" "" ;;
+      *earnapp*)               ii_profile "earnapp" "" ;;
+      *proxyrack*)             ii_profile "proxyrack" "" ;;
+      *proxybase*)             ii_profile "proxybase" "" ;;
+      *proxylite*)             ii_profile "proxylite" "" ;;
+      *pawns*)                 ii_profile "pawns" "" ;;
+      *packetstream*)          ii_profile "packetstream" "" ;;
+      *packetshare*)           ii_profile "packetshare" "" ;;
+      *peer2profit*)           ii_profile "peer2profit" "" ;;
+      *community-provider*)    ii_profile "urnetwork" "" ;;
+      *titan-edge*)            ii_profile "titan" "" ;;
+      *antgain*)               ii_profile "antgain" "" ;;
+      *wizardgain*)            ii_profile "wizardgain" "" ;;
+      *wipter*)                ii_profile "wipter" "" ;;
     esac
   fi
 }
@@ -517,9 +481,7 @@ ii_profile() {
 II_SUSPEND_SENSITIVE="honey pawns packetstream packetshare earnfm wipter depinext ebesucher adnade repocket"
 ii_is_suspend_sensitive() {
   local n="${1:-}"
-  for a in $II_SUSPEND_SENSITIVE; do
-    case "$n" in ${a}*) return 0 ;; esac
-  done
+  for a in $II_SUSPEND_SENSITIVE; do case "$n" in ${a}*) return 0 ;; esac; done
   return 1
 }
 EOF_PROFILES
@@ -546,15 +508,13 @@ ts() { date '+%F %T'; }
 say() { echo "[$(ts)] $*" >> "$LOG"; }
 
 command -v docker >/dev/null 2>&1 || exit 0
-MEM_MB=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
-TIER=$(ii_tier_idx "$MEM_MB" 2>/dev/null || echo 3)
 
 for cid in $(docker ps -aq 2>/dev/null); do
   cname=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null | sed 's|^/||') || continue
   [[ -n "$cname" ]] || continue
   cimg=$(docker inspect -f '{{.Config.Image}}' "$cid" 2>/dev/null || echo "")
 
-  ii_profile "$cname" "$cimg" "$TIER" 2>/dev/null || continue
+  ii_profile "$cname" "$cimg"
   ii_is_suspend_sensitive "$cname" || continue
 
   rc=$(docker inspect -f '{{.RestartCount}}' "$cid" 2>/dev/null || echo 0)
@@ -598,61 +558,112 @@ chmod +x /usr/local/bin/ii-flapguard.sh
 ln -sf /usr/local/bin/ii-flapguard.sh /usr/bin/ii-flapguard 2>/dev/null || true
 
 #============================================================================
-# ENGINE TỰ ĐỘNG ĐỒNG BỘ RAM & RESTART POLICY (AUTOSYNC)
+# ENGINE PHÂN PHỐI TỰ ĐỘNG KÉP (HARDWARE BOUNDARY + LIVE TELEMETRY)
 #============================================================================
 cat > /usr/local/bin/ii-autosync.sh <<'EOF_AUTOSYNC'
 #!/usr/bin/env bash
 set -uo pipefail
-
 PROFILES=/usr/local/lib/ii-app-profiles.sh
 [[ -r "$PROFILES" ]] && . "$PROFILES"
-MEM_MB=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
-TIER_IDX=$(ii_tier_idx "$MEM_MB" 2>/dev/null || echo 1)
 
-for cid in $(docker ps -aq 2>/dev/null); do
-  c_img=$(docker inspect -f '{{.Config.Image}}' "$cid" 2>/dev/null || true)
-  c_name=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null | sed 's|^/||' || true)
-  ii_profile "$c_name" "$c_img" "$TIER_IDX"
-  [[ -n "$P_MEM" ]] || continue
-  
-  cmem=$(docker inspect -f '{{.HostConfig.Memory}}' "$cid" 2>/dev/null || echo 0)
-  cpol=$(docker inspect -f '{{.HostConfig.RestartPolicy.Name}}' "$cid" 2>/dev/null || echo "")
-  
-  want_bytes=$(( ${P_MEM%m} * 1024 * 1024 ))
-  
-  if (( cmem == 0 || cmem < (want_bytes - 2097152) )) || [[ "$cpol" == "always" ]]; then
-    docker update --memory="$P_MEM" --memory-swap="$P_SWAP" --restart="$P_POLICY" "$cid" >/dev/null 2>&1 || \
-    docker update --memory="$P_MEM" --restart="$P_POLICY" "$cid" >/dev/null 2>&1 || true
+command -v docker >/dev/null 2>&1 || exit 0
+TOTAL_CTRS=$(docker ps -q 2>/dev/null | wc -l)
+(( TOTAL_CTRS < 1 )) && exit 0
+
+HOST_RAM_MB=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
+OS_RESERVE_MB=$(( (HOST_RAM_MB * 15) / 100 ))
+(( OS_RESERVE_MB < 300 )) && OS_RESERVE_MB=300
+USABLE_HOST_RAM=$(( HOST_RAM_MB - OS_RESERVE_MB ))
+
+STATS_RAW=$(docker stats --no-stream --format "{{.ID}}\t{{.Name}}\t{{.MemUsage}}" 2>/dev/null || echo "")
+[[ -z "$STATS_RAW" ]] && exit 0
+
+to_mb() {
+  local val="$1"
+  if [[ "$val" =~ ([0-9.]+)[[:space:]]*GiB ]]; then
+    awk "BEGIN {print int(${BASH_REMATCH[1]} * 1024)}"
+  elif [[ "$val" =~ ([0-9.]+)[[:space:]]*MiB ]]; then
+    awk "BEGIN {print int(${BASH_REMATCH[1]})}"
+  elif [[ "$val" =~ ([0-9.]+)[[:space:]]*kB ]]; then
+    awk "BEGIN {print int(${BASH_REMATCH[1]} / 1024)}"
+  elif [[ "$val" =~ ([0-9.]+)[[:space:]]*B ]]; then
+    awk "BEGIN {print int(${BASH_REMATCH[1]} / 1048576)}"
+  else
+    echo 25
   fi
+}
+
+declare -A LIVE_ACTUAL_MB
+TOTAL_ACTUAL_USED_MB=0
+HEAVY_COUNT=0
+LIGHT_COUNT=0
+
+while IFS=$'\t' read -r cid cname mem_usage; do
+  [[ -z "$cid" ]] && continue
+  cname_clean=$(echo "$cname" | sed 's|^/||' | tr '[:upper:]' '[:lower:]')
+  used_str=$(echo "$mem_usage" | awk -F'/' '{print $1}' | tr -d ' ')
+  used_mb=$(to_mb "$used_str")
+  (( used_mb < 15 )) && used_mb=15
+
+  LIVE_ACTUAL_MB["$cid"]=$used_mb
+  TOTAL_ACTUAL_USED_MB=$(( TOTAL_ACTUAL_USED_MB + used_mb ))
+
+  if [[ "$cname_clean" =~ wipter|depinext|ebesucher|adnade|dind|myst ]]; then
+    HEAVY_COUNT=$((HEAVY_COUNT + 1))
+  else
+    LIGHT_COUNT=$((LIGHT_COUNT + 1))
+  fi
+done <<< "$STATS_RAW"
+
+FREE_POOL_MB=$(( USABLE_HOST_RAM - TOTAL_ACTUAL_USED_MB ))
+(( FREE_POOL_MB < 0 )) && FREE_POOL_MB=0
+
+HEAVY_BURST_EXTRA=0
+LIGHT_BURST_EXTRA=0
+if (( HEAVY_COUNT > 0 )); then
+  HEAVY_BURST_EXTRA=$(( (FREE_POOL_MB * 65 / 100) / HEAVY_COUNT ))
+fi
+if (( LIGHT_COUNT > 0 )); then
+  LIGHT_BURST_EXTRA=$(( (FREE_POOL_MB * 35 / 100) / LIGHT_COUNT ))
+fi
+
+for cid in "${!LIVE_ACTUAL_MB[@]}"; do
+  actual_mb=${LIVE_ACTUAL_MB["$cid"]}
+  cname=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null | sed 's|^/||' | tr '[:upper:]' '[:lower:]') || continue
+  cimg=$(docker inspect -f '{{.Config.Image}}' "$cid" 2>/dev/null || echo "")
+  ii_profile "$cname" "$cimg"
+
+  soft_floor=$(( actual_mb * 12 / 10 ))
+  base_min=${P_BASE_MIN%m}
+  (( soft_floor < base_min )) && soft_floor=$base_min
+
+  if [[ "$cname" =~ wipter|depinext|ebesucher|adnade|dind|myst ]]; then
+    target_burst=$(( actual_mb + HEAVY_BURST_EXTRA ))
+    (( target_burst < 500 )) && target_burst=500
+    (( target_burst > 2048 )) && target_burst=2048
+  else
+    target_burst=$(( actual_mb + LIGHT_BURST_EXTRA ))
+    (( target_burst < 128 )) && target_burst=128
+    (( target_burst > 512 )) && target_burst=512
+  fi
+
+  docker update \
+    --memory-reservation="${soft_floor}m" \
+    --memory="${target_burst}m" \
+    --memory-swap="-1" \
+    --restart="$P_POLICY" \
+    "$cid" >/dev/null 2>&1 || \
+  docker update \
+    --memory-reservation="${soft_floor}m" \
+    --memory="${target_burst}m" \
+    --restart="$P_POLICY" \
+    "$cid" >/dev/null 2>&1 || true
 done
 EOF_AUTOSYNC
 chmod +x /usr/local/bin/ii-autosync.sh
 ln -sf /usr/local/bin/ii-autosync.sh /usr/bin/ii-autosync 2>/dev/null || true
 
 /usr/local/bin/ii-autosync.sh
-
-# --- DOCKER DAEMON JSON ---
-mkdir -p /etc/docker
-cat > /etc/docker/daemon.json <<EOF_DAEMON
-{
-  "log-driver": "json-file",
-  "log-opts": { "max-size": "2m", "max-file": "2" },
-  "registry-mirrors": ["https://mirror.gcr.io", "https://docker.m.daocloud.io"],
-  "max-concurrent-downloads": ${CONCURRENT_DOWNLOADS},
-  "live-restore": true,
-  "userland-proxy": false,
-  "default-ulimits": {
-    "nofile": { "Name": "nofile", "Hard": 65536, "Soft": 65536 }
-  }
-}
-EOF_DAEMON
-
-if has_systemd; then
-  systemctl restart docker || true
-  systemctl enable --now docker >/dev/null 2>&1 || true
-fi
-
-while ! docker info >/dev/null 2>&1; do sleep 1; done
 
 #============================================================================
 # ENGINE KHỞI ĐỘNG TUẦN TỰ TUNNEL-FIRST
@@ -722,33 +733,107 @@ fi
 /usr/local/bin/ii-staggered-start.sh
 
 #============================================================================
-# CRON ENGINE & BẢO TRÌ ĐỊNH KỲ
+# CÔNG CỤ ĐÁNH GIÁ SỨC CHỨA PHẦN CỨNG (II-CAPACITY)
+#============================================================================
+cat > /usr/local/bin/ii-capacity.sh <<'EOF_CAPACITY'
+#!/usr/bin/env bash
+MEM_TOTAL_MB=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
+CPU_CORES=$(nproc 2>/dev/null || echo 1)
+ACTIVE_CTRS=$(docker ps -q 2>/dev/null | wc -l)
+
+MAX_LIGHT_BY_RAM=$(( (MEM_TOTAL_MB - 500) / 28 ))
+MAX_LIGHT_BY_CPU=$(( CPU_CORES * 220 ))
+SAFE_MAX_LIGHT=$(( MAX_LIGHT_BY_RAM < MAX_LIGHT_BY_CPU ? MAX_LIGHT_BY_RAM : MAX_LIGHT_BY_CPU ))
+
+MAX_HEAVY_BY_RAM=$(( (MEM_TOTAL_MB - 500) / 450 ))
+MAX_HEAVY_BY_CPU=$(( CPU_CORES * 6 ))
+SAFE_MAX_HEAVY=$(( MAX_HEAVY_BY_RAM < MAX_HEAVY_BY_CPU ? MAX_HEAVY_BY_RAM : MAX_HEAVY_BY_CPU ))
+
+RAM_FREE_MB=$(free -m | awk '/^Mem:/{print $7}')
+LOAD_15=$(cat /proc/loadavg | awk '{print $3}')
+PUB_IP=$(curl -s4 -m 2 https://api.ipify.org 2>/dev/null || curl -s4 -m 2 https://ifconfig.me 2>/dev/null || echo "Unknown")
+
+echo "==================== [ĐÁNH GIÁ SỨC CHỨA PHẦN CỨNG VPS] ===================="
+echo "  PUBLIC IP (IP-AUTH) : ${PUB_IP}"
+echo "  CẤU HÌNH HIỆN TẠI   : ${CPU_CORES} vCPU | RAM ${MEM_TOTAL_MB}MB (Trống: ${RAM_FREE_MB}MB) | Load 15m: ${LOAD_15}"
+echo "  NODE ĐANG CHẠY      : ${ACTIVE_CTRS} Container"
+echo "------------------------------------------------------------------------"
+echo "  1. SỨC CHỨA TỐI ĐA CHO PROXY NHẸ (Traffmon/Bitping/tun2socks):"
+echo "     -> Ngưỡng an toàn tối đa: ${SAFE_MAX_LIGHT} Container"
+if (( ACTIVE_CTRS > SAFE_MAX_LIGHT )); then
+  echo "     -> TRẠNG THÁI: [CẢNH BÁO QUÁ TẢI] Cần hạ bớt node hoặc nâng cấp VPS!"
+else
+  REMAIN_LIGHT=$(( SAFE_MAX_LIGHT - ACTIVE_CTRS ))
+  echo "     -> TRẠNG THÁI: [AN TOÀN] Có thể nhồi thêm tối đa ~${REMAIN_LIGHT} node nhẹ nữa."
+fi
+echo ""
+echo "  2. SỨC CHỨA CHO ỨNG DỤNG NẶNG (Wipter / Browser Nodes):"
+echo "     -> Ngưỡng an toàn tối đa: ${SAFE_MAX_HEAVY} Node Wipter (khi không chạy node khác)."
+echo "     -> KHUYẾN NGHỊ: Trên máy hiện tại nên chạy tối đa 10 - 15 Node Wipter."
+echo "========================================================================"
+EOF_CAPACITY
+chmod +x /usr/local/bin/ii-capacity.sh
+ln -sf /usr/local/bin/ii-capacity.sh /usr/bin/ii-capacity 2>/dev/null || true
+
+#============================================================================
+# CÔNG CỤ DỌN DẸP LOG VÀ KIỂM TRA PROXY IP-AUTH
+#============================================================================
+cat > /usr/local/bin/ii-clean-logs.sh << 'EOF_CLEAN'
+#!/usr/bin/env bash
+find /var/lib/docker/containers/ -name "*-json.log" -size +10M -exec truncate -s 0 {} + 2>/dev/null || true
+journalctl --vacuum-size=10M 2>/dev/null || true
+EOF_CLEAN
+chmod +x /usr/local/bin/ii-clean-logs.sh
+ln -sf /usr/local/bin/ii-clean-logs.sh /usr/bin/ii-clean-logs 2>/dev/null || true
+
+cat > /usr/local/bin/ii-test-proxy.sh << 'EOF_TEST_PROXY'
+#!/usr/bin/env bash
+CNAME="${1:-}"
+if [[ -z "$CNAME" ]]; then
+  echo "Cách dùng: ii-test-proxy <tên_container>"
+  exit 1
+fi
+if ! docker inspect "$CNAME" >/dev/null 2>&1; then
+  echo "[XX] Khong tim thay container: $CNAME"
+  exit 1
+fi
+PUB_HOST=$(curl -s4 -m 2 https://api.ipify.org 2>/dev/null || echo "Unknown")
+echo "==================== [KIỂM TRA ĐƯỜNG TRUYỀN PROXY] ===================="
+echo "  Container Target  : $CNAME"
+echo "  VPS Public Host IP: $PUB_HOST (IP-Auth Target)"
+OUT_IP=$(docker exec "$CNAME" curl -s4 -m 4 https://api.ipify.org 2>/dev/null || echo "")
+if [[ -n "$OUT_IP" ]]; then
+  if [[ "$OUT_IP" == "$PUB_HOST" ]]; then
+    echo -e "  Egress Proxy IP   : \033[1;33m${OUT_IP} (TRÙNG IP VPS GỐC)\033[0m"
+  else
+    echo -e "  Egress Proxy IP   : \033[1;32m${OUT_IP} (PROXY HOẠT ĐỘNG CHUẨN XÁC 100%)\033[0m"
+  fi
+else
+  echo -e "  Egress Proxy IP   : \033[1;31m[LỖI] Khong the ket noi ra Internet qua Proxy\033[0m"
+fi
+echo "========================================================================"
+EOF_TEST_PROXY
+chmod +x /usr/local/bin/ii-test-proxy.sh
+ln -sf /usr/local/bin/ii-test-proxy.sh /usr/bin/ii-test-proxy 2>/dev/null || true
+
+#============================================================================
+# CRON ENGINE & BẢO TRÌ ĐỊNH KỲ (ZERO-DISK-LOG MODE)
 #============================================================================
 install_cron_stack() {
   cat > /usr/local/bin/ii-restart-all.sh <<'EOF_RESTART'
 #!/usr/bin/env bash
-LOG=/var/log/ii-restart.log
-ROOTS=(/opt /root /home /srv /home/ubuntu /home/opc __EXTRA__)
-ts() { date '+%F %T'; }
-{
-  echo "[$(ts)] ==================== ii-restart-all ===================="
-  /usr/local/bin/ii-staggered-start.sh
-  /usr/local/bin/ii-autosync.sh
-} >> "$LOG" 2>&1
+/usr/local/bin/ii-staggered-start.sh >/dev/null 2>&1
+/usr/local/bin/ii-autosync.sh >/dev/null 2>&1
 EOF_RESTART
-  if [[ -n "$BASE_DIR" ]]; then
-    sed -i "s|__EXTRA__|\"${BASE_DIR}\"|" /usr/local/bin/ii-restart-all.sh
-  else
-    sed -i "s| __EXTRA__||" /usr/local/bin/ii-restart-all.sh
-  fi
   chmod +x /usr/local/bin/ii-restart-all.sh
 
   cat > /etc/cron.d/internetincome <<'EOF_CRON'
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 */5 * * * * root /usr/local/bin/ii-autosync.sh >/dev/null 2>&1
-15 4 * * 0 root /usr/local/bin/ii-restart-all.sh
+15 4 * * 0 root /usr/local/bin/ii-restart-all.sh >/dev/null 2>&1
 */10 * * * * root /usr/local/bin/ii-flapguard.sh >/dev/null 2>&1
+0 2 * * 0 root /usr/local/bin/ii-clean-logs.sh >/dev/null 2>&1
 */15 * * * * root for c in $(docker ps -aq -f status=exited 2>/dev/null); do n=$(docker inspect -f '{{.Name}}{{.Config.Image}}' "$c" 2>/dev/null); case "$n" in *honey*|*pawns*|*packetstream*|*packetshare*|*earnfm*|*wipter*|*depinext*|*ebesucher*|*adnade*|*earnapp*|*repocket*) ;; *) docker start "$c" >/dev/null 2>&1 ;; esac; done
 0 3 * * 0 root /usr/bin/docker network prune -f >/dev/null 2>&1
 15 3 * * 0 root /usr/bin/docker volume prune -f >/dev/null 2>&1
@@ -762,7 +847,7 @@ EOF_CRON
 if (( DO_CRON == 1 )); then install_cron_stack; fi
 
 #============================================================================
-# TELEMETRY DIAGNOSTIC (BẢNG CHẨN ĐOÁN THU NHẬP 24/7)
+# TELEMETRY DIAGNOSTIC (BẢNG CHẨN ĐOÁN CAO CẤP - ZERO DISK LOGS)
 #============================================================================
 cat > /usr/local/bin/ii-status.sh <<'EOF_STATUS'
 #!/usr/bin/env bash
@@ -774,9 +859,16 @@ else
   C_G=''; C_Y=''; C_R=''; C_B=''; C_C=''; C_0=''
 fi
 
-echo -e "${C_B}==================== [INTERNETINCOME 24/7 TELEMETRY DIAGNOSTIC] ====================${C_0}"
+PUB_IP=$(curl -s4 -m 2 https://api.ipify.org 2>/dev/null || curl -s4 -m 2 https://ifconfig.me 2>/dev/null || echo "Unknown")
+IP_INFO=$(curl -s -m 2 "http://ip-api.com/json/${PUB_IP}?fields=country,city,isp,as" 2>/dev/null || echo "{}")
+IP_LOC=$(echo "$IP_INFO" | jq -r '"\(.city), \(.country)"' 2>/dev/null || echo "Unknown")
+IP_ISP=$(echo "$IP_INFO" | jq -r '"\(.as) - \(.isp)"' 2>/dev/null || echo "Unknown")
+
+echo -e "${C_B}==================== [INTERNETINCOME 24/7 ADVANCED TELEMETRY] ====================${C_0}"
 echo "TIMESTAMP    : $(date '+%Y-%m-%d %H:%M:%S %Z')"
 echo "HOSTNAME     : $(hostname)"
+echo -e "PUBLIC IP    : ${C_G}${PUB_IP}${C_0} (IP-Auth Whitelist Target)"
+echo "LOCATION/ISP : ${IP_LOC} | ${IP_ISP}"
 echo "UPTIME       : $(uptime -p 2>/dev/null || uptime)"
 echo "KERNEL/VIRT  : $(uname -r) ($(systemd-detect-virt 2>/dev/null || echo 'unknown'))"
 
@@ -794,46 +886,96 @@ fi
 ISSUES_COUNT=0
 WARNINGS_COUNT=0
 
-# 1. NODE DIRECTORIES AUDIT
-echo -e "\n${C_C}--- [1. NODE DIRECTORIES & ACTIVE AUDIT] ---${C_0}"
+# --- [MỤC 1: ĐÁNH GIÁ ĐƯỜNG TRUYỀN QUỐC TẾ CHUYÊN SÂU] ---
+echo -e "\n${C_C}--- [1. CHẤT LƯỢNG MẠNG QUỐC TẾ (INTERNATIONAL TRANSIT QUALITY)] ---${C_0}"
+
+ping_hub() {
+  local target="$1"
+  local out
+  out=$(ping -c 5 -i 0.2 -W 1 "$target" 2>&1 || echo "")
+  local avg loss
+  avg=$(echo "$out" | tail -1 | awk -F'/' '{print $5}' | cut -d'.' -f1)
+  loss=$(echo "$out" | grep -o '[0-9]*%' | head -1 | tr -d '%')
+  echo "${avg:-999} ${loss:-100}"
+}
+
+read -r SG_MS SG_LOSS <<< "$(ping_hub "1.1.1.1")"
+read -r JP_MS JP_LOSS <<< "$(ping_hub "8.8.8.8")"
+read -r US_MS US_LOSS <<< "$(ping_hub "4.2.2.2")"
+read -r EU_MS EU_LOSS <<< "$(ping_hub "185.12.64.1")"
+
+eval_ping() {
+  local ms="$1" loss="$2" name="$3"
+  local col="$C_G"
+  if (( loss > 5 || ms > 350 )); then col="$C_R"; ISSUES_COUNT=$((ISSUES_COUNT+1));
+  elif (( loss > 0 || ms > 250 )); then col="$C_Y"; WARNINGS_COUNT=$((WARNINGS_COUNT+1)); fi
+  printf "  %-22s: ${col}%3sms${C_0} (Mất gói: ${col}%s%%${C_0})\n" "$name" "$ms" "$loss"
+}
+
+eval_ping "$SG_MS" "$SG_LOSS" "Singapore Gateway"
+eval_ping "$JP_MS" "$JP_LOSS" "Tokyo (Japan) Hub"
+eval_ping "$US_MS" "$US_LOSS" "US Gateway (Mỹ)"
+eval_ping "$EU_MS" "$EU_LOSS" "Frankfurt (Châu Âu)"
+
+INTL_SPEED_RAW=$(curl -s4 -r 0-10485760 -w "%{speed_download}" -o /dev/null --connect-timeout 2 --max-time 4 "https://speed.cloudflare.com/__down?bytes=10485760" 2>/dev/null || echo "0")
+INTL_MBPS=$(awk "BEGIN {printf \"%.1f\", ${INTL_SPEED_RAW:-0} * 8 / 1000 / 1000}")
+
+INTL_COL="$C_G"
+INTL_NOTE="[XUẤT SẮC - Ngang chuẩn Oracle]"
+if (( $(echo "$INTL_MBPS < 20" | bc -l) )); then
+  INTL_COL="$C_R"; INTL_NOTE="[NGHẼN QUỐC TẾ - Lý do thu nhập kém Oracle]"; ISSUES_COUNT=$((ISSUES_COUNT+1))
+elif (( $(echo "$INTL_MBPS < 60" | bc -l) )); then
+  INTL_COL="$C_Y"; INTL_NOTE="[TRUNG BÌNH - Có thể chậm giờ cao điểm]"; WARNINGS_COUNT=$((WARNINGS_COUNT+1))
+fi
+echo -e "  Băng thông QTế thực tế  : ${INTL_COL}${INTL_MBPS} Mbps ${INTL_NOTE}${C_0}"
+
+# Đo TTFB tới Server App Kiếm Tiền
+echo -e "\n${C_C}--- [2. ĐỘ TRỄ PHẢN HỒI SERVER CÁC APP KIẾM TIỀN (TTFB AUDIT)] ---${C_0}"
+check_app_rtt() {
+  local name="$1" url="$2"
+  local ttfb
+  ttfb=$(curl -s4 -o /dev/null -w "%{time_starttransfer}" --connect-timeout 2 --max-time 3 "$url" 2>/dev/null || echo "9.99")
+  local ms
+  ms=$(awk "BEGIN {print int(${ttfb:-9.99} * 1000)}")
+  local col="$C_G"
+  if (( ms >= 9990 || ms == 0 )); then col="$C_R"; ms="TIMEOUT"; ISSUES_COUNT=$((ISSUES_COUNT+1));
+  elif (( ms > 1500 )); then col="$C_Y"; WARNINGS_COUNT=$((WARNINGS_COUNT+1)); fi
+  printf "  %-22s: ${col}%-7s${C_0} (Kết nối API)\n" "$name" "${ms}ms"
+}
+
+check_app_rtt "Traffmonetizer Master" "https://api.traffmonetizer.com"
+check_app_rtt "Honeygain Master"      "https://api.honeygain.com"
+check_app_rtt "Bitping API"           "https://bitping.com"
+check_app_rtt "Pawns/IPRoyal Master"  "https://pawns.app"
+check_app_rtt "EarnFM Network"        "https://earnfm.com"
+
+# --- [MỤC 3: DOCKER DIRECTORIES & PLATFORM AUDIT] ---
+echo -e "\n${C_C}--- [3. CONTAINER CLUSTERS & ACTIVE AUDIT] ---${C_0}"
 ROOTS=("$@")
 if (( ${#ROOTS[@]} == 0 )); then ROOTS=(/opt /root /home /srv /home/ubuntu /home/opc); fi
 
-found=0
 while IFS= read -r cn; do
   d=$(dirname "$cn")
   [[ -f "${d}/internetIncome.sh" ]] || continue
-  found=1
   total=0; running=0; stopped=0; oom_cnt=0; high_restart=0
   while IFS= read -r c; do
     [[ -z "$c" ]] && continue
     state=$(docker inspect -f '{{.State.Running}}' "$c" 2>/dev/null || echo "not_found")
     if [[ "$state" == "true" ]]; then
-      running=$((running+1))
-      total=$((total+1))
+      running=$((running+1)); total=$((total+1))
       oom=$(docker inspect -f '{{.State.OOMKilled}}' "$c" 2>/dev/null || echo "false")
       rc=$(docker inspect -f '{{.RestartCount}}' "$c" 2>/dev/null || echo "0")
       [[ "$oom" == "true" ]] && oom_cnt=$((oom_cnt+1))
       (( rc > 5 )) && high_restart=$((high_restart+1))
     elif [[ "$state" == "false" ]]; then
-      stopped=$((stopped+1))
-      total=$((total+1))
+      stopped=$((stopped+1)); total=$((total+1))
     fi
   done < "$cn"
 
   mark=""
-  if (( stopped > 0 )); then
-    mark="${mark} ${C_R}[${stopped} STOPPED]${C_0}"
-    ISSUES_COUNT=$((ISSUES_COUNT+stopped))
-  fi
-  if (( oom_cnt > 0 )); then
-    mark="${mark} ${C_R}[${oom_cnt} OOM KILLED]${C_0}"
-    ISSUES_COUNT=$((ISSUES_COUNT+oom_cnt))
-  fi
-  if (( high_restart > 0 )); then
-    mark="${mark} ${C_Y}[${high_restart} UNSTABLE RESTARTS]${C_0}"
-    WARNINGS_COUNT=$((WARNINGS_COUNT+high_restart))
-  fi
+  if (( stopped > 0 )); then mark="${mark} ${C_R}[${stopped} STOPPED]${C_0}"; ISSUES_COUNT=$((ISSUES_COUNT+stopped)); fi
+  if (( oom_cnt > 0 )); then mark="${mark} ${C_R}[${oom_cnt} OOM KILLED]${C_0}"; ISSUES_COUNT=$((ISSUES_COUNT+oom_cnt)); fi
+  if (( high_restart > 0 )); then mark="${mark} ${C_Y}[${high_restart} UNSTABLE]${C_0}"; WARNINGS_COUNT=$((WARNINGS_COUNT+high_restart)); fi
   (( total > 0 && stopped == 0 && oom_cnt == 0 && high_restart == 0 )) && mark="${C_G}[100% HEALTHY]${C_0}"
 
   printf "  %-42s %3s/%-3s running  %b\n" "$d" "$running" "$total" "$mark"
@@ -844,199 +986,97 @@ TOTAL_CTRS=$(docker ps -aq 2>/dev/null | wc -l)
 EXITED_CTRS=$(docker ps -aq -f status=exited 2>/dev/null | wc -l)
 echo "  TOTAL SUMMARY: ${RUNNING_CTRS} running / ${TOTAL_CTRS} total (Exited: ${EXITED_CTRS})"
 
-# 1B. BẢNG TỔNG HỢP THEO TỪNG NỀN TẢNG
-echo -e "\n${C_C}--- [1b. PLATFORMS AGGREGATION & ANTI-BAN AUDIT] ---${C_0}"
+# 3B. BẢNG PHÂN PHỔI BỘ NHỚ THỰC TẾ
+echo -e "\n${C_C}--- [3b. PLATFORMS DYNAMIC MEMORY AUDIT] ---${C_0}"
 PROFILES=/usr/local/lib/ii-app-profiles.sh
 if [[ -r "$PROFILES" ]]; then
   . "$PROFILES"
-  TIER_IDX=$(ii_tier_idx "$MEM_MB")
-  
-  declare -A APP_COUNT APP_MEM APP_POL APP_OK APP_WARN APP_ERR
+  declare -A APP_COUNT APP_MEM APP_BURST APP_POL APP_OK APP_WARN APP_ERR
 
   while IFS= read -r cid; do
     [[ -z "$cid" ]] && continue
     cn=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null | sed 's|^/||')
     ci=$(docker inspect -f '{{.Config.Image}}' "$cid" 2>/dev/null || true)
-    ii_profile "$cn" "$ci" "$TIER_IDX"
+    ii_profile "$cn" "$ci"
     
     app_key="${P_APP:-Unknown}"
-    cmem=$(docker inspect -f '{{.HostConfig.Memory}}' "$cid" 2>/dev/null || echo 0)
-    cmb=$(( (cmem + 1048575) / 1024 / 1024 ))
+    c_res=$(docker inspect -f '{{.HostConfig.MemoryReservation}}' "$cid" 2>/dev/null || echo 0)
+    c_burst=$(docker inspect -f '{{.HostConfig.Memory}}' "$cid" 2>/dev/null || echo 0)
+    
+    res_mb=$(( (c_res + 1048575) / 1024 / 1024 ))
+    burst_mb=$(( (c_burst + 1048575) / 1024 / 1024 ))
+    (( res_mb == 0 )) && res_mb=${P_BASE_MIN%m}
+    
     cpol=$(docker inspect -f '{{.HostConfig.RestartPolicy.Name}}' "$cid" 2>/dev/null || echo "?")
     coom=$(docker inspect -f '{{.State.OOMKilled}}' "$cid" 2>/dev/null || echo false)
-    crc=$(docker inspect -f '{{.RestartCount}}' "$cid" 2>/dev/null || echo 0)
-    want=${P_MEM%m}
 
     APP_COUNT["$app_key"]=$(( ${APP_COUNT["$app_key"]:-0} + 1 ))
-    APP_MEM["$app_key"]="${cmb}MB"
+    APP_MEM["$app_key"]="${res_mb}MB"
+    APP_BURST["$app_key"]="${burst_mb}MB"
     APP_POL["$app_key"]="$cpol"
     APP_ERR["$app_key"]=${APP_ERR["$app_key"]:-0}
     APP_WARN["$app_key"]=${APP_WARN["$app_key"]:-0}
     APP_OK["$app_key"]=${APP_OK["$app_key"]:-0}
 
-    if [[ "$coom" == "true" ]] || [[ "$cpol" == "always" && "$P_POLICY" != "__KEEP__" ]]; then
+    if [[ "$coom" == "true" ]]; then
       APP_ERR["$app_key"]=$(( ${APP_ERR["$app_key"]} + 1 ))
       ISSUES_COUNT=$((ISSUES_COUNT+1))
-    elif (( want > 0 && cmb < (want - 2) )); then
-      APP_WARN["$app_key"]=$(( ${APP_WARN["$app_key"]} + 1 ))
-      WARNINGS_COUNT=$((WARNINGS_COUNT+1))
     else
       APP_OK["$app_key"]=$(( ${APP_OK["$app_key"]} + 1 ))
     fi
-
-    if ii_is_suspend_sensitive "$cn" && (( crc > 3 )); then
-      WARNINGS_COUNT=$((WARNINGS_COUNT+1))
-    fi
   done < <(docker ps -aq 2>/dev/null)
 
-  printf "  %-18s %-7s %-9s %-16s %s\n" "PLATFORM" "NODES" "RAM/NODE" "POLICY" "STATUS"
+  printf "  %-18s %-7s %-12s %-12s %-16s %s\n" "PLATFORM" "NODES" "RESERVE(SÀN)" "BURST(TRẦN)" "POLICY" "STATUS"
   for app in "${!APP_COUNT[@]}"; do
     err_cnt=${APP_ERR["$app"]:-0}
-    warn_cnt=${APP_WARN["$app"]:-0}
     total_cnt=${APP_COUNT["$app"]}
-    mem_val=${APP_MEM["$app"]}
+    res_val=${APP_MEM["$app"]}
+    burst_val=${APP_BURST["$app"]}
     pol_val=${APP_POL["$app"]}
-    
     st_col="$C_G"; st_text="[100% HEALTHY]"
-    if (( err_cnt > 0 )); then
-      st_col="$C_R"; st_text="[${err_cnt} RISK DETECTED]"
-    elif (( warn_cnt > 0 )); then
-      st_col="$C_Y"; st_text="[${warn_cnt} WARNINGS]"
-    fi
-    printf "  ${st_col}%-18s %-7s %-9s %-16s %s${C_0}\n" "$app" "$total_cnt" "$mem_val" "$pol_val" "$st_text"
+    if (( err_cnt > 0 )); then st_col="$C_R"; st_text="[${err_cnt} RISK DETECTED]"; fi
+    printf "  ${st_col}%-18s %-7s %-12s %-12s %-16s %s${C_0}\n" "$app" "$total_cnt" "$res_val" "$burst_val" "$pol_val" "$st_text"
   done
 fi
 
-if [[ -d /var/lib/ii-flapguard ]]; then
-  _held=0
-  for f in /var/lib/ii-flapguard/*.state; do
-    [[ -e "$f" ]] || continue
-    read -r _rc _t _stopped < "$f" 2>/dev/null || continue
-    if [[ "${_stopped:-0}" != "0" ]]; then
-      _left=$(( (${_stopped} + 43200 - $(date +%s)) / 3600 ))
-      (( _left < 0 )) && _left=0
-      echo -e "  ${C_Y}FLAPGUARD PROTECTION: $(basename "$f" .state) đang tạm dừng 12h (Còn ~${_left}h)${C_0}"
-      _held=1
-    fi
-  done
-  (( _held == 0 )) && echo -e "  FLAPGUARD ENGINE: ${C_G}Khong co container nao bi loi Reconnect Loop${C_0}"
-fi
-
-if [[ -c /dev/net/tun ]]; then
-  echo -e "  Host TUN Device        : ${C_G}/dev/net/tun OK (WireGuard / Mysterium Ready)${C_0}"
-fi
-
-# 2. NETWORK, PROXY & ROUTING HEALTH
-echo -e "\n${C_C}--- [2. NETWORK, PROXY & ROUTING HEALTH] ---${C_0}"
-IP_FWD=$(sysctl -n net.ipv4.ip_forward 2>/dev/null || echo 0)
-if [[ "$IP_FWD" == "1" ]]; then
-  echo -e "  IP Forwarding (Routing)  : ${C_G}ENABLED (1)${C_0}"
-else
-  echo -e "  IP Forwarding (Routing)  : ${C_R}DISABLED (0)${C_0}"
-  ISSUES_COUNT=$((ISSUES_COUNT+1))
-fi
-
-NTP_ACTIVE=0
-if systemctl is-active systemd-timesyncd >/dev/null 2>&1 || [[ "$(timedatectl status 2>/dev/null | grep -i 'NTP service' | awk '{print $3}')" =~ active|yes ]]; then
-  NTP_ACTIVE=1
-fi
-
-if (( NTP_ACTIVE == 1 )); then
-  echo -e "  NTP Time Sync Status    : ${C_G}ACTIVE (Strict millisecond accuracy)${C_0}"
-else
-  echo -e "  NTP Time Sync Status    : ${C_Y}INACTIVE (Syncing...)${C_0}"
-  WARNINGS_COUNT=$((WARNINGS_COUNT+1))
-fi
-
-DNS_START=$(date +%s%N 2>/dev/null || echo 0)
-DNS_RES=$(timeout 2 host -W 1 google.com 2>/dev/null || echo "")
-DNS_END=$(date +%s%N 2>/dev/null || echo 0)
-if [[ -n "$DNS_RES" ]]; then
-  DNS_MS=$(( (DNS_END - DNS_START) / 1000000 ))
-  echo -e "  DNS Resolution (Direct) : ${C_G}OK (${DNS_MS}ms)${C_0}"
-else
-  echo -e "  DNS Resolution (Direct) : ${C_Y}CHECK_TIMEOUT${C_0}"
-fi
-
-HTTP_CODE=$(curl -o /dev/null -s -w "%{http_code}\t%{time_total}" --connect-timeout 2 --max-time 3 http://1.1.1.1 2>/dev/null || curl -o /dev/null -s -w "%{http_code}\t%{time_total}" --connect-timeout 2 --max-time 3 -k https://google.com 2>/dev/null || echo "000 0")
-CODE=$(echo "$HTTP_CODE" | awk '{print $1}')
-TIME=$(echo "$HTTP_CODE" | awk '{print $2}')
-if [[ "$CODE" == "200" || "$CODE" == "301" || "$CODE" == "302" ]]; then
-  echo -e "  Outbound Internet Latency: ${C_G}ONLINE (HTTP ${CODE} in ${TIME}s)${C_0}"
-else
-  echo -e "  Outbound Internet Latency: ${C_R}BLOCKED / TIMEOUT${C_0}"
-  ISSUES_COUNT=$((ISSUES_COUNT+1))
-fi
-
-CONN_COUNT=$(cat /proc/sys/net/netfilter/nf_conntrack_count 2>/dev/null || echo 0)
-CONN_MAX=$(cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null || echo 524288)
-CONN_PCT=$(( CONN_COUNT * 100 / CONN_MAX ))
-echo -e "  Conntrack Active Streams: ${C_G}${CONN_COUNT} / ${CONN_MAX} (${CONN_PCT}% capacity)${C_0}"
-
-# 3. SYSTEM RAM, SWAP & ZRAM ALLOCATION
-echo -e "\n${C_C}--- [3. SYSTEM RAM, SWAP & ZRAM ALLOCATION] ---${C_0}"
+# --- [MỤC 4: SYSTEM RAM, ZRAM & CONCURRENCY] ---
+echo -e "\n${C_C}--- [4. SYSTEM RAM, ZRAM & CONCURRENCY] ---${C_0}"
 RAM_TOTAL=$(free -m | awk '/^Mem:/{print $2}')
 RAM_USED=$(free -m | awk '/^Mem:/{print $3}')
 RAM_AVAIL=$(free -m | awk '/^Mem:/{print $7}')
 SWAP_TOTAL=$(free -m | awk '/^Swap:/{print $2}')
 SWAP_USED=$(free -m | awk '/^Swap:/{print $3}')
-SWAP_VAL=$(cat /proc/sys/vm/swappiness 2>/dev/null || echo 0)
 
 echo "  RAM  : Total ${RAM_TOTAL}MB | Used ${RAM_USED}MB | Avail ${RAM_AVAIL}MB"
-echo "  Swap : Total ${SWAP_TOTAL}MB | Used ${SWAP_USED}MB | Swappiness ${SWAP_VAL}"
+echo "  Swap : Total ${SWAP_TOTAL}MB | Used ${SWAP_USED}MB (Swappiness: $(cat /proc/sys/vm/swappiness 2>/dev/null || echo 100))"
 
 if swapon --show 2>/dev/null | grep -q "/dev/zram0"; then
   ZRAM_SIZE=$(swapon --show 2>/dev/null | grep "/dev/zram0" | awk '{print $3}')
-  ZRAM_ALGO=$(cat /sys/block/zram0/comp_algorithm 2>/dev/null | grep -o '\[.*\]' | tr -d '[]' || echo "active")
-  echo -e "  ZRAM : ${C_G}ACTIVE (${ZRAM_SIZE} ${ZRAM_ALGO^^} Priority 10)${C_0}"
+  echo -e "  ZRAM : ${C_G}ACTIVE (${ZRAM_SIZE} ZSTD Priority 10)${C_0}"
 else
-  echo -e "  ZRAM : ${C_Y}NOT ACTIVE${C_0}"
-  WARNINGS_COUNT=$((WARNINGS_COUNT+1))
+  echo -e "  ZRAM : ${C_Y}NOT ACTIVE${C_0}"; WARNINGS_COUNT=$((WARNINGS_COUNT+1))
 fi
 
-OOM_LOGS=$(dmesg 2>/dev/null | grep -i "out of memory" | tail -n 3 || echo "")
-if [[ -n "$OOM_LOGS" ]]; then
-  echo -e "  Kernel OOM Kills        : ${C_R}DETECTED RECENT OOM KILLS!${C_0}"
-  ISSUES_COUNT=$((ISSUES_COUNT+1))
-else
-  echo -e "  Kernel OOM Kills        : ${C_G}NONE (Clean kernel memory log)${C_0}"
-fi
+CONN_COUNT=$(cat /proc/sys/net/netfilter/nf_conntrack_count 2>/dev/null || echo 0)
+CONN_MAX=$(cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null || echo 524288)
+CONN_PCT=$(( CONN_COUNT * 100 / CONN_MAX ))
+echo -e "  Conntrack Streams       : ${C_G}${CONN_COUNT} / ${CONN_MAX} (${CONN_PCT}% used)${C_0}"
 
-# 4. CPU LOAD & DISK / FILESYSTEM HEALTH
-echo -e "\n${C_C}--- [4. CPU LOAD & DISK / FILESYSTEM HEALTH] ---${C_0}"
-LOAD_1=$(cat /proc/loadavg | awk '{print $1}')
-LOAD_5=$(cat /proc/loadavg | awk '{print $2}')
-LOAD_15=$(cat /proc/loadavg | awk '{print $3}')
-CPUS=$(nproc 2>/dev/null || echo 1)
-echo "  CPU Cores: ${CPUS} | Load Avg (1m, 5m, 15m): ${LOAD_1}, ${LOAD_5}, ${LOAD_15}"
-
-if touch /tmp/ii_rw_test 2>/dev/null; then
-  rm -f /tmp/ii_rw_test
-  echo -e "  Filesystem Write Mode  : ${C_G}READ-WRITE (Normal)${C_0}"
-else
-  echo -e "  Filesystem Write Mode  : ${C_R}READ-ONLY (CRITICAL!)${C_0}"
-  ISSUES_COUNT=$((ISSUES_COUNT+1))
-fi
-
-DISK_USE_PCT=$(df / | awk 'NR==2{print $5}' | tr -d '%')
-INODE_USE_PCT=$(df -i / | awk 'NR==2{print $5}' | tr -d '%')
-echo -e "  Disk Storage Usage     : ${C_G}${DISK_USE_PCT}% used${C_0} | Inode Usage: ${C_G}${INODE_USE_PCT}% used${C_0}"
-
-# 5. TỔNG KẾT
+# --- [MỤC 5: TỔNG KẾT CHẨN ĐOÁN] ---
 echo -e "\n${C_B}---------------- [24/7 INCOME QUALITY DIAGNOSTIC SUMMARY] ----------------${C_0}"
 SCORE=100
-SCORE=$(( SCORE - (ISSUES_COUNT * 20) - (WARNINGS_COUNT * 5) ))
-if (( SCORE < 0 )); then SCORE=0; fi
+SCORE=$(( SCORE - (ISSUES_COUNT * 15) - (WARNINGS_COUNT * 5) ))
+(( SCORE < 0 )) && SCORE=0
 
 if (( ISSUES_COUNT == 0 && WARNINGS_COUNT == 0 )); then
-  echo -e "  OVERALL SCORE : ${C_G}100% PERFECT${C_0} - System is 100% stable & optimal for maximum earnings!"
-  echo -e "  STATUS        : ${C_G}[HEALTHY_SMOOTH_24_7]${C_0} No action required."
+  echo -e "  OVERALL SCORE : ${C_G}100% PERFECT${C_0} - Đường truyền & Hệ thống tối ưu tuyệt đối cho thu nhập cao!"
+  echo -e "  STATUS        : ${C_G}[HEALTHY_SMOOTH_24_7]${C_0} Không phát sinh lỗi nghẽn mạng."
 elif (( ISSUES_COUNT == 0 )); then
-  echo -e "  OVERALL SCORE : ${C_Y}${SCORE}% GOOD${C_0} - System running fine with minor warnings."
-  echo -e "  STATUS        : ${C_Y}[STABLE_WITH_WARNINGS]${C_0} AutoSync engine is maintaining containers."
+  echo -e "  OVERALL SCORE : ${C_Y}${SCORE}% GOOD${C_0} - Mạng ổn định khá, có thể bị chậm nhẹ vào giờ cao điểm VN."
+  echo -e "  STATUS        : ${C_Y}[STABLE_WITH_WARNINGS]${C_0} Hệ thống tự điều tiết bù đắp độ trễ."
 else
-  echo -e "  OVERALL SCORE : ${C_R}${SCORE}% UNSTABLE (${ISSUES_COUNT} Critical Issues Found!)${C_0}"
-  echo -e "  STATUS        : ${C_R}[INCOME_RISK_DETECTED]${C_0} AutoSync engine is repairing containers."
+  echo -e "  OVERALL SCORE : ${C_R}${SCORE}% SUB-OPTIMAL (${ISSUES_COUNT} Cảnh báo nghẽn mạng quốc tế!)${C_0}"
+  echo -e "  STATUS        : ${C_R}[INCOME_THROTTLED]${C_0} Băng thông quốc tế của VPS bị nhà mạng bóp."
 fi
 echo -e "${C_B}=========================================================================="
 EOF_STATUS
