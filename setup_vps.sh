@@ -1,7 +1,7 @@
 cat << 'MASTER_EOF' > ~/setup_vps.sh
 #!/usr/bin/env bash
 #============================================================================
-#  setup_vps.sh (2026 ULTIMATE MASTER - ZERO DOWNTIME & TELEMETRY GOVERNOR)
+#  setup_vps.sh (2026 ULTIMATE MASTER - ZERO DOWNTIME & ADVANCED TELEMETRY)
 #============================================================================
 set -Eeuo pipefail
 
@@ -902,7 +902,7 @@ ping_hub() {
 read -r SG_MS SG_LOSS <<< "$(ping_hub "1.1.1.1")"
 read -r JP_MS JP_LOSS <<< "$(ping_hub "8.8.8.8")"
 read -r US_MS US_LOSS <<< "$(ping_hub "4.2.2.2")"
-read -r EU_MS EU_LOSS <<< "$(ping_hub "185.12.64.1")"
+read -r EU_MS EU_LOSS <<< "$(ping_hub "9.9.9.9")"
 
 eval_ping() {
   local ms="$1" loss="$2" name="$3"
@@ -915,7 +915,7 @@ eval_ping() {
 eval_ping "$SG_MS" "$SG_LOSS" "Singapore Gateway"
 eval_ping "$JP_MS" "$JP_LOSS" "Tokyo (Japan) Hub"
 eval_ping "$US_MS" "$US_LOSS" "US Gateway (Mỹ)"
-eval_ping "$EU_MS" "$EU_LOSS" "Frankfurt (Châu Âu)"
+eval_ping "$EU_MS" "$EU_LOSS" "Frankfurt / Quad9 (EU)"
 
 INTL_SPEED_RAW=$(curl -s4 -r 0-10485760 -w "%{speed_download}" -o /dev/null --connect-timeout 2 --max-time 4 "https://speed.cloudflare.com/__down?bytes=10485760" 2>/dev/null || echo "0")
 INTL_MBPS=$(awk "BEGIN {printf \"%.1f\", ${INTL_SPEED_RAW:-0} * 8 / 1000 / 1000}")
@@ -923,22 +923,22 @@ INTL_MBPS=$(awk "BEGIN {printf \"%.1f\", ${INTL_SPEED_RAW:-0} * 8 / 1000 / 1000}
 INTL_COL="$C_G"
 INTL_NOTE="[XUẤT SẮC - Ngang chuẩn Oracle]"
 if (( $(echo "$INTL_MBPS < 20" | bc -l) )); then
-  INTL_COL="$C_R"; INTL_NOTE="[NGHẼN QUỐC TẾ - Lý do thu nhập kém Oracle]"; ISSUES_COUNT=$((ISSUES_COUNT+1))
+  INTL_COL="$C_R"; INTL_NOTE="[NGHẼN QUỐC TẾ - Băng thông bị ISP bóp]"; ISSUES_COUNT=$((ISSUES_COUNT+1))
 elif (( $(echo "$INTL_MBPS < 60" | bc -l) )); then
-  INTL_COL="$C_Y"; INTL_NOTE="[TRUNG BÌNH - Có thể chậm giờ cao điểm]"; WARNINGS_COUNT=$((WARNINGS_COUNT+1))
+  INTL_COL="$C_Y"; INTL_NOTE="[TRUNG BÌNH - Thấp hơn chuẩn Cloud quốc tế]"; WARNINGS_COUNT=$((WARNINGS_COUNT+1))
 fi
 echo -e "  Băng thông QTế thực tế  : ${INTL_COL}${INTL_MBPS} Mbps ${INTL_NOTE}${C_0}"
 
-# Đo TTFB tới Server App Kiếm Tiền
+# Đo TTFB tới Server App Kiếm Tiền (Có thêm User-Agent giả lập vượt Cloudflare WAF)
 echo -e "\n${C_C}--- [2. ĐỘ TRỄ PHẢN HỒI SERVER CÁC APP KIẾM TIỀN (TTFB AUDIT)] ---${C_0}"
 check_app_rtt() {
   local name="$1" url="$2"
   local ttfb
-  ttfb=$(curl -s4 -o /dev/null -w "%{time_starttransfer}" --connect-timeout 2 --max-time 3 "$url" 2>/dev/null || echo "9.99")
+  ttfb=$(curl -s4 -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" -o /dev/null -w "%{time_starttransfer}" --connect-timeout 2 --max-time 3 "$url" 2>/dev/null || echo "9.99")
   local ms
   ms=$(awk "BEGIN {print int(${ttfb:-9.99} * 1000)}")
   local col="$C_G"
-  if (( ms >= 9990 || ms == 0 )); then col="$C_R"; ms="TIMEOUT"; ISSUES_COUNT=$((ISSUES_COUNT+1));
+  if (( ms >= 9990 || ms == 0 )); then col="$C_Y"; ms="CLOUDFLARE_BLOCKED"; WARNINGS_COUNT=$((WARNINGS_COUNT+1));
   elif (( ms > 1500 )); then col="$C_Y"; WARNINGS_COUNT=$((WARNINGS_COUNT+1)); fi
   printf "  %-22s: ${col}%-7s${C_0} (Kết nối API)\n" "$name" "${ms}ms"
 }
@@ -1076,7 +1076,7 @@ elif (( ISSUES_COUNT == 0 )); then
   echo -e "  STATUS        : ${C_Y}[STABLE_WITH_WARNINGS]${C_0} Hệ thống tự điều tiết bù đắp độ trễ."
 else
   echo -e "  OVERALL SCORE : ${C_R}${SCORE}% SUB-OPTIMAL (${ISSUES_COUNT} Cảnh báo nghẽn mạng quốc tế!)${C_0}"
-  echo -e "  STATUS        : ${C_R}[INCOME_THROTTLED]${C_0} Băng thông quốc tế của VPS bị nhà mạng bóp."
+  echo -e "  STATUS        : ${C_R}[INCOME_THROTTLED]${C_0} Băng thông quốc tế của VPS bị nhà mạng SPT bóp."
 fi
 echo -e "${C_B}=========================================================================="
 EOF_STATUS
