@@ -1,7 +1,7 @@
 cat << 'MASTER_EOF' > ~/setup_vps.sh
 #!/usr/bin/env bash
 #============================================================================
-#  setup_vps.sh (2026 UNIVERSAL MASTER - ZERO DOWNTIME & ZERO PROXY UDP ERROR)
+#  setup_vps.sh (2026 UNIVERSAL MASTER - ZERO DOWNTIME & ULTRA PERSISTENT)
 #============================================================================
 set -Eeuo pipefail
 
@@ -55,7 +55,7 @@ CPU=$(nproc 2>/dev/null || echo 1)
 DISK_TOTAL_MB=$(df -m / | awk 'NR==2 {print $2}')
 DISK_FREE_MB=$(df -m / | awk 'NR==2 {print $4}')
 
-# --- MATRIX PHÂN BỔ TÀI NGUYÊN (CHUẨN HÓA CHO Ổ SSD 20GB) ---
+# --- MATRIX PHÂN BỔ TÀI NGUYÊN ---
 TIER_NAME=""
 if (( MEM_MB <= 2500 )); then
   TIER_NAME="TIER 1 (1-2 CPU / 2GB RAM - LIGHTWEIGHT PROXIES)"
@@ -112,17 +112,20 @@ timedatectl set-timezone Asia/Ho_Chi_Minh 2>/dev/null || true
 log "Da dong bo thoi gian NTP chuan millisecond (Anti-Ban Token Enforced)!"
 
 #============================================================================
-# [TỐI ƯU DNS THÔNG MINH - CHỐNG LỆCH GEOIP & CHỐNG LỖI PROXY SOCKS5 UDP]
+# [TỐI ƯU DNS THÔNG MINH & CỐ ĐỊNH CHỐNG REBOOT GHI ĐÈ]
 #============================================================================
 log "Cau hinh DNS Direct-Upstream (Bao toan GeoIP & Loai bo loi 127.0.0.53)..."
 
-# 1. Trích xuất DNS Upstream gốc của nhà mạng VPS (nếu có)
 UPSTREAM_DNS=""
 if [[ -f /run/systemd/resolve/resolv.conf ]]; then
   UPSTREAM_DNS=$(grep -E '^nameserver' /run/systemd/resolve/resolv.conf 2>/dev/null | grep -v '127.0.0.53' | awk '{print $2}' || true)
 fi
 
-# 2. Xây dựng resolv.conf trực tiếp bằng Real Nameservers
+if has_systemd; then
+  systemctl stop systemd-resolved 2>/dev/null || true
+  systemctl disable systemd-resolved 2>/dev/null || true
+fi
+
 rm -f /etc/resolv.conf
 {
   echo "# Generated for High Density Income Nodes (Direct Upstream Mode)"
@@ -136,6 +139,71 @@ rm -f /etc/resolv.conf
 } | awk '!seen[$0]++' > /etc/resolv.conf
 chmod 644 /etc/resolv.conf
 
+# --- TỰ ĐỘNG NẠP MODULE KERNEL KHI REBOOT ---
+mkdir -p /etc/modules-load.d
+cat > /etc/modules-load.d/internetincome.conf <<'EOF_MODULES'
+zram
+tcp_bbr
+nf_conntrack
+tun
+EOF_MODULES
+
+modprobe zram num_devices=1 2>/dev/null || true
+modprobe tcp_bbr 2>/dev/null || true
+modprobe nf_conntrack 2>/dev/null || true
+modprobe tun 2>/dev/null || true
+
+if [[ ! -c /dev/net/tun ]]; then
+  mkdir -p /dev/net 2>/dev/null || true
+  mknod /dev/net/tun c 10 200 2>/dev/null || true
+  chmod 600 /dev/net/tun 2>/dev/null || true
+fi
+
+#============================================================================
+# SYSTEMD SERVICE TỰ ĐỘNG DUY TRÌ ZRAM ZSTD KHI REBOOT
+#============================================================================
+log "Cau hinh ZRAM ZSTD Systemd Service vinh vien..."
+ZRAM_SIZE_BYTES=$(( MEM_MB * 1024 * 1024 ))
+
+cat > /usr/local/bin/ii-init-zram.sh <<EOF_ZRAM_INIT
+#!/usr/bin/env bash
+modprobe zram num_devices=1 2>/dev/null || true
+if [[ -b /dev/zram0 ]]; then
+  swapon --show 2>/dev/null | grep -q "/dev/zram0" && swapoff /dev/zram0 2>/dev/null || true
+  if grep -q "zstd" /sys/block/zram0/comp_algorithm 2>/dev/null; then
+    echo zstd > /sys/block/zram0/comp_algorithm 2>/dev/null || true
+  else
+    echo lz4 > /sys/block/zram0/comp_algorithm 2>/dev/null || true
+  fi
+  echo ${ZRAM_SIZE_BYTES} > /sys/block/zram0/disksize 2>/dev/null || true
+  mkswap /dev/zram0 >/dev/null 2>&1
+  swapon -p 10 /dev/zram0 2>/dev/null || true
+fi
+EOF_ZRAM_INIT
+chmod +x /usr/local/bin/ii-init-zram.sh
+
+if has_systemd; then
+  cat > /etc/systemd/system/ii-zram.service <<'EOF_ZRAM_SVC'
+[Unit]
+Description=InternetIncome ZRAM ZSTD Initializer
+DefaultDependencies=no
+After=local-fs.target
+Before=swap.target docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/ii-init-zram.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=swap.target
+EOF_ZRAM_SVC
+  systemctl daemon-reload 2>/dev/null || true
+  systemctl enable --now ii-zram.service 2>/dev/null || true
+fi
+/usr/local/bin/ii-init-zram.sh
+
+# --- DOCKER OFFICIAL INSTALLATION ---
 if ! command -v docker >/dev/null 2>&1; then
   log "VPS MOI: Dang tu dong cai dat Docker official..."
   curl -fsSL https://get.docker.com | sh || apt-get install -y -qq docker.io
@@ -155,33 +223,11 @@ EOF_DOCKER_SVC
   systemctl enable --now docker >/dev/null 2>&1 || true
 fi
 
-log "Kich hoat KSM (Kernel Samepage Merging) gop RAM ngam..."
+# KSM (Kernel Samepage Merging)
 if [[ -f /sys/kernel/mm/ksm/run ]]; then
   echo 1 > /sys/kernel/mm/ksm/run 2>/dev/null || true
   echo 300 > /sys/kernel/mm/ksm/sleep_millisecs 2>/dev/null || true
   echo 1250 > /sys/kernel/mm/ksm/pages_to_scan 2>/dev/null || true
-  log "Da kich hoat KSM toi uu cao thanh cong!"
-fi
-
-# --- CẤU HÌNH ZRAM ZSTD PRIORITY 10 ---
-ZRAM_SIZE_BYTES=$(( MEM_MB * 1024 * 1024 ))
-log "Kich hoat ZRAM ZSTD (${MEM_MB}MB)..."
-modprobe zram num_devices=1 2>/dev/null || true
-if [[ -b /dev/zram0 ]]; then
-  swapon --show 2>/dev/null | grep -q "/dev/zram0" && swapoff /dev/zram0 2>/dev/null || true
-  
-  if grep -q "zstd" /sys/block/zram0/comp_algorithm 2>/dev/null; then
-    echo zstd > /sys/block/zram0/comp_algorithm 2>/dev/null || true
-    SELECTED_ALGO="zstd"
-  else
-    echo lz4 > /sys/block/zram0/comp_algorithm 2>/dev/null || true
-    SELECTED_ALGO="lz4"
-  fi
-  
-  echo "$ZRAM_SIZE_BYTES" > /sys/block/zram0/disksize 2>/dev/null || true
-  mkswap /dev/zram0 >/dev/null 2>&1
-  swapon -p 10 /dev/zram0 2>/dev/null || true
-  log "Da kich hoat ZRAM ${MEM_MB}MB (${SELECTED_ALGO^^} Priority 10) thanh cong!"
 fi
 
 SWAPPINESS=100
@@ -198,18 +244,19 @@ fi
 echo "=============================================================="
 echo "  VPS $(hostname) | RAM ${MEM_MB}MB | ${CPU} CPU | SSD ${DISK_TOTAL_MB}MB"
 echo "  DETECTED PROFILE : ${TIER_NAME}"
-echo "  ZRAM COMPRESSION : ZSTD (MAX DENSITY)"
+echo "  ZRAM COMPRESSION : ZSTD (PERSISTENT SYSTEMD)"
 echo "  SSD SWAP TARGET  : ${TARGET_SWAP_MB}MB (SMART 20GB SSD PROFILE)"
 echo "  DNS ARCHITECTURE : DIRECT NON-LOOPBACK (ANTI-UDP-DROP READY)"
 echo "=============================================================="
 
+# --- SWAP TRÊN Ổ SSD ---
 CURR_DISK_SWAP_MB=$(swapon --show=NAME,SIZE --bytes 2>/dev/null | awk '/swapfile/{print int($2/1024/1024)}' || echo 0)
 
 if (( IS_CONTAINER == 1 )); then
   warn "May ${VIRT} (container) thuong KHONG tao duoc swap -> bo qua"
 else
   if (( CURR_DISK_SWAP_MB != TARGET_SWAP_MB )); then
-    log "Chuan hoa Swapfile ve dung muc tieu ${TARGET_SWAP_MB}MB de giu SSD o muc ~50%..."
+    log "Chuan hoa Swapfile ve dung muc tieu ${TARGET_SWAP_MB}MB..."
     swapoff /swapfile /swapfile2 2>/dev/null || true
     rm -f /swapfile /swapfile2 2>/dev/null || true
     
@@ -240,7 +287,6 @@ apt-get purge -y snapd earlyoom 2>/dev/null || true
 rm -rf /var/cache/snapd/ /var/lib/snapd/ 2>/dev/null || true
 
 if command -v docker >/dev/null 2>&1; then
-  log "Dang don dep cac container Watchtower trung lap ngom RAM..."
   docker ps -a --format '{{.Names}}' 2>/dev/null | grep "internetincomewatchtower" | xargs -r docker rm -f >/dev/null 2>&1 || true
 fi
 
@@ -259,16 +305,6 @@ Unattended-Upgrade::Automatic-Reboot "false";
 Unattended-Upgrade::Automatic-Reboot-WithUsers "false";
 EOF_APT
 
-modprobe nf_conntrack 2>/dev/null || true
-modprobe tcp_bbr 2>/dev/null || true
-
-modprobe tun 2>/dev/null || true
-if [[ ! -c /dev/net/tun ]]; then
-  mkdir -p /dev/net 2>/dev/null || true
-  mknod /dev/net/tun c 10 200 2>/dev/null || true
-  chmod 600 /dev/net/tun 2>/dev/null || true
-fi
-
 iptables -P INPUT ACCEPT 2>/dev/null || true
 iptables -P FORWARD ACCEPT 2>/dev/null || true
 iptables -F FORWARD 2>/dev/null || true
@@ -283,7 +319,7 @@ sysctl -w net.ipv6.conf.all.disable_ipv6=0 >/dev/null 2>&1 || true
 sysctl -w net.ipv6.conf.default.disable_ipv6=0 >/dev/null 2>&1 || true
 sysctl -w net.ipv6.conf.lo.disable_ipv6=0 >/dev/null 2>&1 || true
 
-# --- TỐI ƯU KERNEL CHUYÊN SÂU ĐỒNG HÓA PROXY VÀ CHỐNG DROP PACKET ---
+# --- TỐI ƯU KERNEL CHUYÊN SÂU ---
 SYSCTL_FILE=/etc/sysctl.d/99-internetincome.conf
 cat > "$SYSCTL_FILE" <<EOF_SYSCTL
 net.core.default_qdisc = fq
@@ -345,7 +381,7 @@ EOF_JOURNAL
 if has_systemd; then systemctl restart systemd-journald 2>/dev/null || true; fi
 
 #============================================================================
-# THƯ VIỆN HỒ SƠ ỨNG DỤNG ĐÃ ĐƯỢC CÂN CHỈNH RAM CHUẨN XÁC
+# THƯ VIỆN HỒ SƠ ỨNG DỤNG (ĐẦY ĐỦ 24+ PLATFORM CHUẨN TIER 1 - TIER 4)
 #============================================================================
 mkdir -p /usr/local/lib
 cat > /usr/local/lib/ii-app-profiles.sh <<'EOF_PROFILES'
@@ -473,6 +509,7 @@ ii_profile() {
       *titan-edge*)            ii_profile "titan" "" "$t"; return ;;
       *antgain*)               ii_profile "antgain" "" "$t"; return ;;
       *wizardgain*)            ii_profile "wizardgain" "" "$t"; return ;;
+      *wipter*)                ii_profile "wipter" "" "$t"; return ;;
     esac
   fi
 }
@@ -490,7 +527,7 @@ chmod 644 /usr/local/lib/ii-app-profiles.sh
 . /usr/local/lib/ii-app-profiles.sh
 
 #============================================================================
-# FLAPGUARD ULTRA
+# FLAPGUARD ENGINE (CHỐNG LẶP LỖI RECONNECT LOOP)
 #============================================================================
 cat > /usr/local/bin/ii-flapguard.sh <<'EOF_FLAPGUARD'
 #!/usr/bin/env bash
@@ -521,8 +558,6 @@ for cid in $(docker ps -aq 2>/dev/null); do
   ii_is_suspend_sensitive "$cname" || continue
 
   rc=$(docker inspect -f '{{.RestartCount}}' "$cid" 2>/dev/null || echo 0)
-  running=$(docker inspect -f '{{.State.Running}}' "$cid" 2>/dev/null || echo false)
-  oom=$(docker inspect -f '{{.State.OOMKilled}}' "$cid" 2>/dev/null || echo false)
   now=$(date +%s)
 
   f="$STATE/${cname}.state"
@@ -563,7 +598,7 @@ chmod +x /usr/local/bin/ii-flapguard.sh
 ln -sf /usr/local/bin/ii-flapguard.sh /usr/bin/ii-flapguard 2>/dev/null || true
 
 #============================================================================
-# ENGINE TỰ ĐỘNG ĐỒNG BỘ RAM VÀ POLICY CHO MỌI CONTAINER
+# ENGINE TỰ ĐỘNG ĐỒNG BỘ RAM & RESTART POLICY (AUTOSYNC)
 #============================================================================
 cat > /usr/local/bin/ii-autosync.sh <<'EOF_AUTOSYNC'
 #!/usr/bin/env bash
@@ -573,7 +608,6 @@ PROFILES=/usr/local/lib/ii-app-profiles.sh
 [[ -r "$PROFILES" ]] && . "$PROFILES"
 MEM_MB=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
 TIER_IDX=$(ii_tier_idx "$MEM_MB" 2>/dev/null || echo 1)
-
 
 for cid in $(docker ps -aq 2>/dev/null); do
   c_img=$(docker inspect -f '{{.Config.Image}}' "$cid" 2>/dev/null || true)
@@ -597,7 +631,7 @@ ln -sf /usr/local/bin/ii-autosync.sh /usr/bin/ii-autosync 2>/dev/null || true
 
 /usr/local/bin/ii-autosync.sh
 
-# --- CẤU HÌNH DOCKER DAEMON (KHÔNG ÉP DNS CỐ ĐỊNH TRÁNH NGHẼN UDP PROXY) ---
+# --- DOCKER DAEMON JSON ---
 mkdir -p /etc/docker
 cat > /etc/docker/daemon.json <<EOF_DAEMON
 {
@@ -621,7 +655,7 @@ fi
 while ! docker info >/dev/null 2>&1; do sleep 1; done
 
 #============================================================================
-# ENGINE KHỞI ĐỘNG TUẦN TỰ (TUNNEL-FIRST)
+# ENGINE KHỞI ĐỘNG TUẦN TỰ TUNNEL-FIRST
 #============================================================================
 cat > /usr/local/bin/ii-staggered-start.sh <<'EOF_STAGGER'
 #!/usr/bin/env bash
@@ -670,7 +704,7 @@ if has_systemd; then
   cat > /etc/systemd/system/ii-boot-staggered.service <<'EOF_BOOT_SVC'
 [Unit]
 Description=InternetIncome Staggered Container Boot
-After=docker.service zramswap.service
+After=docker.service ii-zram.service
 Wants=docker.service
 
 [Service]
@@ -687,6 +721,9 @@ fi
 
 /usr/local/bin/ii-staggered-start.sh
 
+#============================================================================
+# CRON ENGINE & BẢO TRÌ ĐỊNH KỲ
+#============================================================================
 install_cron_stack() {
   cat > /usr/local/bin/ii-restart-all.sh <<'EOF_RESTART'
 #!/usr/bin/env bash
@@ -725,7 +762,7 @@ EOF_CRON
 if (( DO_CRON == 1 )); then install_cron_stack; fi
 
 #============================================================================
-# BẢNG CHẨN ĐOÁN (ĐO DNS DIRECT & KIỂM SOÁT THU NHẬP)
+# TELEMETRY DIAGNOSTIC (BẢNG CHẨN ĐOÁN THU NHẬP 24/7)
 #============================================================================
 cat > /usr/local/bin/ii-status.sh <<'EOF_STATUS'
 #!/usr/bin/env bash
@@ -757,7 +794,7 @@ fi
 ISSUES_COUNT=0
 WARNINGS_COUNT=0
 
-# --- 1. DOCKER FOLDER DIRECTORY AUDIT ---
+# 1. NODE DIRECTORIES AUDIT
 echo -e "\n${C_C}--- [1. NODE DIRECTORIES & ACTIVE AUDIT] ---${C_0}"
 ROOTS=("$@")
 if (( ${#ROOTS[@]} == 0 )); then ROOTS=(/opt /root /home /srv /home/ubuntu /home/opc); fi
@@ -807,7 +844,7 @@ TOTAL_CTRS=$(docker ps -aq 2>/dev/null | wc -l)
 EXITED_CTRS=$(docker ps -aq -f status=exited 2>/dev/null | wc -l)
 echo "  TOTAL SUMMARY: ${RUNNING_CTRS} running / ${TOTAL_CTRS} total (Exited: ${EXITED_CTRS})"
 
-# --- 1B. BẢNG TỔNG HỢP THEO TỪNG NỀN TẢNG ---
+# 1B. BẢNG TỔNG HỢP THEO TỪNG NỀN TẢNG
 echo -e "\n${C_C}--- [1b. PLATFORMS AGGREGATION & ANTI-BAN AUDIT] ---${C_0}"
 PROFILES=/usr/local/lib/ii-app-profiles.sh
 if [[ -r "$PROFILES" ]]; then
@@ -889,7 +926,7 @@ if [[ -c /dev/net/tun ]]; then
   echo -e "  Host TUN Device        : ${C_G}/dev/net/tun OK (WireGuard / Mysterium Ready)${C_0}"
 fi
 
-# --- 2. NETWORK, PROXY & ROUTING HEALTH ---
+# 2. NETWORK, PROXY & ROUTING HEALTH
 echo -e "\n${C_C}--- [2. NETWORK, PROXY & ROUTING HEALTH] ---${C_0}"
 IP_FWD=$(sysctl -n net.ipv4.ip_forward 2>/dev/null || echo 0)
 if [[ "$IP_FWD" == "1" ]]; then
@@ -911,7 +948,6 @@ else
   WARNINGS_COUNT=$((WARNINGS_COUNT+1))
 fi
 
-# Đo tốc độ DNS Direct thực tế
 DNS_START=$(date +%s%N 2>/dev/null || echo 0)
 DNS_RES=$(timeout 2 host -W 1 google.com 2>/dev/null || echo "")
 DNS_END=$(date +%s%N 2>/dev/null || echo 0)
@@ -937,7 +973,7 @@ CONN_MAX=$(cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null || echo 5242
 CONN_PCT=$(( CONN_COUNT * 100 / CONN_MAX ))
 echo -e "  Conntrack Active Streams: ${C_G}${CONN_COUNT} / ${CONN_MAX} (${CONN_PCT}% capacity)${C_0}"
 
-# --- 3. SYSTEM RAM, SWAP & ZRAM ALLOCATION ---
+# 3. SYSTEM RAM, SWAP & ZRAM ALLOCATION
 echo -e "\n${C_C}--- [3. SYSTEM RAM, SWAP & ZRAM ALLOCATION] ---${C_0}"
 RAM_TOTAL=$(free -m | awk '/^Mem:/{print $2}')
 RAM_USED=$(free -m | awk '/^Mem:/{print $3}')
@@ -966,7 +1002,7 @@ else
   echo -e "  Kernel OOM Kills        : ${C_G}NONE (Clean kernel memory log)${C_0}"
 fi
 
-# --- 4. CPU LOAD & DISK / FILESYSTEM HEALTH ---
+# 4. CPU LOAD & DISK / FILESYSTEM HEALTH
 echo -e "\n${C_C}--- [4. CPU LOAD & DISK / FILESYSTEM HEALTH] ---${C_0}"
 LOAD_1=$(cat /proc/loadavg | awk '{print $1}')
 LOAD_5=$(cat /proc/loadavg | awk '{print $2}')
@@ -986,7 +1022,7 @@ DISK_USE_PCT=$(df / | awk 'NR==2{print $5}' | tr -d '%')
 INODE_USE_PCT=$(df -i / | awk 'NR==2{print $5}' | tr -d '%')
 echo -e "  Disk Storage Usage     : ${C_G}${DISK_USE_PCT}% used${C_0} | Inode Usage: ${C_G}${INODE_USE_PCT}% used${C_0}"
 
-# --- 5. TỔNG KẾT ---
+# 5. TỔNG KẾT
 echo -e "\n${C_B}---------------- [24/7 INCOME QUALITY DIAGNOSTIC SUMMARY] ----------------${C_0}"
 SCORE=100
 SCORE=$(( SCORE - (ISSUES_COUNT * 20) - (WARNINGS_COUNT * 5) ))
