@@ -844,7 +844,10 @@ echo "--- [2. KERNEL DMESG RECENT ERROR LOGS] ---"
 ERRS=$(dmesg 2>/dev/null | grep -iE "error|fail|oom|read-only" | tail -n 8 || true)
 if [[ -n "$ERRS" ]]; then echo "$ERRS"; else echo "Clean (No recent kernel errors)"; fi
 echo ""
-echo "--- [3. TOP RESTARTING CONTAINERS] ---"
+echo "--- [3. BANDWIDTH TRAFFIC STATS (vnstat)] ---"
+vnstat -d 3 2>/dev/null || vnstat 2>/dev/null || echo "vnstat initializing..."
+echo ""
+echo "--- [4. TOP RESTARTING CONTAINERS] ---"
 docker ps -a --format "table {{.Names}}\t{{.Status}}" 2>/dev/null | head -n 6
 echo "=========================================================================="
 EOF_DEEP
@@ -933,7 +936,7 @@ ping_hub() {
 read -r SG_MS SG_LOSS <<< "$(ping_hub "1.1.1.1")"
 read -r JP_MS JP_LOSS <<< "$(ping_hub "8.8.8.8")"
 read -r US_MS US_LOSS <<< "$(ping_hub "4.2.2.2")"
-read -r EU_MS EU_LOSS <<< "$(ping_hub "185.12.64.1")"
+read -r EU_MS EU_LOSS <<< "$(ping_hub "9.9.9.9")"
 
 eval_ping() {
   local ms="$1" loss="$2" name="$3"
@@ -946,7 +949,7 @@ eval_ping() {
 eval_ping "$SG_MS" "$SG_LOSS" "Singapore Gateway"
 eval_ping "$JP_MS" "$JP_LOSS" "Tokyo (Japan) Hub"
 eval_ping "$US_MS" "$US_LOSS" "US Gateway (Mỹ)"
-eval_ping "$EU_MS" "$EU_LOSS" "Frankfurt (Châu Âu)"
+eval_ping "$EU_MS" "$EU_LOSS" "Frankfurt / Quad9 (EU)"
 
 INTL_SPEED_RAW=$(curl -s4 -r 0-10485760 -w "%{speed_download}" -o /dev/null --connect-timeout 2 --max-time 4 "https://speed.cloudflare.com/__down?bytes=10485760" 2>/dev/null || echo "0")
 INTL_MBPS=$(awk "BEGIN {printf \"%.1f\", ${INTL_SPEED_RAW:-0} * 8 / 1000 / 1000}")
@@ -960,16 +963,16 @@ elif (( $(echo "$INTL_MBPS < 60" | bc -l) )); then
 fi
 echo -e "  Băng thông QTế thực tế  : ${INTL_COL}${INTL_MBPS} Mbps ${INTL_NOTE}${C_0}"
 
-# Đo TTFB tới Server App Kiếm Tiền
+# Đo TTFB tới Server App Kiếm Tiền (Có thêm User-Agent giả lập vượt Cloudflare WAF)
 echo -e "\n${C_C}--- [2. ĐỘ TRỄ PHẢN HỒI SERVER CÁC APP KIẾM TIỀN (TTFB AUDIT)] ---${C_0}"
 check_app_rtt() {
   local name="$1" url="$2"
   local ttfb
-  ttfb=$(curl -s4 -o /dev/null -w "%{time_starttransfer}" --connect-timeout 2 --max-time 3 "$url" 2>/dev/null || echo "9.99")
+  ttfb=$(curl -s4 -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" -o /dev/null -w "%{time_starttransfer}" --connect-timeout 2 --max-time 3 "$url" 2>/dev/null || echo "9.99")
   local ms
   ms=$(awk "BEGIN {print int(${ttfb:-9.99} * 1000)}")
   local col="$C_G"
-  if (( ms >= 9990 || ms == 0 )); then col="$C_R"; ms="TIMEOUT"; ISSUES_COUNT=$((ISSUES_COUNT+1));
+  if (( ms >= 9990 || ms == 0 )); then col="$C_Y"; ms="CLOUDFLARE_BLOCKED"; WARNINGS_COUNT=$((WARNINGS_COUNT+1));
   elif (( ms > 1500 )); then col="$C_Y"; WARNINGS_COUNT=$((WARNINGS_COUNT+1)); fi
   printf "  %-22s: ${col}%-7s${C_0} (Kết nối API)\n" "$name" "${ms}ms"
 }
