@@ -3,7 +3,7 @@
 # Path theo chau + ma tran CONG RA (DC hay chan). Khong dung docker/iptables.
 set -u
 export LC_ALL=C LANG=C
-VER="4.4.0"
+VER="4.5.0"
 
 SELF="$(readlink -f "$0" 2>/dev/null || echo "$0")"
 DIR="${BWPATH_DIR:-/var/log/bwpath}"
@@ -145,6 +145,12 @@ cmd_hw() {
     echo "MAY cloud=$cloud region=${region:-na} shape=${shape:-na}"
     echo "MAY dmi=${dmi:-na}"
     [ -n "$note" ] && echo "MAY note=$note"
+    local hip igeo
+    hip="$(curl -4 -fsS --max-time 4 https://api.ipify.org 2>/dev/null || true)"
+    if [ -n "$hip" ]; then
+      igeo="$(curl -fsS --max-time 4 "http://ip-api.com/json/${hip}?fields=country,isp,as,hosting,proxy,mobile" 2>/dev/null || true)"
+      echo "MAY ip=$hip ${igeo:-}"
+    fi
   } | tee "$DIR/hw.txt"
 }
 
@@ -166,6 +172,7 @@ cmd_auto() {
   echo ""; cmd_report || true
   echo ""; cmd_fit || true
   echo ""; cmd_risk || true
+  echo ""; cmd_cap || true
   echo ""
   echo "Daemon: $(svc_active && echo DANG CHAY || echo ?). Khong dung Docker. Log $DIR"
 }
@@ -318,17 +325,18 @@ cmd_once() {
   read -r l_gg r_gg j_gg <<<"$(ping_triple 8.8.8.8 "$tmp/pg")"
   read -r l_vn r_vn j_vn <<<"$(ping_triple 203.113.131.1 "$tmp/pv")"
 
-  local p vn sg de fr use usw au br sgip=na
+  local p vn sg de fr use usw au br sgip=na deip=na useip=na
   p="$(curl_probe https://vnexpress.net/ "$tmp/h" "$tmp/b")"; vn="$(echo "$p" | awk '{print $1}')"
   p="$(curl_probe http://speedtest-sgp1.digitalocean.com/ "$tmp/h" "$tmp/b")"; sg="$(echo "$p" | awk '{print $1}')"; sgip="$(echo "$p" | awk '{print $4}')"
-  p="$(curl_probe https://speed.hetzner.de/ "$tmp/h" "$tmp/b")"; de="$(echo "$p" | awk '{print $1}')"
-  [ "$de" = "na" ] && { p="$(curl_probe https://ftp.debian.org/debian/README "$tmp/h" "$tmp/b")"; de="$(echo "$p" | awk '{print $1}')"; }
+  p="$(curl_probe https://speed.hetzner.de/ "$tmp/h" "$tmp/b")"; de="$(echo "$p" | awk '{print $1}')"; deip="$(echo "$p" | awk '{print $4}')"
+  [ "$de" = "na" ] && { p="$(curl_probe https://ftp.debian.org/debian/README "$tmp/h" "$tmp/b")"; de="$(echo "$p" | awk '{print $1}')"; deip="$(echo "$p" | awk '{print $4}')"; }
   p="$(curl_probe https://proof.ovh.net/ "$tmp/h" "$tmp/b")"; fr="$(echo "$p" | awk '{print $1}')"
-  p="$(curl_probe https://ash-speed.hetzner.com/ "$tmp/h" "$tmp/b")"; use="$(echo "$p" | awk '{print $1}')"
+  p="$(curl_probe https://ash-speed.hetzner.com/ "$tmp/h" "$tmp/b")"; use="$(echo "$p" | awk '{print $1}')"; useip="$(echo "$p" | awk '{print $4}')"
   p="$(curl_probe https://hil-speed.hetzner.com/ "$tmp/h" "$tmp/b")"; usw="$(echo "$p" | awk '{print $1}')"
   p="$(curl_probe https://mirror.aarnet.edu.au/ "$tmp/h" "$tmp/b")"; au="$(echo "$p" | awk '{print $1}')"
   p="$(curl_probe https://mirror.uepg.br/ "$tmp/h" "$tmp/b")"; br="$(echo "$p" | awk '{print $1}')"
-  echo "PEER-SG $sg $sgip  (neu Canada ma SG<30ms => anycast, khong tin)"
+  echo "UNICAST SG(DO-SGP1)=$sg peer=$sgip | DE(Hetzner)=$de peer=$deip | USE(ASH)=$use peer=$useip"
+  echo "  ping 8.8.8.8 / UL Cloudflare = ANYCAST (rtt khong phai 'o My/SG')"
 
   local i okc=0
   for i in 1 2 3 4; do
@@ -366,7 +374,7 @@ cmd_bw() {
   dl_au="$(dl_mbps "https://mirror.aarnet.edu.au/" 150000)"
   dl_br="$(dl_mbps "https://mirror.uepg.br/" 150000)"
   printf '%s,%s,%s,%s,%s,%s,%s,%s\n' "$(iso)" "$ul" "$src" "$dl_vn" "$dl_de" "$dl_use" "$dl_au" "$dl_br" >> "$BFILE"
-  echo "bw ul=$ul($src) vn=$dl_vn de=$dl_de use=$dl_use au=$dl_au br=$dl_br"
+  echo "bw ul=$ul($src ANYCAST-CF) vn=$dl_vn de=$dl_de(Hetzner) use=$dl_use(ASH) au=$dl_au br=$dl_br"
 }
 
 cmd_daemon() {
@@ -397,14 +405,14 @@ cmd_report() {
      if($20+0>0){par+=$20;np++} ip[$3]++; ph[$5]++}
     END{
       if(!n){print "no v4"; exit}
-      printf "n=%d loss8.8=%.2f rtt=%.1f span=%.1f\n", n, nlg?lg/nlg:0, nrg?rg/nrg:0, nrg?mx-mn:0
-      printf "TCP VN=%.0f SG=%.0f | EU DE=%.0f FR=%.0f | NA E=%.0f W=%.0f | AU=%.0f BR=%.0f par=%.1f\n",
+      printf "n=%d loss8.8=%.2f(ANYCAST) rtt8.8=%.1f(ANYCAST) span=%.1f\n", n, nlg?lg/nlg:0, nrg?rg/nrg:0, nrg?mx-mn:0
+      printf "TCP unicast VN=%.0f SG(DO)=%.0f | DE=%.0f FR=%.0f | USE(ASH)=%.0f USW=%.0f | AU=%.0f BR=%.0f par=%.1f\n",
         nvn?vn/nvn:0,nsg?sg/nsg:0,nde?de/nde:0,nfr?fr/nfr:0,nue?ue/nue:0,nuw?uw/nuw:0,nau?au/nau:0,nbr?br/nbr:0,np?par/np:0
     }
   ' "$SFILE"
   if [ -f "$BFILE" ]; then
     awk -F, '$1=="ts"{next}{n++; if($2+0>0){u+=$2;nu++} if($4+0>0){v+=$4;nv++} if($5+0>0){d+=$5;nd++} if($6+0>0){e+=$6;ne++}}
-      END{if(n) printf "UL=%.1f  DL VN=%.1f DE=%.1f US-E=%.1f\n", nu?u/nu:0,nv?v/nv:0,nd?d/nd:0,ne?e/ne:0}' "$BFILE"
+      END{if(n) printf "UL=%.1f(CF-anycast)  DL VN=%.1f DE=%.1f US-E(ASH)=%.1f\n", nu?u/nu:0,nv?v/nv:0,nd?d/nd:0,ne?e/ne:0}' "$BFILE"
   fi
   echo ""
   echo "--- CONG RA (1=ok 0=chan/timeout) ---"
@@ -535,8 +543,9 @@ cmd_cap() {
   (( rmax < 2 )) && rmax=2
   local cap=$tmax
   (( rmax < cap )) && cap=$rmax
-  echo "  UL_tb=${ul}Mbps  RAM=${mem}MB  ncpu=$ncpu  chip=${chip:-?}  docker_run=${nall:-0} tun=${ntun:-0}"
-  echo "  TRAN TUN nhe (theo UL+RAM): ~${cap}  (UL cho phep ~${tmax}, RAM cho phep ~${rmax})"
+  echo "  KHONG do tung TUN. Tran = UL+RAM MAY (moi TUN US chung 1 ong)."
+  echo "  UL_tb=${ul}Mbps  RAM=${mem}MB  ncpu=$ncpu  chip=${chip:-?}  docker_run=${nall:-0} tun_dang_chay=${ntun:-0}"
+  echo "  GOI Y SO TUN NHE: ${cap}   (UL~${tmax}  RAM~${rmax})"
   if [ "${ntun:-0}" -gt "$cap" ]; then
     echo "  CANH BAO: dang ${ntun} TUN > tran ${cap} — de timeout/reconnect, khong phai 'setup sai'."
   fi
@@ -570,8 +579,9 @@ case "${1:-auto}" in
   2|bw) cmd_bw ;;
   ports) cmd_ports ;;
   3|report) cmd_report ;;
-  4|fit) cmd_fit; cmd_risk ;;
+  4|fit) cmd_fit; cmd_risk; cmd_cap ;;
   risk) cmd_risk ;;
+  cap) cmd_cap ;;
   5|install) cmd_install ;;
   6|uninstall) cmd_uninstall ;;
   7|purge) purge_old; echo purged ;;
