@@ -3,7 +3,7 @@
 # Path theo chau + ma tran CONG RA (DC hay chan). Khong dung docker/iptables.
 set -u
 export LC_ALL=C LANG=C
-VER="4.6.4"
+VER="4.6.5"
 
 SELF="$(readlink -f "$0" 2>/dev/null || echo "$0")"
 DIR="${BWPATH_DIR:-/var/log/bwpath}"
@@ -185,6 +185,7 @@ cmd_auto() {
   echo ""; cmd_cap || true
   echo ""; cmd_tun || true
   echo ""; cmd_ket || true
+  echo ""; cmd_xung || true
   echo ""
   echo "Daemon: $(svc_active && echo DANG CHAY || echo ?). Khong dung Docker. Log $DIR"
 }
@@ -718,6 +719,53 @@ cmd_ket() {
 }
 
 
+cmd_xung() {
+  echo "======== XUNG DOT CUNG IP ========"
+  echo "  Cung suffix = cung 1 IP/TUN. Khong ban setup."
+  if ! have docker || ! docker info >/dev/null 2>&1; then echo "  khong doc duoc docker"; return 0; fi
+  docker ps --format '{{.Names}}' 2>/dev/null | awk '
+    {
+      n=tolower($0)
+      app="khac"
+      if (n ~ /pawns/) app="Pawns"
+      else if (n ~ /packetstream/) app="PacketStream"
+      else if (n ~ /traffmon/) app="Traffmo"
+      else if (n ~ /earnfm/) app="EarnFM"
+      else if (n ~ /bitping/) app="Bitping"
+      else if (n ~ /honeygain/) app="Honeygain"
+      else if (n ~ /earnapp/) app="EarnApp"
+      else if (n ~ /^tun/ || n ~ /-tun-/) app="TUN"
+      else if (n ~ /peer|spide|spn-/) app="SPN"
+      # suffix: chuoi hex/so cuoi
+      s=$0
+      sub(/^[^0-9a-fA-F]*/, "", s)
+      # lay tu khoi hash dai
+      if (match($0, /[0-9a-f]{8,}[0-9a-f]*/)) suf=substr($0, RSTART)
+      else suf=$0
+      if (app=="TUN") next
+      if (app=="khac") next
+      key[suf]=key[suf] app " "
+      cnt[suf app]++
+    }
+    END{
+      for (s in key) {
+        line=key[s]
+        hit=0
+        if (line ~ /Pawns/ && line ~ /PacketStream/) { print "  XUNG DOT: Pawns + PacketStream  (" s ")"; hit=1 }
+        if (cnt[s "Pawns"]>1) { print "  XUNG DOT: 2 Pawns  (" s ")"; hit=1 }
+        if (cnt[s "PacketStream"]>1) { print "  XUNG DOT: 2 PacketStream  (" s ")"; hit=1 }
+        if (cnt[s "Honeygain"]>1) { print "  XUNG DOT: 2 Honeygain  (" s ")"; hit=1 }
+        if (cnt[s "EarnApp"]>1) { print "  XUNG DOT: 2 EarnApp  (" s ")"; hit=1 }
+        if (line ~ /Pawns/ && line ~ /Traffmo/) { print "  OK thuong: Traffmo + Pawns  (" substr(s,1,12) "...)" }
+        if (line ~ /EarnFM/ && line ~ /Bitping/) { print "  IP HOST: EarnFM + Bitping (+ app khac) di IP may, khong qua TUN" }
+      }
+    }
+  '
+  echo "  Quy tac: 1 IP = 1 Pawns XOR 1 PacketStream. Traffmo thuong di kem duoc."
+  echo "  Honeygain/EarnApp: 1 app / 1 IP."
+}
+
+
 cmd_uninstall() {
   [ "$(id -u)" -eq 0 ] || return 1
   have systemctl && { systemctl disable --now bwpath.service 2>/dev/null || true; rm -f /etc/systemd/system/bwpath.service; }
@@ -737,6 +785,7 @@ case "${1:-auto}" in
   cap) cmd_cap ;;
   tun) cmd_tun ;;
   ket) cmd_ket ;;
+  xung) cmd_xung ;;
   5|install) cmd_install ;;
   6|uninstall) cmd_uninstall ;;
   7|purge) purge_old; echo purged ;;
