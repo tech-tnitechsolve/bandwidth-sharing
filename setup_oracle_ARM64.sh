@@ -1,7 +1,6 @@
-cat << 'ORACLE_ARM64_MASTER_EOF' > /home/ubuntu/setup_oracle_ARM64.sh
 #!/usr/bin/env bash
 #============================================================================
-#  setup_oracle_ARM64.sh (2026 MASTER ULTIMATE - 100% FULL & ZERO MISSING)
+#  setup_oracle_ARM64.sh — Ampere A1, dong bo VPS/VM + QEMU (KHONG de MAX_MEMORY)
 #  Target Arch  : aarch64 / ARM64 (Oracle Ampere A1 1-4 OCPU / 6-24GB RAM)
 #  Integrations : QEMU Multiarch, ZRAM LZ4, KSM, Anti-Leak IPv6, FlapGuard,
 #                 Auto-Patching, Staggered Boot, Full 5-Part Telemetry Engine
@@ -83,9 +82,9 @@ if [[ ! -c /dev/net/tun ]]; then
 fi
 
 # Chống rò rỉ IP Oracle Data Center qua giao thức IPv6
-sysctl -w net.ipv6.conf.all.disable_ipv6=1 >/dev/null 2>&1 || true
-sysctl -w net.ipv6.conf.default.disable_ipv6=1 >/dev/null 2>&1 || true
-sysctl -w net.ipv6.conf.lo.disable_ipv6=1 >/dev/null 2>&1 || true
+sysctl -w net.ipv6.conf.all.disable_ipv6=0 >/dev/null 2>&1 || true
+sysctl -w net.ipv6.conf.default.disable_ipv6=0 >/dev/null 2>&1 || true
+sysctl -w net.ipv6.conf.lo.disable_ipv6=0 >/dev/null 2>&1 || true
 
 # 7. ĐỒNG BỘ THỜI GIAN NTP MILI-GIÂY & DNS DIRECT UPSTREAM
 if has_systemd; then
@@ -141,10 +140,10 @@ Restart=always
 RestartSec=3s
 EOF_DOCKER_SVC
   systemctl daemon-reload 2>/dev/null || true
-  systemctl restart docker 2>/dev/null || true
+  if systemctl is-active docker >/dev/null 2>&1; then systemctl reload docker 2>/dev/null || true; else systemctl enable --now docker >/dev/null 2>&1 || true; fi
   systemctl enable docker 2>/dev/null || true
 fi
-chmod 666 /var/run/docker.sock 2>/dev/null || true
+# docker.sock: khong 666 (khop VPS)
 
 # Kích hoạt bộ dịch QEMU Multi-Arch
 docker run --rm --privileged multiarch/qemu-user-static --reset -p yes >/dev/null 2>&1 || true
@@ -202,11 +201,57 @@ fi
 # ZRAM LZ4 & Swapfile SSD
 log "Kich hoat ZRAM LZ4 ${MEM_MB}MB va Swapfile SSD ${TARGET_SWAP_MB}MB..."
 modprobe zram num_devices=1 2>/dev/null || true
-echo -e "ALGO=lz4\nPERCENT=100\nPRIORITY=10" > /etc/default/zramswap
-if has_systemd; then
-  systemctl restart zramswap 2>/dev/null || true
-  systemctl enable zramswap 2>/dev/null || true
+
+# ZRAM giong VPS/VM: 100% RAM, zstd, pri 10 — disk swap chi pri 0
+log "ZRAM = RAM (zstd), dong bo VPS/VM"
+mkdir -p /etc/modules-load.d
+cat > /etc/modules-load.d/internetincome.conf <<'EOF_MODULES'
+zram
+tcp_bbr
+nf_conntrack
+tun
+EOF_MODULES
+modprobe zram num_devices=1 2>/dev/null || true
+modprobe tcp_bbr 2>/dev/null || true
+modprobe nf_conntrack 2>/dev/null || true
+modprobe tun 2>/dev/null || true
+cat > /usr/local/bin/ii-init-zram.sh <<'EOF_ZRAM_INIT'
+#!/usr/bin/env bash
+MEM_MB=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
+ZRAM_BYTES=$(( MEM_MB * 1024 * 1024 ))
+modprobe zram num_devices=1 2>/dev/null || true
+[[ -b /dev/zram0 ]] || exit 0
+swapon --show 2>/dev/null | grep -q /dev/zram0 && swapoff /dev/zram0 2>/dev/null || true
+if grep -qw zstd /sys/block/zram0/comp_algorithm 2>/dev/null; then
+  echo zstd > /sys/block/zram0/comp_algorithm 2>/dev/null || true
+else
+  echo lz4 > /sys/block/zram0/comp_algorithm 2>/dev/null || true
 fi
+echo "$ZRAM_BYTES" > /sys/block/zram0/disksize 2>/dev/null || true
+mkswap /dev/zram0 >/dev/null 2>&1 || true
+swapon -p 10 /dev/zram0 2>/dev/null || true
+EOF_ZRAM_INIT
+chmod +x /usr/local/bin/ii-init-zram.sh
+if has_systemd; then
+  systemctl disable --now zramswap 2>/dev/null || true
+  cat > /etc/systemd/system/ii-zram.service <<'EOF_ZRAM_SVC'
+[Unit]
+Description=InternetIncome ZRAM ZSTD
+DefaultDependencies=no
+After=local-fs.target
+Before=swap.target docker.service
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/ii-init-zram.sh
+RemainAfterExit=yes
+[Install]
+WantedBy=swap.target
+EOF_ZRAM_SVC
+  systemctl daemon-reload 2>/dev/null || true
+  systemctl enable --now ii-zram.service 2>/dev/null || true
+fi
+/usr/local/bin/ii-init-zram.sh
+
 
 if ! swapon --show 2>/dev/null | grep -q "/swapfile"; then
   fallocate -l "${TARGET_SWAP_MB}M" /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count="$TARGET_SWAP_MB" status=none
@@ -250,9 +295,9 @@ net.ipv4.tcp_slow_start_after_idle = 0
 net.netfilter.nf_conntrack_max = 1048576
 net.netfilter.nf_conntrack_udp_timeout = 60
 net.netfilter.nf_conntrack_udp_timeout_stream = 180
-net.ipv6.conf.all.disable_ipv6 = 1
-net.ipv6.conf.default.disable_ipv6 = 1
-net.ipv6.conf.lo.disable_ipv6 = 1
+net.ipv6.conf.all.disable_ipv6 = 0
+net.ipv6.conf.default.disable_ipv6 = 0
+net.ipv6.conf.lo.disable_ipv6 = 0
 EOF_SYSCTL
 
 sysctl -p /etc/sysctl.d/99-arm64-internetincome.conf >/dev/null 2>&1 || true
@@ -331,34 +376,42 @@ EOF_PROFILES
 chmod 644 /usr/local/lib/ii-app-profiles.sh
 
 # 12. TỰ ĐỘNG QUÉT & VÁ TOOL (AUTO-PATCHER)
+
 auto_patch_engageub_repo() {
-  log "Dang quet va PATCH RAM DOCKER + LOI IPV6 trong cac thu muc tool..."
+  log "Dong bo properties TEST (SOCKS5 DNS off). KHONG ghi MAX_MEMORY, KHONG sed internetIncome.sh"
   ROOTS=(/opt /root /home /srv /home/ubuntu /home/opc)
-
-  while IFS= read -r sh_file; do
-    d=$(dirname "$sh_file")
-    if [[ -f "${d}/properties.conf" ]]; then
-      sed -i "s/MAX_MEMORY=.*/MAX_MEMORY=${CONTAINER_MEM_LIMIT}/" "${d}/properties.conf" 2>/dev/null || true
-      grep -q "MAX_MEMORY=" "${d}/properties.conf" || echo "MAX_MEMORY=${CONTAINER_MEM_LIMIT}" >> "${d}/properties.conf"
-    fi
-
-    if [[ -f "$sh_file" ]]; then
-      cp -n "$sh_file" "${sh_file}.bak" 2>/dev/null || true
-      sed -i 's/--sysctl net.ipv6.conf.[a-z0-9_]*.disable_ipv6=[0-9]//g' "$sh_file" 2>/dev/null || true
-
-      if ! grep -q "\--restart" "$sh_file"; then
-        sed -i "s/docker run -d/docker run -d --restart=unless-stopped/g" "$sh_file" 2>/dev/null || true
+  if [[ -n "${BASE_DIR:-}" ]]; then ROOTS+=("$BASE_DIR"); fi
+  while IFS= read -r f; do
+    [[ -f "$f" ]] || continue
+    grep -qE 'USE_SOCKS5_DNS|USE_PROXIES|USE_DNS_OVER_HTTPS' "$f" || continue
+    cp -a "$f" "${f}.bak.$(date +%Y%m%d%H%M%S)" 2>/dev/null || true
+    # go MAX_MEMORY do setup Oracle cu de lai (de ii-autosync / II tu lo)
+    sed -i -E '/^[[:space:]]*MAX_MEMORY=/d;/^[[:space:]]*MEMORY_RESERVATION=/d;/^[[:space:]]*MEMORY_SWAP=/d;/^[[:space:]]*CPU=/d' "$f" || true
+    set_kv() {
+      local k="$1" v="$2"
+      if grep -qE "^[[:space:]]*#?[[:space:]]*${k}=" "$f"; then
+        sed -i -E "s|^[[:space:]]*#?[[:space:]]*${k}=.*|${k}=${v}|" "$f"
+      else
+        printf '\n%s=%s\n' "$k" "$v" >> "$f"
       fi
-
-      if ! grep -q "\--memory" "$sh_file"; then
-        sed -i "s/docker run -d/docker run -d --memory=\"${CONTAINER_MEM_LIMIT}\" --memory-swap=\"${CONTAINER_SWAP_LIMIT}\"/g" "$sh_file"
-      fi
-
-      sed -i "s/--memory=\"[0-9]*[a-z]*\"/--memory=\"${CONTAINER_MEM_LIMIT}\"/g" "$sh_file" 2>/dev/null || true
-      sed -i "s/--memory-swap=\"[0-9]*[a-z]*\"/--memory-swap=\"${CONTAINER_SWAP_LIMIT}\"/g" "$sh_file" 2>/dev/null || true
-    fi
-  done < <(find "${ROOTS[@]}" -maxdepth 4 -name internetIncome.sh -type f 2>/dev/null | sort -u)
+    }
+    set_kv USE_DIRECT_CONNECTION false
+    set_kv USE_PROXIES true
+    set_kv USE_VPNS false
+    set_kv USE_MULTI_IP false
+    set_kv USE_SOCKS5_DNS false
+    set_kv USE_DNS_OVER_HTTPS true
+    set_kv USE_DNSCRYPT true
+    set_kv USE_DNS_CACHE true
+    set_kv USE_TUN2PROXY false
+    set_kv USE_DOCKER_EMBEDDED_DNS false
+    set_kv USE_CUSTOM_NETWORK false
+    set_kv AUTO_UPDATE_CONTAINERS false
+    set_kv ENABLE_LOGS false
+    echo "[OK] properties $(dirname "$f")"
+  done < <(find "${ROOTS[@]}" -maxdepth 5 -name properties.conf -type f 2>/dev/null | sort -u)
 }
+
 auto_patch_engageub_repo
 
 # 13. FLAPGUARD - BẢO VỆ CHỐNG RECONNECT STORM & BAN TÀI KHOẢN
@@ -464,7 +517,7 @@ if has_systemd; then
   cat > /etc/systemd/system/ii-boot-staggered.service << 'EOF_BOOT_SVC'
 [Unit]
 Description=InternetIncome Staggered Container Boot
-After=docker.service zramswap.service
+After=docker.service ii-zram.service
 Wants=docker.service
 
 [Service]
@@ -483,7 +536,7 @@ fi
 cat > /usr/local/bin/ii-fix-arm.sh << 'EOF_FIX'
 #!/usr/bin/env bash
 echo "=== DANG FIX TOAN DIEN HE THONG ARM64 ==="
-chmod 666 /var/run/docker.sock 2>/dev/null || true
+# docker.sock: khong 666 (khop VPS)
 docker run --rm --privileged multiarch/qemu-user-static --reset -p yes >/dev/null 2>&1 || true
 /usr/local/bin/ii-autosync.sh
 echo "[OK] Da reset QEMU Multiarch & dong bo RAM thanh cong!"
@@ -860,7 +913,3 @@ echo "  CÀI ĐẶT HOÀN TẤT: PROFILE ${TIER_NAME}"
 echo "  BẢN CHUYÊN BIỆT CHO CHIP ARM64 ĐÃ TÍCH HỢP 100% ĐẦY ĐỦ NHẤT!"
 echo "=========================================================================="
 /usr/local/bin/ii-status.sh || true
-ORACLE_ARM64_MASTER_EOF
-
-sudo chmod +x /home/ubuntu/setup_oracle_ARM64.sh
-sudo bash /home/ubuntu/setup_oracle_ARM64.sh
