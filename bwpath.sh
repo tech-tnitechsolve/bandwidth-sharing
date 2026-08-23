@@ -3,7 +3,7 @@
 # Path theo chau + ma tran CONG RA (DC hay chan). Khong dung docker/iptables.
 set -u
 export LC_ALL=C LANG=C
-VER="4.3.0"
+VER="4.4.0"
 
 SELF="$(readlink -f "$0" 2>/dev/null || echo "$0")"
 DIR="${BWPATH_DIR:-/var/log/bwpath}"
@@ -131,14 +131,20 @@ cmd_hw() {
     [ -z "$region" ] && region="$(printf '%s' "$meta" | sed -n 's/.*"region"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
     shape="$(printf '%s' "$meta" | sed -n 's/.*"shape"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
     echo "$shape" | grep -qiE 'A1|Ampere|Standard.A' && chip=ampere
+    echo "$shape" | grep -qiE 'E2|E3|E4|E5|E6|VM.Standard.E' && chip=x86
   fi
   [ -r /sys/class/dmi/id/sys_vendor ] && dmi="$(cat /sys/class/dmi/id/sys_vendor 2>/dev/null)-$(cat /sys/class/dmi/id/product_name 2>/dev/null)"
   echo "$dmi" | grep -qi Oracle && [ "$cloud" = none ] && cloud=OCI
+  local note=""
+  if [ "$chip" = ampere ] || [ "$chip" = arm64 ]; then
+    note="OCI Always Free 1OCPU/6GB = Ampere A1 (aarch64), KHONG phai AMD micro 1GB"
+  fi
   {
     echo "MAY host=$(hostname) arch=$arch chip=$chip ncpu=$ncpu mem_mb=$mem virt=$virt"
     echo "MAY cpu=${cpu:-?}"
     echo "MAY cloud=$cloud region=${region:-na} shape=${shape:-na}"
     echo "MAY dmi=${dmi:-na}"
+    [ -n "$note" ] && echo "MAY note=$note"
   } | tee "$DIR/hw.txt"
 }
 
@@ -312,7 +318,7 @@ cmd_once() {
   read -r l_gg r_gg j_gg <<<"$(ping_triple 8.8.8.8 "$tmp/pg")"
   read -r l_vn r_vn j_vn <<<"$(ping_triple 203.113.131.1 "$tmp/pv")"
 
-  local p vn sg de fr use usw au br
+  local p vn sg de fr use usw au br sgip=na
   p="$(curl_probe https://vnexpress.net/ "$tmp/h" "$tmp/b")"; vn="$(echo "$p" | awk '{print $1}')"
   p="$(curl_probe http://speedtest-sgp1.digitalocean.com/ "$tmp/h" "$tmp/b")"; sg="$(echo "$p" | awk '{print $1}')"; sgip="$(echo "$p" | awk '{print $4}')"
   p="$(curl_probe https://speed.hetzner.de/ "$tmp/h" "$tmp/b")"; de="$(echo "$p" | awk '{print $1}')"
@@ -507,6 +513,46 @@ cmd_risk() {
     echo "[CONG] dong cuoi: $(tail -1 "$PFILE")"
     echo "  80+443=web/proxy  53u=DNS  25/587=SMTP (DC hay chan, it anh huong BW-share)"
     echo "  1080/3128/2053=cong proxy/controller  quic=HTTP3  ip6=IPv6"
+  fi
+}
+
+cmd_cap() {
+  echo "======== TRAN / GOI Y $VER ========"
+  local ul=0 ntun=0 nall=0 mem ncpu chip=x86
+  mem="$(awk '/MemTotal/{printf "%.0f",$2/1024}' /proc/meminfo)"
+  ncpu="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)"
+  [ -f "$DIR/hw.txt" ] && chip="$(awk -F= '/chip=/{print $2; exit}' "$DIR/hw.txt" | awk '{print $1}')"
+  [ -f "$BFILE" ] && ul="$(awk -F, '$1!="ts"&&$2+0>0{u+=$2;n++} END{if(n) printf "%.1f",u/n; else print 0}' "$BFILE")"
+  if have docker; then
+    ntun="$(docker ps --format '{{.Names}}' 2>/dev/null | grep -cE '^tun' || true)"
+    nall="$(docker ps -q 2>/dev/null | wc -l | tr -d ' ')"
+  fi
+  # Tran TUN theo UL host (moi proxy US van di qua UL nay)
+  local tmax=1
+  tmax="$(awk -v u="$ul" 'BEGIN{if(u+0<0.5)print 2; else if(u<1)print 3; else if(u<4)print 8; else if(u<8)print 14; else if(u<16)print 22; else print 30}')"
+  # Tran RAM: ~80MB/TUN+app nhe; 6GB ~ 25 nhe, tru OS 800
+  local rmax=$(( (mem - 800) / 80 ))
+  (( rmax < 2 )) && rmax=2
+  local cap=$tmax
+  (( rmax < cap )) && cap=$rmax
+  echo "  UL_tb=${ul}Mbps  RAM=${mem}MB  ncpu=$ncpu  chip=${chip:-?}  docker_run=${nall:-0} tun=${ntun:-0}"
+  echo "  TRAN TUN nhe (theo UL+RAM): ~${cap}  (UL cho phep ~${tmax}, RAM cho phep ~${rmax})"
+  if [ "${ntun:-0}" -gt "$cap" ]; then
+    echo "  CANH BAO: dang ${ntun} TUN > tran ${cap} — de timeout/reconnect, khong phai 'setup sai'."
+  fi
+  echo "  Pawns + PacketStream CUNG 1 IP proxy: XUNG DOT POLICY (1 device/IP), khong phai xung dot ARM."
+  echo "  Traffmo thuong chiu DC. Pawns/PS can proxy RESI — IP Oracle/VPS DC khong tinh resi."
+  case "$chip" in
+    ampere|arm64)
+      echo "  AMPERE: tat Proxyrack/Peer2Profit/Proxylite/browser (amd64/QEMU)."
+      echo "  Traffmo + (Pawns XOR PacketStream) OK neu image aarch64 va proxy resi cho Pawns/PS."
+      ;;
+  esac
+  local pub itype=na
+  pub="$(cat "$ST.ip" 2>/dev/null || true)"
+  if [ -n "$pub" ] && [ "$pub" != fail ]; then
+    itype="$(curl -fsS --max-time 4 "http://ip-api.com/json/${pub}?fields=hosting,proxy,mobile,isp" 2>/dev/null || true)"
+    echo "  IP_HOST ${pub} ${itype:-?}  (hosting=true = DC; app resi nhin IP PROXY khong phai IP nay neu TUN OK)"
   fi
 }
 
