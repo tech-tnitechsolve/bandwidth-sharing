@@ -3,7 +3,7 @@
 # Path theo chau + ma tran CONG RA (DC hay chan). Khong dung docker/iptables.
 set -u
 export LC_ALL=C LANG=C
-VER="4.5.0"
+VER="4.5.2"
 
 SELF="$(readlink -f "$0" 2>/dev/null || echo "$0")"
 DIR="${BWPATH_DIR:-/var/log/bwpath}"
@@ -84,6 +84,16 @@ EOF
   fi
 }
 
+reset_series() {
+  mkdir -p "$DIR"
+  rm -f "$SFILE" "$BFILE" "$PFILE" "$EFILE" "$SFILE.tmp" "$BFILE.tmp" "$PFILE.tmp" \
+    "$ST.ph" "$DIR/hw.txt" 2>/dev/null || true
+  echo "$HDR_S" > "$SFILE"
+  echo "$HDR_B" > "$BFILE"
+  echo "$HDR_P" > "$PFILE"
+  echo "[bwpath] da reset log $DIR — lan AUTO nay do lai tu dau"
+}
+
 ensure_install() {
   ensure_pkgs || true
   [ "$(id -u)" -eq 0 ] || { is_installed || exec sudo -E bash "$SELF"; return 0; }
@@ -93,7 +103,8 @@ ensure_install() {
   echo "$old" | grep -Eq '^[0-9]+\.' || old="?"
   install_files
   if [ "$old" != "$VER" ]; then
-    echo "[bwpath] cap nhat $old -> $VER"
+    echo "[bwpath] cap nhat $old -> $VER — xoa mau cu (SG anycast / csv lech)"
+    reset_series
     have systemctl && systemctl restart bwpath.service 2>/dev/null || true
   else
     echo "[bwpath] da cai $VER"
@@ -411,8 +422,22 @@ cmd_report() {
     }
   ' "$SFILE"
   if [ -f "$BFILE" ]; then
-    awk -F, '$1=="ts"{next}{n++; if($2+0>0){u+=$2;nu++} if($4+0>0){v+=$4;nv++} if($5+0>0){d+=$5;nd++} if($6+0>0){e+=$6;ne++}}
-      END{if(n) printf "UL=%.1f(CF-anycast)  DL VN=%.1f DE=%.1f US-E(ASH)=%.1f\n", nu?u/nu:0,nv?v/nv:0,nd?d/nd:0,ne?e/ne:0}' "$BFILE"
+    awk -F, '
+      $1=="ts"{next}
+      {n++
+       if($2+0>0){u+=$2;nu++; if(umin==""||$2<umin)umin=$2; if($2>umax)umax=$2}
+       if($4+0>0){v+=$4;nv++}
+       if($5+0>0){d+=$5;nd++; if(dmin==""||$5<dmin)dmin=$5}
+       if($6+0>0){e+=$6;ne++; if(emin==""||$6<emin)emin=$6}}
+      END{
+        if(!n) exit
+        ua=nu?u/nu:0; da=nd?d/nd:0; ea=ne?e/ne:0
+        printf "UL avg=%.1f min=%.1f (CF-anycast) n_bw=%d\n", ua, umin+0, n
+        printf "DL VN=%.1f DE avg=%.1f min=%.1f US-E(ASH) avg=%.1f min=%.1f\n", nv?v/nv:0, da, dmin+0, ea, emin+0
+        if(nu>=2 && ua>0) printf "FUP_UL min/avg=%.0f%% (tinh tu b.csv, khong doan ISP)\n", 100*umin/ua
+        if(nd>=2 && da>0) printf "FUP_DE min/avg=%.0f%%\n", 100*dmin/da
+        if(nu<2) printf "FUP: chua du mau bw (can >=2 dong b.csv)\n"
+      }' "$BFILE"
   fi
   echo ""
   echo "--- CONG RA (1=ok 0=chan/timeout) ---"
@@ -585,6 +610,7 @@ case "${1:-auto}" in
   5|install) cmd_install ;;
   6|uninstall) cmd_uninstall ;;
   7|purge) purge_old; echo purged ;;
+  reset) reset_series; echo reset ;;
   daemon) cmd_daemon ;;
   *) echo "sudo bash $SELF" ;;
 esac
