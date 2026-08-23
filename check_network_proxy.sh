@@ -1,13 +1,22 @@
+cat << 'EOF' > check_network_proxy.sh
 #!/usr/bin/env bash
 # ==============================================================================
-# Script: check_network_proxy.sh (ULTIMATE PRODUCTION EDITION - 100% CHUAN)
-# 100% Khong Dau - Zero Mock Data - Tu dong nhan dien VN - Anti-Mistake 100%
+# Script: check_network_proxy.sh (AUTO-ELEVATE & AUTO-PERMISSION MASTER EDITION)
+# 100% Khong Dau - Tu dong cap quyen chmod +x & Tu dong nang quyen Sudo
 # ==============================================================================
 
+# 1. TU DONG CAP QUYEN THUC THI CHO CHINH FILE NAY
+[ -f "$0" ] && chmod +x "$0" 2>/dev/null
+
+# 2. TU DONG NANG QUYEN ROOT (SUDO) NEU CHAY BANG USER THUONG
 if [ "$EUID" -ne 0 ]; then
-    echo -e "\033[0;31m[!] Loi: Bat buoc phai chay script voi quyen root:\033[0m"
-    echo -e "    \033[1;32msudo bash $0\033[0m"
-    exit 1
+    echo -e "\033[1;33m[*] Dang tu dong chuyen sang quyen root (sudo)... \033[0m"
+    exec sudo bash "$0" "$@"
+fi
+
+# 3. TU DONG TAO LENH GO NHANH 'check-proxy' TRONG HE THONG
+if [ ! -f /usr/local/bin/check-proxy ]; then
+    cp "$0" /usr/local/bin/check-proxy 2>/dev/null && chmod +x /usr/local/bin/check-proxy 2>/dev/null
 fi
 
 RED='\033[0;31m'
@@ -23,11 +32,11 @@ USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
 
 clear
 echo -e "${CYAN}${BOLD}================================================================================${NC}"
-echo -e "${GREEN}${BOLD}   HE THONG DO LUONG DUONG TRUYEN & PROXY ULTIMATE (GLOBAL & VN MATRIX)         ${NC}"
+echo -e "${GREEN}${BOLD}   HE THONG DO LUONG DUONG TRUYEN & PROXY MASTER (GLOBAL & VN MATRIX)         ${NC}"
 echo -e "${YELLOW}   (Do 10 Hub: VN, US, CA, UK, AU, DE, NL, FR, SG - Soi Socket & Live Data)     ${NC}"
 echo -e "${CYAN}${BOLD}================================================================================${NC}\n"
 
-# 1. KIEM TRA VA CAI DAT CONG CU
+# 4. KIEM TRA VA CAI DAT CONG CU
 echo -e "${BLUE}[*] Dang kiem tra cong cu he thong...${NC}"
 install_deps() {
     local pkgs=("$@")
@@ -52,7 +61,7 @@ command -v ping &>/dev/null || REQ_PKGS+=("iputils-ping")
 
 [ ${#REQ_PKGS[@]} -gt 0 ] && install_deps "${REQ_PKGS[@]}"
 
-# 2. XAC DINH GIAO DIEN MANG & PUBLIC IPV4
+# 5. XAC DINH GIAO DIEN MANG & PUBLIC IPV4
 PRIMARY_IFACE=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{print $5; exit}')
 [ -z "$PRIMARY_IFACE" ] && PRIMARY_IFACE=$(ip -4 route show default 2>/dev/null | awk '{print $5; exit}')
 
@@ -96,7 +105,7 @@ printf "%-26s: %s (%s, %s)\n" "Nha mang / DataCenter" "$ISP_NAME" "$CITY" "$COUN
 printf "%-26s: %b\n" "IPv4 Forwarding (NAT)" "$IP_FW_STATUS"
 printf "%-26s: %s%%\n" "Ty le TCP Retransmission" "$GLOBAL_RETRANS_RATE"
 
-# 3. DO DO TRE HYBRID (10 HUBS TOAN CAU & NOI DIA)
+# 6. DO DO TRE HYBRID (10 HUBS TOAN CAU & NOI DIA)
 echo -e "\n${PURPLE}${BOLD}--- [2] DO DO TRE HYBRID (PING ICMP + TCP CONNECT BYPASS) ---${NC}"
 printf "${BOLD}%-26s | %-12s | %-12s | %-16s${NC}\n" "Khu vuc Hub Proxy" "Do tre (Ping)" "Giao thuc" "Trang thai"
 echo "---------------------------------------------------------------------------"
@@ -134,11 +143,11 @@ test_hybrid_ping "3. US East (New Jersey)"   "208.77.17.2"    "http://speedtest.
 test_hybrid_ping "4. CA (Canada - Toronto)"   "139.162.111.4"  "http://speedtest.toronto1.linode.com"
 test_hybrid_ping "5. UK (Anh - London)"       "185.42.223.67"  "http://speedtest.london.linode.com"
 test_hybrid_ping "6. DE (Duc - Frankfurt)"   "91.107.223.4"   "https://fsn1-speed.hetzner.com"
-test_hybrid_ping "7. NL (Ha Lan - Amsterdam)" "194.126.175.174" "http://speedtest.ams2.digitalocean.com"
+test_hybrid_ping "7. NL (Ha Lan - Amsterdam)" "194.126.175.174" "https://fsn1-speed.hetzner.com"
 test_hybrid_ping "8. FR (Phap - Roubaix)"     "185.125.63.14"  "https://rbx.proof.ovh.net"
 test_hybrid_ping "9. AU (Uc - Sydney)"        "139.99.130.17"  "https://syd.proof.ovh.net"
 
-# 4. DO BANG THONG THUC TE QUA DATA CENTER LOOKING GLASS (10 HUBS)
+# 7. DO BANG THONG THUC TE QUA DATA CENTER LOOKING GLASS (10 HUBS)
 echo -e "\n${PURPLE}${BOLD}--- [3] DO BANG THONG THUC TE (DATA CENTER LOOKING GLASS) ---${NC}"
 echo -e "${YELLOW}Do thuc te qua port mang goc (Tu dong Follow 301/302 va chuyen link neu loi)...${NC}\n"
 printf "${BOLD}%-26s | %-16s | %-16s | %-12s${NC}\n" "Vi tri may chu Test" "Toc do Download" "Ha tang Server" "Trang thai"
@@ -225,7 +234,7 @@ run_direct_speedtest "9. AU (Uc - Sydney)" \
     "http://speedtest.syd1.linode.com/100MB-sydney.bin" \
     "OVH Australia" "intl"
 
-# 5. DO LUU LUONG DOCKER (DO CHINH XAC NANO-GIAY & FORMAT GB TU DONG)
+# 8. DO LUU LUONG DOCKER (DO CHINH XAC NANO-GIAY & FORMAT GB TU DONG)
 echo -e "\n${PURPLE}${BOLD}--- [4] DO DU LIEU CONTAINER & LUU LUONG TICH LUY (LIVE & LIFETIME) ---${NC}"
 
 DEAD_NODES_LIST=()
@@ -260,7 +269,6 @@ else
                 TOT_BYTES=$(( ${C_RX1["$CID"]} + ${C_TX1["$CID"]} ))
                 C_TOTAL_RAW_MB["$CID"]=$(awk -v b="$TOT_BYTES" 'BEGIN {printf "%.2f", b / 1048576}')
 
-                # Tu dong doi MB sang GB neu > 1000 MB
                 if (( $(echo "$TOT_BYTES >= 1048576000" | bc -l 2>/dev/null || echo "0") )); then
                     C_TOTAL_FORMAT["$CID"]=$(awk -v b="$TOT_BYTES" 'BEGIN {printf "%.1f GB", b / 1073741824}')
                 else
@@ -272,7 +280,6 @@ else
         sleep 2
         T2=$(date +%s%N)
 
-        # Tinh chinh xac khoang thoi gian thuc te (Delta Sec)
         ELAPSED_SEC=$(awk -v t1="$T1" -v t2="$T2" 'BEGIN {val=(t2 - t1)/1000000000; if(val<=0) val=2.0; printf "%.3f", val}')
 
         for CID in "${!C_PIDS[@]}"; do
@@ -305,7 +312,6 @@ else
             if (( $(echo "$RX_VAL <= 0.05" | bc -l 2>/dev/null || echo "0") )) && \
                (( $(echo "$TX_VAL <= 0.15" | bc -l 2>/dev/null || echo "0") )); then
                 
-                # Quet IP Outbound cua Container (Co Fallback chong Timeout)
                 CONTAINER_OUTBOUND_IP=$(timeout 2 nsenter -t "$CPID" -n curl -4 -s -A "$USER_AGENT" https://api.ipify.org 2>/dev/null)
                 [ -z "$CONTAINER_OUTBOUND_IP" ] && CONTAINER_OUTBOUND_IP=$(timeout 2 nsenter -t "$CPID" -n curl -4 -s -A "$USER_AGENT" https://icanhazip.com 2>/dev/null | tr -d '\n')
                 [ -z "$CONTAINER_OUTBOUND_IP" ] && CONTAINER_OUTBOUND_IP=$(timeout 2 nsenter -t "$CPID" -n curl -4 -s -A "$USER_AGENT" https://checkip.amazonaws.com 2>/dev/null | tr -d '\n')
@@ -321,7 +327,7 @@ else
     fi
 fi
 
-# 6. PHAN TICH DANH SACH NODE (BAO VE NODE IDLE & CHI RO NODE CHET)
+# 9. PHAN TICH DANH SACH NODE (BAO VE NODE IDLE & CHI RO NODE CHET)
 echo -e "\n${PURPLE}${BOLD}--- [5] DANH GIA TRANG THAI CHI TIET TUNG NODE (ANTI-MISTAKE AUDIT) ---${NC}"
 
 if [ ${#IDLE_NODES_LIST[@]} -gt 0 ]; then
@@ -354,7 +360,7 @@ else
     done
 fi
 
-# 7. PHAN QUYET KET QUA TONG THE (THUAT TOAN NHAN DIEN VI TRI)
+# 10. PHAN QUYET KET QUA TONG THE (THUAT TOAN NHAN DIEN VI TRI)
 echo -e "\n${CYAN}${BOLD}================================================================================${NC}"
 echo -e "${GREEN}${BOLD}                         KET LUAN & PHAN TICH TINH TRANG                        ${NC}"
 echo -e "${CYAN}${BOLD}================================================================================${NC}"
@@ -379,3 +385,5 @@ fi
 
 rm -rf "$TMP_DIR"
 echo -e "\n${CYAN}================================================================================${NC}\n"
+EOF
+bash check_network_proxy.sh
