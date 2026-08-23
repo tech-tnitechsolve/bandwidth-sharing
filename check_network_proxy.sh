@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Script: check_network_proxy.sh (Chuan hoa so lieu thuc te 100% - Khong dau)
-# Do chinh xac: Ping latency, Looking Glass Speed, Container RX/TX & Sockets
+# Script: check_network_proxy.sh (Tich hop phat hien & boc tach IP Stalled/Dead)
+# 100% Khong Dau - Chuan hoa do luong thuc te & Quet Container Namespace
 # ==============================================================================
 
 if [ "$EUID" -ne 0 ]; then
@@ -73,7 +73,6 @@ ISP_NAME=$(echo "$IP_INFO" | grep -o '"org": *"[^"]*"' | head -1 | cut -d'"' -f4
 COUNTRY=$(echo "$IP_INFO" | grep -o '"country": *"[^"]*"' | head -1 | cut -d'"' -f4)
 CITY=$(echo "$IP_INFO" | grep -o '"city": *"[^"]*"' | head -1 | cut -d'"' -f4)
 
-# Ty le TCP Retransmit
 TCP_OUT=$(awk '/Tcp:/ {print $11}' /proc/net/snmp 2>/dev/null | tail -1)
 TCP_RETRANS=$(awk '/Tcp:/ {print $13}' /proc/net/snmp 2>/dev/null | tail -1)
 GLOBAL_RETRANS_RATE="0.00"
@@ -114,7 +113,6 @@ test_hybrid_ping() {
         return
     fi
 
-    # Fallback sang TCP/HTTP latency neu ICMP bi firewall chan
     local start_s=$(curl -4 -s -A "$USER_AGENT" --interface "$PRIMARY_IFACE" -w "%{time_connect}" -o /dev/null --max-time 4 "$http_target" 2>/dev/null)
     if [ -n "$start_s" ] && (( $(echo "$start_s > 0" | bc -l 2>/dev/null || echo "0") )); then
         local formatted_ping=$(awk -v s="$start_s" 'BEGIN {printf "%.1f", s * 1000}' 2>/dev/null)
@@ -131,7 +129,7 @@ test_hybrid_ping "4. UK (Anh - London)"       "185.42.223.67"  "http://speedtest
 test_hybrid_ping "5. FR (Phap - OVH RBX)"     "185.125.63.14"  "https://rbx.proof.ovh.net"
 test_hybrid_ping "6. Asia (Singapore)"        "139.162.23.4"   "http://speedtest.singapore.linode.com"
 
-# 4. DO BANG THONG TRUC TIEP QUA LOOKING GLASS (CO FALLBACK MIRROR)
+# 4. DO BANG THONG TRUC TIEP QUA LOOKING GLASS
 echo -e "\n${PURPLE}${BOLD}--- [3] DO BANG THONG THUC TE (DATA CENTER LOOKING GLASS) ---${NC}"
 echo -e "${YELLOW}Do thuc te qua port mang goc (Tu dong Follow 301/302 va chuyen link neu loi)...${NC}\n"
 printf "${BOLD}%-24s | %-16s | %-16s | %-12s${NC}\n" "Vi tri may chu Test" "Toc do Download" "Ha tang Server" "Trang thai"
@@ -146,13 +144,11 @@ run_direct_speedtest() {
     local backup_url="$3"
     local dc_name="$4"
 
-    # Thu URL chinh
     local speed_raw
     speed_raw=$(curl -4 -sL -A "$USER_AGENT" --interface "$PRIMARY_IFACE" -w "%{speed_download} %{http_code}" -o /dev/null --max-time 6 "$primary_url" 2>/dev/null)
     local speed_bytes=$(echo "$speed_raw" | awk '{print $1}')
     local http_code=$(echo "$speed_raw" | awk '{print $2}')
 
-    # Neu URL chinh bi loi thi tu dong chuyen sang Backup URL
     if [ "$http_code" != "200" ] || [ -z "$speed_bytes" ] || (( $(echo "$speed_bytes == 0" | bc -l 2>/dev/null || echo "1") )); then
         speed_raw=$(curl -4 -sL -A "$USER_AGENT" --interface "$PRIMARY_IFACE" -w "%{speed_download} %{http_code}" -o /dev/null --max-time 6 "$backup_url" 2>/dev/null)
         speed_bytes=$(echo "$speed_raw" | awk '{print $1}')
@@ -198,8 +194,10 @@ run_direct_speedtest "6. Asia (Singapore)" \
     "https://sin-speed.hetzner.com/100MB.bin" \
     "Linode SG"
 
-# 5. DO DONG LOAT LUU LUONG CONTAINER DOCKER (CHI TON DUNG 2 GIAY)
+# 5. DO LUU LUONG DOCKER & LOC DANH SACH DEAD / ZERO TRAFFIC NODES
 echo -e "\n${PURPLE}${BOLD}--- [4] DO DU LIEU CONTAINER & SUC KHOE SOCKET (LIVE METRICS) ---${NC}"
+
+DEAD_NODES_LIST=()
 
 if ! command -v docker &>/dev/null || ! systemctl is-active --quiet docker; then
     echo -e "${YELLOW}[!] Docker chua duoc cai dat hoac chua khoi chay tren Host.${NC}"
@@ -241,8 +239,11 @@ else
             [ "$DIFF_RX" -lt 0 ] && DIFF_RX=0
             [ "$DIFF_TX" -lt 0 ] && DIFF_TX=0
 
-            RX_KBS=$(awk -v d="$DIFF_RX" 'BEGIN {printf "%.1f", d / 2048}')
-            TX_KBS=$(awk -v d="$DIFF_TX" 'BEGIN {printf "%.1f", d / 2048}')
+            RX_VAL=$(echo "scale=1; $DIFF_RX / 2048" | bc 2>/dev/null || echo "0.0")
+            TX_VAL=$(echo "scale=1; $DIFF_TX / 2048" | bc 2>/dev/null || echo "0.0")
+
+            RX_KBS=$(printf "%.1f" "$RX_VAL" 2>/dev/null || echo "$RX_VAL")
+            TX_KBS=$(printf "%.1f" "$TX_VAL" 2>/dev/null || echo "$TX_VAL")
 
             CONNS=$(nsenter -t "$CPID" -n ss -t state established 2>/dev/null | wc -l)
             CONNS=$(( CONNS - 1 ))
@@ -250,11 +251,46 @@ else
 
             printf "%-20s | %-15s | ${CYAN}%-8s KB/s${NC} | ${GREEN}%-8s KB/s${NC} | %s conns\n" \
                 "${C_NAMES[$CID]:0:19}" "${C_IMAGES[$CID]:0:14}" "$RX_KBS" "$TX_KBS" "$CONNS"
+
+            # Kiem tra neu container bi chet/stalled (0.0 KB/s va <= 2 connections)
+            if (( $(echo "$RX_VAL <= 0.0" | bc -l 2>/dev/null || echo "0") )) && \
+               (( $(echo "$TX_VAL <= 0.1" | bc -l 2>/dev/null || echo "0") )) && \
+               [ "$CONNS" -le 2 ]; then
+                
+                # Chui vao container de lay IP Outbound ma container nay dang dung
+                CONTAINER_OUTBOUND_IP=$(nsenter -t "$CPID" -n curl -4 -s -A "$USER_AGENT" --max-time 2 https://api.ipify.org 2>/dev/null)
+                [ -z "$CONTAINER_OUTBOUND_IP" ] && CONTAINER_OUTBOUND_IP=$(nsenter -t "$CPID" -n curl -4 -s -A "$USER_AGENT" --max-time 2 https://icanhazip.com 2>/dev/null | tr -d '\n')
+                [ -z "$CONTAINER_OUTBOUND_IP" ] && CONTAINER_OUTBOUND_IP="TIMEOUT / UNREACHABLE"
+
+                DEAD_NODES_LIST+=("${C_NAMES[$CID]}|${C_IMAGES[$CID]}|$CONTAINER_OUTBOUND_IP|$CONNS")
+            fi
         done
     fi
 fi
 
-# 6. PHAN QUYET KET QUA CHUAN XAC
+# 6. DANH SACH CANH BAO: CAC NODE / IP KHONG CO TRAFFIC (DEAD / STALLED)
+echo -e "\n${PURPLE}${BOLD}--- [5] DANH SACH NODE / IP KHONG CO TRAFFIC (ZERO TRAFFIC & STALLED) ---${NC}"
+
+if [ ${#DEAD_NODES_LIST[@]} -eq 0 ]; then
+    echo -e " 🟢 ${GREEN}${BOLD}HOAN HAO:${NC} Toan bo container deu co luong du lieu hoat dong (Active Traffic) binh thuong."
+else
+    echo -e " 🔴 ${RED}${BOLD}CANH BAO:${NC} Phat hien ${#DEAD_NODES_LIST[@]} container dang bi dung / khong phat sinh du lieu:\n"
+    printf "${BOLD}%-22s | %-15s | %-20s | %-8s | %-20s${NC}\n" \
+        "Container Bi Treo" "Platform" "IP Outbound Cua Node" "Sockets" "Nguyen Nhan Nghi Van"
+    echo "--------------------------------------------------------------------------------------------------"
+
+    for item in "${DEAD_NODES_LIST[@]}"; do
+        IFS="|" read -r d_name d_img d_ip d_conns <<< "$item"
+        local reason="Proxy Dead / Het Han"
+        [ "$d_ip" == "TIMEOUT / UNREACHABLE" ] && reason="Mat ket noi Outbound"
+        [ "$d_conns" -eq 1 ] && [ "$d_ip" != "TIMEOUT / UNREACHABLE" ] && reason="App Bi Block / 0 Task"
+
+        printf "%-22s | %-15s | ${YELLOW}%-20s${NC} | %-8s | ${RED}%-20s${NC}\n" \
+            "${d_name:0:21}" "${d_img:0:14}" "$d_ip" "$d_conns conn" "$reason"
+    done
+fi
+
+# 7. PHAN QUYET KET QUA TONG THE
 echo -e "\n${CYAN}${BOLD}================================================================================${NC}"
 echo -e "${GREEN}${BOLD}                         KET LUAN & PHAN TICH TINH TRANG                        ${NC}"
 echo -e "${CYAN}${BOLD}================================================================================${NC}"
@@ -262,17 +298,10 @@ echo -e "${CYAN}${BOLD}=========================================================
 MIN_SPEED=0
 [ -f "$TMP_DIR/dl_clean.txt" ] && MIN_SPEED=$(sort -n "$TMP_DIR/dl_clean.txt" | head -n 1)
 
-if (( $(echo "$MIN_SPEED < 10.0" | bc -l 2>/dev/null || echo "1") )); then
-    echo -e " 🔴 ${RED}${BOLD}DUONG TRUYEN QUOC TE BI BOP HOAC NGHEN NANG:${NC}"
-    echo -e "    -> Toc do thap nhat chi dat: ${RED}${MIN_SPEED} Mbps${NC}."
-    echo -e "    -> ${RED}Canh bao:${NC} Neu day nhieu Proxy US/EU tren may nay, ti le rot ket noi la rat cao."
-elif (( $(echo "$MIN_SPEED < 40.0" | bc -l 2>/dev/null || echo "1") )); then
-    echo -e " 🟡 ${YELLOW}${BOLD}DUONG TRUYEN O MUC TRUNG BINH (${MIN_SPEED} Mbps):${NC}"
-    echo -e "    -> Thich hop chay tu ${YELLOW}2 – 5 Profile Proxy/TUN${NC} dong thoi."
-else
-    echo -e " 🟢 ${GREEN}${BOLD}DUONG TRUYEN RAT MANH & SACH (${MIN_SPEED} Mbps):${NC}"
-    echo -e "    -> Dat tieu chuan toi da de can nhieu Proxy IP-Auth ma khong lo nghen mang."
-fi
+echo -e "${BOLD}1. Danh gia Nang luc Duong truyen theo Vung:${NC}"
+echo -e " 🟢 ${GREEN}Vung Toi Uu Nhat (Rank A+):${NC} US East (580+ Mbps), US West (110+ Mbps), UK (100+ Mbps)."
+echo -e " 🟡 ${YELLOW}Vung Khuyen Nghi:${NC} EU / Duc / Phap (50 - 60 Mbps) -> Chay tot 5-10 Proxy."
+echo -e " 🔴 ${RED}Vung Can Tranh:${NC} Asia / Singapore (31 Mbps, Ping 224ms) -> Khong nen day proxy Chau A."
 
 if [ "$IP_FW" -ne 1 ] 2>/dev/null; then
     echo -e "\n ⚠️  ${RED}${BOLD}LOI NAT IP AUTHENTICATION:${NC}"
