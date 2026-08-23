@@ -97,7 +97,7 @@ apt-get update -y -qq || { clear_apt_locks; apt-get update -y -qq; }
 apt-get install -y -qq --no-install-recommends \
   -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
   curl wget git unzip jq bc ca-certificates uuid-runtime cron logrotate net-tools inotify-tools \
-  iptables-persistent netfilter-persistent systemd-timesyncd vnstat nload speedtest-cli dnsutils || true
+  iptables-persistent netfilter-persistent systemd-timesyncd vnstat nload dnsutils || true
 
 # --- CẤU HÌNH ƯU TIÊN IPV4 CHO PROXY IP-AUTH ---
 log "Cau hinh uu tien IPv4 (/etc/gai.conf) cho Proxy IP-Auth..."
@@ -847,7 +847,8 @@ EOF_CRON
 if (( DO_CRON == 1 )); then install_cron_stack; fi
 
 #============================================================================
-# TELEMETRY DIAGNOSTIC (BẢNG CHẨN ĐOÁN CAO CẤP - ZERO DISK LOGS)
+# TELEMETRY DIAGNOSTIC (TẬP TRUNG 100% PHẦN CỨNG, ZRAM & CONTAINER AUDIT)
+# ĐÃ LOẠI BỎ PING/SPEEDTEST ĐỂ CHUYỂN HOÀN TOÀN SANG CHECK_NETWORK_PROXY.SH
 #============================================================================
 cat > /usr/local/bin/ii-status.sh <<'EOF_STATUS'
 #!/usr/bin/env bash
@@ -886,71 +887,8 @@ fi
 ISSUES_COUNT=0
 WARNINGS_COUNT=0
 
-# --- [MỤC 1: ĐÁNH GIÁ ĐƯỜNG TRUYỀN QUỐC TẾ CHUYÊN SÂU] ---
-echo -e "\n${C_C}--- [1. CHẤT LƯỢNG MẠNG QUỐC TẾ (INTERNATIONAL TRANSIT QUALITY)] ---${C_0}"
-
-ping_hub() {
-  local target="$1"
-  local out
-  out=$(ping -c 5 -i 0.2 -W 1 "$target" 2>&1 || echo "")
-  local avg loss
-  avg=$(echo "$out" | tail -1 | awk -F'/' '{print $5}' | cut -d'.' -f1)
-  loss=$(echo "$out" | grep -o '[0-9]*%' | head -1 | tr -d '%')
-  echo "${avg:-999} ${loss:-100}"
-}
-
-read -r SG_MS SG_LOSS <<< "$(ping_hub "1.1.1.1")"
-read -r JP_MS JP_LOSS <<< "$(ping_hub "8.8.8.8")"
-read -r US_MS US_LOSS <<< "$(ping_hub "4.2.2.2")"
-read -r EU_MS EU_LOSS <<< "$(ping_hub "9.9.9.9")"
-
-eval_ping() {
-  local ms="$1" loss="$2" name="$3"
-  local col="$C_G"
-  if (( loss > 5 || ms > 350 )); then col="$C_R"; ISSUES_COUNT=$((ISSUES_COUNT+1));
-  elif (( loss > 0 || ms > 250 )); then col="$C_Y"; WARNINGS_COUNT=$((WARNINGS_COUNT+1)); fi
-  printf "  %-22s: ${col}%3sms${C_0} (Mất gói: ${col}%s%%${C_0})\n" "$name" "$ms" "$loss"
-}
-
-eval_ping "$SG_MS" "$SG_LOSS" "Singapore Gateway"
-eval_ping "$JP_MS" "$JP_LOSS" "Tokyo (Japan) Hub"
-eval_ping "$US_MS" "$US_LOSS" "US Gateway (Mỹ)"
-eval_ping "$EU_MS" "$EU_LOSS" "Frankfurt / Quad9 (EU)"
-
-INTL_SPEED_RAW=$(curl -s4 -r 0-10485760 -w "%{speed_download}" -o /dev/null --connect-timeout 2 --max-time 4 "https://speed.cloudflare.com/__down?bytes=10485760" 2>/dev/null || echo "0")
-INTL_MBPS=$(awk "BEGIN {printf \"%.1f\", ${INTL_SPEED_RAW:-0} * 8 / 1000 / 1000}")
-
-INTL_COL="$C_G"
-INTL_NOTE="[XUẤT SẮC - Ngang chuẩn Oracle]"
-if (( $(echo "$INTL_MBPS < 20" | bc -l) )); then
-  INTL_COL="$C_R"; INTL_NOTE="[NGHẼN QUỐC TẾ - Băng thông bị ISP bóp]"; ISSUES_COUNT=$((ISSUES_COUNT+1))
-elif (( $(echo "$INTL_MBPS < 60" | bc -l) )); then
-  INTL_COL="$C_Y"; INTL_NOTE="[TRUNG BÌNH - Thấp hơn chuẩn Cloud quốc tế]"; WARNINGS_COUNT=$((WARNINGS_COUNT+1))
-fi
-echo -e "  Băng thông QTế thực tế  : ${INTL_COL}${INTL_MBPS} Mbps ${INTL_NOTE}${C_0}"
-
-# Đo TTFB tới Server App Kiếm Tiền (Có thêm User-Agent giả lập vượt Cloudflare WAF)
-echo -e "\n${C_C}--- [2. ĐỘ TRỄ PHẢN HỒI SERVER CÁC APP KIẾM TIỀN (TTFB AUDIT)] ---${C_0}"
-check_app_rtt() {
-  local name="$1" url="$2"
-  local ttfb
-  ttfb=$(curl -s4 -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" -o /dev/null -w "%{time_starttransfer}" --connect-timeout 2 --max-time 3 "$url" 2>/dev/null || echo "9.99")
-  local ms
-  ms=$(awk "BEGIN {print int(${ttfb:-9.99} * 1000)}")
-  local col="$C_G"
-  if (( ms >= 9990 || ms == 0 )); then col="$C_Y"; ms="CLOUDFLARE_BLOCKED"; WARNINGS_COUNT=$((WARNINGS_COUNT+1));
-  elif (( ms > 1500 )); then col="$C_Y"; WARNINGS_COUNT=$((WARNINGS_COUNT+1)); fi
-  printf "  %-22s: ${col}%-7s${C_0} (Kết nối API)\n" "$name" "${ms}ms"
-}
-
-check_app_rtt "Traffmonetizer Master" "https://api.traffmonetizer.com"
-check_app_rtt "Honeygain Master"      "https://api.honeygain.com"
-check_app_rtt "Bitping API"           "https://bitping.com"
-check_app_rtt "Pawns/IPRoyal Master"  "https://pawns.app"
-check_app_rtt "EarnFM Network"        "https://earnfm.com"
-
-# --- [MỤC 3: DOCKER DIRECTORIES & PLATFORM AUDIT] ---
-echo -e "\n${C_C}--- [3. CONTAINER CLUSTERS & ACTIVE AUDIT] ---${C_0}"
+# --- [MỤC 1: DOCKER DIRECTORIES & PLATFORM AUDIT] ---
+echo -e "\n${C_C}--- [1. CONTAINER CLUSTERS & ACTIVE AUDIT] ---${C_0}"
 ROOTS=("$@")
 if (( ${#ROOTS[@]} == 0 )); then ROOTS=(/opt /root /home /srv /home/ubuntu /home/opc); fi
 
@@ -986,8 +924,8 @@ TOTAL_CTRS=$(docker ps -aq 2>/dev/null | wc -l)
 EXITED_CTRS=$(docker ps -aq -f status=exited 2>/dev/null | wc -l)
 echo "  TOTAL SUMMARY: ${RUNNING_CTRS} running / ${TOTAL_CTRS} total (Exited: ${EXITED_CTRS})"
 
-# 3B. BẢNG PHÂN PHỔI BỘ NHỚ THỰC TẾ
-echo -e "\n${C_C}--- [3b. PLATFORMS DYNAMIC MEMORY AUDIT] ---${C_0}"
+# --- [MỤC 2: BẢNG PHÂN PHỔI BỘ NHỚ THỰC TẾ (RAM SÀN / TRẦN)] ---
+echo -e "\n${C_C}--- [2. PLATFORMS DYNAMIC MEMORY AUDIT] ---${C_0}"
 PROFILES=/usr/local/lib/ii-app-profiles.sh
 if [[ -r "$PROFILES" ]]; then
   . "$PROFILES"
@@ -1039,8 +977,8 @@ if [[ -r "$PROFILES" ]]; then
   done
 fi
 
-# --- [MỤC 4: SYSTEM RAM, ZRAM & CONCURRENCY] ---
-echo -e "\n${C_C}--- [4. SYSTEM RAM, ZRAM & CONCURRENCY] ---${C_0}"
+# --- [MỤC 3: SYSTEM RAM, ZRAM & CONCURRENCY] ---
+echo -e "\n${C_C}--- [3. SYSTEM RAM, ZRAM & CONCURRENCY] ---${C_0}"
 RAM_TOTAL=$(free -m | awk '/^Mem:/{print $2}')
 RAM_USED=$(free -m | awk '/^Mem:/{print $3}')
 RAM_AVAIL=$(free -m | awk '/^Mem:/{print $7}')
@@ -1062,21 +1000,39 @@ CONN_MAX=$(cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null || echo 5242
 CONN_PCT=$(( CONN_COUNT * 100 / CONN_MAX ))
 echo -e "  Conntrack Streams       : ${C_G}${CONN_COUNT} / ${CONN_MAX} (${CONN_PCT}% used)${C_0}"
 
-# --- [MỤC 5: TỔNG KẾT CHẨN ĐOÁN] ---
+# --- [MỤC 4: CPU LOAD & DISK / FILESYSTEM HEALTH] ---
+echo -e "\n${C_C}--- [4. CPU LOAD & DISK / FILESYSTEM HEALTH] ---${C_0}"
+CPU_CORES=$(nproc 2>/dev/null || echo 1)
+LOAD_AVG=$(cat /proc/loadavg 2>/dev/null | awk '{print $1, $2, $3}')
+echo "  CPU Cores: ${CPU_CORES} | Load Avg (1m, 5m, 15m): ${LOAD_AVG}"
+
+RO_CHECK=$(grep -w '/' /proc/mounts | awk '{print $4}' | grep -o 'ro' || echo "rw")
+if [[ "$RO_CHECK" == "ro" ]]; then
+  echo -e "  Filesystem Write Mode  : ${C_R}READ-ONLY (CRITICAL DISK ERROR!)${C_0}"
+  ISSUES_COUNT=$((ISSUES_COUNT+1))
+else
+  echo -e "  Filesystem Write Mode  : ${C_G}READ-WRITE (Normal)${C_0}"
+fi
+
+DISK_USAGE=$(df -h / | awk 'NR==2 {print $5}')
+INODE_USAGE=$(df -i / | awk 'NR==2 {print $5}')
+echo "  Disk Storage Usage     : ${DISK_USAGE} used | Inode Usage: ${INODE_USAGE} used"
+
+# --- [MỤC 5: TỔNG KẾT CHẨN ĐOÁN PHẦN CỨNG & STABILITY] ---
 echo -e "\n${C_B}---------------- [24/7 INCOME QUALITY DIAGNOSTIC SUMMARY] ----------------${C_0}"
 SCORE=100
-SCORE=$(( SCORE - (ISSUES_COUNT * 15) - (WARNINGS_COUNT * 5) ))
+SCORE=$(( SCORE - (ISSUES_COUNT * 20) - (WARNINGS_COUNT * 5) ))
 (( SCORE < 0 )) && SCORE=0
 
 if (( ISSUES_COUNT == 0 && WARNINGS_COUNT == 0 )); then
-  echo -e "  OVERALL SCORE : ${C_G}100% PERFECT${C_0} - Đường truyền & Hệ thống tối ưu tuyệt đối cho thu nhập cao!"
-  echo -e "  STATUS        : ${C_G}[HEALTHY_SMOOTH_24_7]${C_0} Không phát sinh lỗi nghẽn mạng."
+  echo -e "  OVERALL SCORE : ${C_G}100% PERFECT${C_0} - Hệ thống phần cứng & ZRAM tối ưu tuyệt đối cho thu nhập cao!"
+  echo -e "  STATUS        : ${C_G}[HEALTHY_SMOOTH_24_7]${C_0} Không phát sinh lỗi OOM hay quá tải."
 elif (( ISSUES_COUNT == 0 )); then
-  echo -e "  OVERALL SCORE : ${C_Y}${SCORE}% GOOD${C_0} - Mạng ổn định khá, có thể bị chậm nhẹ vào giờ cao điểm VN."
-  echo -e "  STATUS        : ${C_Y}[STABLE_WITH_WARNINGS]${C_0} Hệ thống tự điều tiết bù đắp độ trễ."
+  echo -e "  OVERALL SCORE : ${C_Y}${SCORE}% GOOD${C_0} - Hệ thống ổn định khá, ZRAM đang hoạt động tốt."
+  echo -e "  STATUS        : ${C_Y}[STABLE_WITH_WARNINGS]${C_0} Hệ thống tự điều tiết bù đắp tải."
 else
-  echo -e "  OVERALL SCORE : ${C_R}${SCORE}% SUB-OPTIMAL (${ISSUES_COUNT} Cảnh báo nghẽn mạng quốc tế!)${C_0}"
-  echo -e "  STATUS        : ${C_R}[INCOME_THROTTLED]${C_0} Băng thông quốc tế của VPS bị nhà mạng SPT bóp."
+  echo -e "  OVERALL SCORE : ${C_R}${SCORE}% UNSTABLE (${ISSUES_COUNT} Cảnh báo lỗi phần cứng / OOM!)${C_0}"
+  echo -e "  STATUS        : ${C_R}[HARDWARE_RISK_DETECTED]${C_0} Cần kiểm tra lại RAM hoặc số lượng Container."
 fi
 echo -e "${C_B}=========================================================================="
 EOF_STATUS
