@@ -3,7 +3,7 @@
 # Path theo chau + ma tran CONG RA (DC hay chan). Khong dung docker/iptables.
 set -u
 export LC_ALL=C LANG=C
-VER="4.2.1"
+VER="4.3.0"
 
 SELF="$(readlink -f "$0" 2>/dev/null || echo "$0")"
 DIR="${BWPATH_DIR:-/var/log/bwpath}"
@@ -111,6 +111,37 @@ bw_recent() {
   [ "$e" -gt 0 ] && [ $((now - e)) -lt 3000 ]
 }
 
+
+cmd_hw() {
+  mkdir -p "$DIR"
+  local arch cpu ncpu mem virt cloud=none region=na shape=na chip=x86 dmi=""
+  arch="$(uname -m 2>/dev/null || echo ?)"
+  ncpu="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo ?)"
+  mem="$(awk '/MemTotal/{printf "%.0f",$2/1024}' /proc/meminfo 2>/dev/null || echo ?)"
+  cpu="$(awk -F: '/model name/{gsub(/^ /,"");print $2; exit}' /proc/cpuinfo 2>/dev/null)"
+  [ -z "$cpu" ] && cpu="$(awk -F: '/Hardware|CPU implementer/{gsub(/^ /,"");print $2; exit}' /proc/cpuinfo 2>/dev/null)"
+  virt="$(systemd-detect-virt 2>/dev/null || echo ?)"
+  case "$arch" in aarch64|arm64) chip=arm64 ;; esac
+  echo "$cpu $arch" | grep -qiE 'ampere|neoverse|Altra' && chip=ampere
+  local meta
+  meta="$(curl -fsS --max-time 2 -H "Authorization: Bearer Oracle" http://169.254.169.254/opc/v2/instance/ 2>/dev/null || true)"
+  if [ -n "$meta" ]; then
+    cloud=OCI
+    region="$(printf '%s' "$meta" | sed -n 's/.*"canonicalRegionName"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+    [ -z "$region" ] && region="$(printf '%s' "$meta" | sed -n 's/.*"region"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+    shape="$(printf '%s' "$meta" | sed -n 's/.*"shape"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+    echo "$shape" | grep -qiE 'A1|Ampere|Standard.A' && chip=ampere
+  fi
+  [ -r /sys/class/dmi/id/sys_vendor ] && dmi="$(cat /sys/class/dmi/id/sys_vendor 2>/dev/null)-$(cat /sys/class/dmi/id/product_name 2>/dev/null)"
+  echo "$dmi" | grep -qi Oracle && [ "$cloud" = none ] && cloud=OCI
+  {
+    echo "MAY host=$(hostname) arch=$arch chip=$chip ncpu=$ncpu mem_mb=$mem virt=$virt"
+    echo "MAY cpu=${cpu:-?}"
+    echo "MAY cloud=$cloud region=${region:-na} shape=${shape:-na}"
+    echo "MAY dmi=${dmi:-na}"
+  } | tee "$DIR/hw.txt"
+}
+
 cmd_auto() {
   echo "======== bwpath $VER AUTO  $(iso) ========"
   if [ "$(id -u)" -ne 0 ] && ! is_installed; then
@@ -118,7 +149,9 @@ cmd_auto() {
     echo "Can sudo"; exit 1
   fi
   [ "$(id -u)" -eq 0 ] && ensure_install
-  echo "[bwpath] socket theo chau..."
+  echo "[bwpath] cau hinh may..."
+  cmd_hw || true
+  echo "[bwpath] socket theo chau (unicast + peerIP)..."
   cmd_once || true
   echo "[bwpath] cong ra (outbound, khong scan inbound)..."
   cmd_ports || true
@@ -181,16 +214,16 @@ ping_triple() {
 }
 
 curl_probe() {
-  local url="$1" hdr="$2" body="$3" w tc code cf=0 ms
-  w="$(curl -4 -sS -D "$hdr" -o "$body" --max-time 10 -w '%{time_connect} %{http_code}' "$url" 2>/dev/null || echo "0 000")"
-  tc="$(echo "$w" | awk '{print $1}')"; code="$(echo "$w" | awk '{print $2}')"
+  local url="$1" hdr="$2" body="$3" w tc code ip cf=0 ms
+  w="$(curl -4 -sS -D "$hdr" -o "$body" --max-time 10 -w '%{time_connect} %{http_code} %{remote_ip}' "$url" 2>/dev/null || echo "0 000 na")"
+  tc="$(echo "$w" | awk '{print $1}')"; code="$(echo "$w" | awk '{print $2}')"; ip="$(echo "$w" | awk '{print $3}')"
   if grep -qiE '^server:[[:space:]]*cloudflare' "$hdr" 2>/dev/null; then
     case "$code" in 403|429|503) cf=1 ;; esac
     grep -qi 'just a moment\|cf-mitigated' "$body" 2>/dev/null && cf=1
   fi
   if awk -v t="$tc" 'BEGIN{exit !(t+0>0)}'; then ms="$(awk -v t="$tc" 'BEGIN{printf "%.1f", t*1000}')"
   else ms="na"; fi
-  echo "$ms $code $cf"
+  echo "$ms $code $cf ${ip:-na}"
 }
 
 path_hash() {
@@ -220,8 +253,9 @@ cmd_ports() {
   purge_old; ensure_hdr
   local icmp t80 t443 t22 t25 t465 t587 t53 u53 t853 t8080 t8443 t9443 t1080 t3128 t2053 quic ip6
   ping -4 -c 1 -W 2 8.8.8.8 >/dev/null 2>&1 && icmp=1 || icmp=0
-  t80="$(tcp_open example.com 80)"
+  t80="$(tcp_open portquiz.net 80)"
   t443="$(tcp_open example.com 443)"
+  [ "$t443" = 0 ] && t443="$(tcp_open portquiz.net 443)"
   t22="$(tcp_open github.com 22)"
   t25="$(tcp_open smtp.gmail.com 25)"
   t465="$(tcp_open smtp.gmail.com 465)"
@@ -280,7 +314,7 @@ cmd_once() {
 
   local p vn sg de fr use usw au br
   p="$(curl_probe https://vnexpress.net/ "$tmp/h" "$tmp/b")"; vn="$(echo "$p" | awk '{print $1}')"
-  p="$(curl_probe https://www.google.com.sg/ "$tmp/h" "$tmp/b")"; sg="$(echo "$p" | awk '{print $1}')"
+  p="$(curl_probe http://speedtest-sgp1.digitalocean.com/ "$tmp/h" "$tmp/b")"; sg="$(echo "$p" | awk '{print $1}')"; sgip="$(echo "$p" | awk '{print $4}')"
   p="$(curl_probe https://speed.hetzner.de/ "$tmp/h" "$tmp/b")"; de="$(echo "$p" | awk '{print $1}')"
   [ "$de" = "na" ] && { p="$(curl_probe https://ftp.debian.org/debian/README "$tmp/h" "$tmp/b")"; de="$(echo "$p" | awk '{print $1}')"; }
   p="$(curl_probe https://proof.ovh.net/ "$tmp/h" "$tmp/b")"; fr="$(echo "$p" | awk '{print $1}')"
@@ -288,6 +322,7 @@ cmd_once() {
   p="$(curl_probe https://hil-speed.hetzner.com/ "$tmp/h" "$tmp/b")"; usw="$(echo "$p" | awk '{print $1}')"
   p="$(curl_probe https://mirror.aarnet.edu.au/ "$tmp/h" "$tmp/b")"; au="$(echo "$p" | awk '{print $1}')"
   p="$(curl_probe https://mirror.uepg.br/ "$tmp/h" "$tmp/b")"; br="$(echo "$p" | awk '{print $1}')"
+  echo "PEER-SG $sg $sgip  (neu Canada ma SG<30ms => anycast, khong tin)"
 
   local i okc=0
   for i in 1 2 3 4; do
@@ -343,6 +378,7 @@ cmd_daemon() {
 cmd_report() {
   purge_old
   echo "======== bwpath $VER REPORT  $(iso) ========"
+  [ -f "$DIR/hw.txt" ] && cat "$DIR/hw.txt" || cmd_hw || true
   [ -f "$SFILE" ] || { echo "chua mau"; return 1; }
   echo "s=$(wc -l < "$SFILE") b=$([ -f "$BFILE" ] && wc -l < "$BFILE") p=$([ -f "$PFILE" ] && wc -l < "$PFILE")"
   awk -F, '
