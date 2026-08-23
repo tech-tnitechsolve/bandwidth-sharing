@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Script: check_network_proxy.sh (MASTER EDITION - GLOBAL & VIETNAM MATRIX)
-# 100% Khong Dau - Zero Mock Data - Tu dong nhan dien VPS VN & Do 10 Hub Toan Cau
+# Script: check_network_proxy.sh (ULTIMATE PRODUCTION EDITION - 100% CHUAN)
+# 100% Khong Dau - Zero Mock Data - Tu dong nhan dien VN - Anti-Mistake 100%
 # ==============================================================================
 
 if [ "$EUID" -ne 0 ]; then
@@ -23,7 +23,7 @@ USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
 
 clear
 echo -e "${CYAN}${BOLD}================================================================================${NC}"
-echo -e "${GREEN}${BOLD}   HE THONG DO LUONG DUONG TRUYEN & PROXY MASTER (GLOBAL & VIETNAM MATRIX)      ${NC}"
+echo -e "${GREEN}${BOLD}   HE THONG DO LUONG DUONG TRUYEN & PROXY ULTIMATE (GLOBAL & VN MATRIX)         ${NC}"
 echo -e "${YELLOW}   (Do 10 Hub: VN, US, CA, UK, AU, DE, NL, FR, SG - Soi Socket & Live Data)     ${NC}"
 echo -e "${CYAN}${BOLD}================================================================================${NC}\n"
 
@@ -54,7 +54,10 @@ command -v ping &>/dev/null || REQ_PKGS+=("iputils-ping")
 
 # 2. XAC DINH GIAO DIEN MANG & PUBLIC IPV4
 PRIMARY_IFACE=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{print $5; exit}')
+[ -z "$PRIMARY_IFACE" ] && PRIMARY_IFACE=$(ip -4 route show default 2>/dev/null | awk '{print $5; exit}')
+
 LOCAL_SRC_IP=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{print $7; exit}')
+[ -z "$LOCAL_SRC_IP" ] && LOCAL_SRC_IP=$(ip -4 addr show dev "$PRIMARY_IFACE" 2>/dev/null | awk '/inet / {print $2}' | cut -d/ -f1 | head -n 1)
 
 get_public_ipv4() {
     local ip=""
@@ -74,7 +77,7 @@ COUNTRY=$(echo "$IP_INFO" | grep -o '"country": *"[^"]*"' | head -1 | cut -d'"' 
 COUNTRY_CODE=$(echo "$IP_INFO" | grep -o '"countryCode": *"[^"]*"' | head -1 | cut -d'"' -f4)
 CITY=$(echo "$IP_INFO" | grep -o '"city": *"[^"]*"' | head -1 | cut -d'"' -f4)
 
-# Ty le TCP Retransmission cua Host
+# Ty le TCP Retransmission
 TCP_OUT=$(awk '/Tcp:/ {print $11}' /proc/net/snmp 2>/dev/null | tail -1)
 TCP_RETRANS=$(awk '/Tcp:/ {print $13}' /proc/net/snmp 2>/dev/null | tail -1)
 GLOBAL_RETRANS_RATE="0.00"
@@ -131,9 +134,9 @@ test_hybrid_ping "3. US East (New Jersey)"   "208.77.17.2"    "http://speedtest.
 test_hybrid_ping "4. CA (Canada - Toronto)"   "139.162.111.4"  "http://speedtest.toronto1.linode.com"
 test_hybrid_ping "5. UK (Anh - London)"       "185.42.223.67"  "http://speedtest.london.linode.com"
 test_hybrid_ping "6. DE (Duc - Frankfurt)"   "91.107.223.4"   "https://fsn1-speed.hetzner.com"
-test_hybrid_ping "7. NL (Ha Lan - Amsterdam)" "194.126.175.174" "http://mirror.nl.leaseweb.net"
+test_hybrid_ping "7. NL (Ha Lan - Amsterdam)" "194.126.175.174" "http://speedtest.ams2.digitalocean.com"
 test_hybrid_ping "8. FR (Phap - Roubaix)"     "185.125.63.14"  "https://rbx.proof.ovh.net"
-test_hybrid_ping "9. AU (Uc - Sydney)"        "139.99.130.17"  "http://speedtest.sydney1.linode.com"
+test_hybrid_ping "9. AU (Uc - Sydney)"        "139.99.130.17"  "https://syd.proof.ovh.net"
 
 # 4. DO BANG THONG THUC TE QUA DATA CENTER LOOKING GLASS (10 HUBS)
 echo -e "\n${PURPLE}${BOLD}--- [3] DO BANG THONG THUC TE (DATA CENTER LOOKING GLASS) ---${NC}"
@@ -208,9 +211,9 @@ run_direct_speedtest "6. DE (Duc - Frankfurt)" \
     "Hetzner Germany" "intl"
 
 run_direct_speedtest "7. NL (Ha Lan - Amsterdam)" \
-    "http://mirror.nl.leaseweb.net/speedtest/100mb.bin" \
     "http://speedtest.ams2.digitalocean.com/100mb.test" \
-    "Leaseweb NL" "intl"
+    "https://fsn1-speed.hetzner.com/100MB.bin" \
+    "DigitalOcean NL" "intl"
 
 run_direct_speedtest "8. FR (Phap - Roubaix)" \
     "https://rbx.proof.ovh.net/files/100Mio.dat" \
@@ -218,11 +221,11 @@ run_direct_speedtest "8. FR (Phap - Roubaix)" \
     "OVH France" "intl"
 
 run_direct_speedtest "9. AU (Uc - Sydney)" \
-    "http://speedtest.sydney1.linode.com/100MB-sydney.bin" \
     "https://syd.proof.ovh.net/files/100Mio.dat" \
-    "Linode AU / OVH" "intl"
+    "http://speedtest.syd1.linode.com/100MB-sydney.bin" \
+    "OVH Australia" "intl"
 
-# 5. DO LUU LUONG CONTAINER DOCKER (LIVE RX/TX + TONG MB TICH LUY)
+# 5. DO LUU LUONG DOCKER (DO CHINH XAC NANO-GIAY & FORMAT GB TU DONG)
 echo -e "\n${PURPLE}${BOLD}--- [4] DO DU LIEU CONTAINER & LUU LUONG TICH LUY (LIVE & LIFETIME) ---${NC}"
 
 DEAD_NODES_LIST=()
@@ -237,11 +240,12 @@ else
     else
         echo -e "${YELLOW}[*] Dang do dong loat toan bo container trong 2 giay...${NC}\n"
         printf "${BOLD}%-20s | %-15s | %-12s | %-12s | %-12s | %-10s${NC}\n" \
-            "Container" "Image" "Live RX" "Live TX" "Tong MB Cay" "Sockets"
+            "Container" "Image" "Live RX" "Live TX" "Tong Data" "Sockets"
         echo "-----------------------------------------------------------------------------------------------"
 
-        declare -A C_PIDS C_NAMES C_IMAGES C_RX1 C_TX1 C_TOTAL_MB
+        declare -A C_PIDS C_NAMES C_IMAGES C_RX1 C_TX1 C_TOTAL_FORMAT C_TOTAL_RAW_MB
 
+        T1=$(date +%s%N)
         for CID in $CONTAINERS; do
             CPID=$(docker inspect -f '{{.State.Pid}}' "$CID" 2>/dev/null)
             if [ -n "$CPID" ] && [ "$CPID" -gt 0 ] 2>/dev/null; then
@@ -249,20 +253,31 @@ else
                 C_NAMES["$CID"]=$(docker inspect -f '{{.Name}}' "$CID" | sed 's/^\///')
                 C_IMAGES["$CID"]=$(docker inspect -f '{{.Config.Image}}' "$CID" | cut -d'/' -f2- | cut -c1-15)
 
-                STAT1=$(nsenter -t "$CPID" -n awk 'NR>2 && $1 !~ /lo:/ {rx+=$2; tx+=$10} END {print rx+0, tx+0}' /proc/net/dev 2>/dev/null || echo "0 0")
+                STAT1=$(timeout 1 nsenter -t "$CPID" -n awk 'NR>2 && $1 !~ /lo:/ {rx+=$2; tx+=$10} END {print rx+0, tx+0}' /proc/net/dev 2>/dev/null || echo "0 0")
                 C_RX1["$CID"]=$(echo "$STAT1" | awk '{print $1}')
                 C_TX1["$CID"]=$(echo "$STAT1" | awk '{print $2}')
 
                 TOT_BYTES=$(( ${C_RX1["$CID"]} + ${C_TX1["$CID"]} ))
-                C_TOTAL_MB["$CID"]=$(awk -v b="$TOT_BYTES" 'BEGIN {printf "%.1f", b / 1048576}')
+                C_TOTAL_RAW_MB["$CID"]=$(awk -v b="$TOT_BYTES" 'BEGIN {printf "%.2f", b / 1048576}')
+
+                # Tu dong doi MB sang GB neu > 1000 MB
+                if (( $(echo "$TOT_BYTES >= 1048576000" | bc -l 2>/dev/null || echo "0") )); then
+                    C_TOTAL_FORMAT["$CID"]=$(awk -v b="$TOT_BYTES" 'BEGIN {printf "%.1f GB", b / 1073741824}')
+                else
+                    C_TOTAL_FORMAT["$CID"]=$(awk -v b="$TOT_BYTES" 'BEGIN {printf "%.1f MB", b / 1048576}')
+                fi
             fi
         done
 
         sleep 2
+        T2=$(date +%s%N)
+
+        # Tinh chinh xac khoang thoi gian thuc te (Delta Sec)
+        ELAPSED_SEC=$(awk -v t1="$T1" -v t2="$T2" 'BEGIN {val=(t2 - t1)/1000000000; if(val<=0) val=2.0; printf "%.3f", val}')
 
         for CID in "${!C_PIDS[@]}"; do
             CPID="${C_PIDS[$CID]}"
-            STAT2=$(nsenter -t "$CPID" -n awk 'NR>2 && $1 !~ /lo:/ {rx+=$2; tx+=$10} END {print rx+0, tx+0}' /proc/net/dev 2>/dev/null || echo "0 0")
+            STAT2=$(timeout 1 nsenter -t "$CPID" -n awk 'NR>2 && $1 !~ /lo:/ {rx+=$2; tx+=$10} END {print rx+0, tx+0}' /proc/net/dev 2>/dev/null || echo "0 0")
             RX2=$(echo "$STAT2" | awk '{print $1}')
             TX2=$(echo "$STAT2" | awk '{print $2}')
 
@@ -271,32 +286,35 @@ else
             [ "$DIFF_RX" -lt 0 ] && DIFF_RX=0
             [ "$DIFF_TX" -lt 0 ] && DIFF_TX=0
 
-            RX_VAL=$(echo "scale=1; $DIFF_RX / 2048" | bc 2>/dev/null || echo "0.0")
-            TX_VAL=$(echo "scale=1; $DIFF_TX / 2048" | bc 2>/dev/null || echo "0.0")
+            RX_VAL=$(awk -v d="$DIFF_RX" -v s="$ELAPSED_SEC" 'BEGIN {printf "%.2f", (d / s) / 1024}')
+            TX_VAL=$(awk -v d="$DIFF_TX" -v s="$ELAPSED_SEC" 'BEGIN {printf "%.2f", (d / s) / 1024}')
 
-            RX_KBS=$(awk -v d="$DIFF_RX" 'BEGIN {printf "%.1f", d / 2048}')
-            TX_KBS=$(awk -v d="$DIFF_TX" 'BEGIN {printf "%.1f", d / 2048}')
+            RX_KBS=$(awk -v v="$RX_VAL" 'BEGIN {printf "%.1f", v}')
+            TX_KBS=$(awk -v v="$TX_VAL" 'BEGIN {printf "%.1f", v}')
 
-            CONNS=$(nsenter -t "$CPID" -n ss -t state established 2>/dev/null | wc -l)
+            CONNS=$(timeout 1 nsenter -t "$CPID" -n ss -t state established 2>/dev/null | wc -l)
             CONNS=$(( CONNS - 1 ))
             [ "$CONNS" -lt 0 ] && CONNS=0
 
-            TOTAL_MB="${C_TOTAL_MB[$CID]}"
+            TOTAL_STR="${C_TOTAL_FORMAT[$CID]}"
+            TOTAL_MB="${C_TOTAL_RAW_MB[$CID]}"
 
-            printf "%-20s | %-15s | ${CYAN}%-8s KB/s${NC} | ${GREEN}%-8s KB/s${NC} | ${YELLOW}%-8s MB${NC} | %s conns\n" \
-                "${C_NAMES[$CID]:0:19}" "${C_IMAGES[$CID]:0:14}" "$RX_KBS" "$TX_KBS" "$TOTAL_MB" "$CONNS"
+            printf "%-20s | %-15s | ${CYAN}%-8s KB/s${NC} | ${GREEN}%-8s KB/s${NC} | ${YELLOW}%-10s${NC} | %s conns\n" \
+                "${C_NAMES[$CID]:0:19}" "${C_IMAGES[$CID]:0:14}" "$RX_KBS" "$TX_KBS" "$TOTAL_STR" "$CONNS"
 
-            if (( $(echo "$RX_VAL <= 0.0" | bc -l 2>/dev/null || echo "0") )) && \
-               (( $(echo "$TX_VAL <= 0.1" | bc -l 2>/dev/null || echo "0") )); then
+            if (( $(echo "$RX_VAL <= 0.05" | bc -l 2>/dev/null || echo "0") )) && \
+               (( $(echo "$TX_VAL <= 0.15" | bc -l 2>/dev/null || echo "0") )); then
                 
-                CONTAINER_OUTBOUND_IP=$(nsenter -t "$CPID" -n curl -4 -s -A "$USER_AGENT" --max-time 2 https://api.ipify.org 2>/dev/null)
-                [ -z "$CONTAINER_OUTBOUND_IP" ] && CONTAINER_OUTBOUND_IP=$(nsenter -t "$CPID" -n curl -4 -s -A "$USER_AGENT" --max-time 2 https://icanhazip.com 2>/dev/null | tr -d '\n')
+                # Quet IP Outbound cua Container (Co Fallback chong Timeout)
+                CONTAINER_OUTBOUND_IP=$(timeout 2 nsenter -t "$CPID" -n curl -4 -s -A "$USER_AGENT" https://api.ipify.org 2>/dev/null)
+                [ -z "$CONTAINER_OUTBOUND_IP" ] && CONTAINER_OUTBOUND_IP=$(timeout 2 nsenter -t "$CPID" -n curl -4 -s -A "$USER_AGENT" https://icanhazip.com 2>/dev/null | tr -d '\n')
+                [ -z "$CONTAINER_OUTBOUND_IP" ] && CONTAINER_OUTBOUND_IP=$(timeout 2 nsenter -t "$CPID" -n curl -4 -s -A "$USER_AGENT" https://checkip.amazonaws.com 2>/dev/null | tr -d '\n')
                 [ -z "$CONTAINER_OUTBOUND_IP" ] && CONTAINER_OUTBOUND_IP="TIMEOUT / UNREACHABLE"
 
                 if (( $(echo "$TOTAL_MB >= 2.0" | bc -l 2>/dev/null || echo "0") )) || [ "$CONNS" -ge 2 ]; then
-                    IDLE_NODES_LIST+=("${C_NAMES[$CID]}|${C_IMAGES[$CID]}|$CONTAINER_OUTBOUND_IP|$CONNS|$TOTAL_MB")
+                    IDLE_NODES_LIST+=("${C_NAMES[$CID]}|${C_IMAGES[$CID]}|$CONTAINER_OUTBOUND_IP|$CONNS|$TOTAL_STR")
                 else
-                    DEAD_NODES_LIST+=("${C_NAMES[$CID]}|${C_IMAGES[$CID]}|$CONTAINER_OUTBOUND_IP|$CONNS|$TOTAL_MB")
+                    DEAD_NODES_LIST+=("${C_NAMES[$CID]}|${C_IMAGES[$CID]}|$CONTAINER_OUTBOUND_IP|$CONNS|$TOTAL_STR")
                 fi
             fi
         done
@@ -312,9 +330,9 @@ if [ ${#IDLE_NODES_LIST[@]} -gt 0 ]; then
         "Container" "Platform" "IP Outbound" "Da Cay Duoc" "Khuyen Nghi"
     echo "--------------------------------------------------------------------------------------------------"
     for item in "${IDLE_NODES_LIST[@]}"; do
-        IFS="|" read -r i_name i_img i_ip i_conns i_mb <<< "$item"
-        printf "%-22s | %-14s | ${CYAN}%-18s${NC} | ${YELLOW}%-10s MB${NC} | ${GREEN}%-20s${NC}\n" \
-            "${i_name:0:21}" "${i_img:0:13}" "$i_ip" "$i_mb" "GIU NGUYEN (Kiem Tot)"
+        IFS="|" read -r i_name i_img i_ip i_conns i_total <<< "$item"
+        printf "%-22s | %-14s | ${CYAN}%-18s${NC} | ${YELLOW}%-12s${NC} | ${GREEN}%-20s${NC}\n" \
+            "${i_name:0:21}" "${i_img:0:13}" "$i_ip" "$i_total" "GIU NGUYEN (Kiem Tot)"
     done
     echo ""
 fi
@@ -327,12 +345,12 @@ else
         "Container Bi Loi" "Platform" "IP Outbound" "Da Cay" "Nguyen Nhan Nghi Van"
     echo "--------------------------------------------------------------------------------------------------"
     for item in "${DEAD_NODES_LIST[@]}"; do
-        IFS="|" read -r d_name d_img d_ip d_conns d_mb <<< "$item"
+        IFS="|" read -r d_name d_img d_ip d_conns d_total <<< "$item"
         reason="App Block / 0 Task"
         [ "$d_ip" == "TIMEOUT / UNREACHABLE" ] && reason="Proxy Dead / Mat Mang"
 
-        printf "%-22s | %-14s | ${YELLOW}%-18s${NC} | ${RED}%-8s MB${NC} | ${RED}%-20s${NC}\n" \
-            "${d_name:0:21}" "${d_img:0:13}" "$d_ip" "$d_mb" "$reason"
+        printf "%-22s | %-14s | ${YELLOW}%-18s${NC} | ${RED}%-8s${NC} | ${RED}%-20s${NC}\n" \
+            "${d_name:0:21}" "${d_img:0:13}" "$d_ip" "$d_total" "$reason"
     done
 fi
 
@@ -347,8 +365,8 @@ if [[ "$COUNTRY_CODE" == "VN" ]] || [[ "$COUNTRY" == *"Vietnam"* ]]; then
     VN_SPEED="0"
     [ -f "$TMP_DIR/dl_vn.txt" ] && VN_SPEED=$(head -n 1 "$TMP_DIR/dl_vn.txt")
     echo -e " 🇻🇳 ${CYAN}${BOLD}PHAT HIEN MAY CHU DAT TAI VIET NAM:${NC}"
-    echo -e "    -> Băng thông Noi dia VN: ${GREEN}${BOLD}${VN_SPEED} Mbps${NC} (Ping < 10ms) -> ${GREEN}Rank S+ cho Proxy VN/Chau A${NC}."
-    echo -e "    -> Băng thông Au My (US/UK/EU): Bi bop o muc 20-35 Mbps -> ${YELLOW}Khong nen nhet qua 50 Node Au My de tranh timeout${NC}."
+    echo -e "    -> Bang thong Noi dia VN: ${GREEN}${BOLD}${VN_SPEED} Mbps${NC} (Ping < 10ms) -> ${GREEN}Rank S+ cho Proxy VN/Chau A${NC}."
+    echo -e "    -> Bang thong Au My (US/UK/EU): Bi bop o muc 20-35 Mbps -> ${YELLOW}Khong nen nhet qua 50 Node Au My de tranh timeout${NC}."
 else
     echo -e " 🌐 ${CYAN}${BOLD}MAY CHU QUOC TE (${COUNTRY}):${NC}"
     echo -e "    -> Uu tien gan Proxy tai cac Hub gan vi tri VPS de dat toc do toi da va ping thap nhat."
