@@ -1,7 +1,6 @@
-cat << 'ORACLE_MASTER_EOF' > /home/ubuntu/setup_oracle_cloud.sh
 #!/usr/bin/env bash
 #============================================================================
-#  setup_oracle_cloud.sh (2026 MASTER ULTIMATE - ZERO DOWNTIME & ZERO ERRORS)
+#  setup_oracle_cloud.sh — OCI x86, dong bo VPS/VM (ZRAM zstd, DNS direct, KHONG de MAX_MEMORY)
 #============================================================================
 set -Eeuo pipefail
 
@@ -154,14 +153,57 @@ if [[ -f /sys/kernel/mm/ksm/run ]]; then
   log "Da kich hoat KSM toi uu cao thanh cong!"
 fi
 
-# CẤU HÌNH ZRAM CHUẨN QUA SYSTEMD ZRAMSWAP
-log "Kich hoat ZRAM ${MEM_MB}MB cho OCI qua systemd..."
+
+# ZRAM giong VPS/VM: 100% RAM, zstd, pri 10 — disk swap chi pri 0
+log "ZRAM = RAM (zstd), dong bo VPS/VM"
+mkdir -p /etc/modules-load.d
+cat > /etc/modules-load.d/internetincome.conf <<'EOF_MODULES'
+zram
+tcp_bbr
+nf_conntrack
+tun
+EOF_MODULES
 modprobe zram num_devices=1 2>/dev/null || true
-echo -e "ALGO=lz4\nPERCENT=100\nPRIORITY=10" > /etc/default/zramswap
-if has_systemd; then
-  systemctl restart zramswap 2>/dev/null || true
-  systemctl enable zramswap 2>/dev/null || true
+modprobe tcp_bbr 2>/dev/null || true
+modprobe nf_conntrack 2>/dev/null || true
+modprobe tun 2>/dev/null || true
+cat > /usr/local/bin/ii-init-zram.sh <<'EOF_ZRAM_INIT'
+#!/usr/bin/env bash
+MEM_MB=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
+ZRAM_BYTES=$(( MEM_MB * 1024 * 1024 ))
+modprobe zram num_devices=1 2>/dev/null || true
+[[ -b /dev/zram0 ]] || exit 0
+swapon --show 2>/dev/null | grep -q /dev/zram0 && swapoff /dev/zram0 2>/dev/null || true
+if grep -qw zstd /sys/block/zram0/comp_algorithm 2>/dev/null; then
+  echo zstd > /sys/block/zram0/comp_algorithm 2>/dev/null || true
+else
+  echo lz4 > /sys/block/zram0/comp_algorithm 2>/dev/null || true
 fi
+echo "$ZRAM_BYTES" > /sys/block/zram0/disksize 2>/dev/null || true
+mkswap /dev/zram0 >/dev/null 2>&1 || true
+swapon -p 10 /dev/zram0 2>/dev/null || true
+EOF_ZRAM_INIT
+chmod +x /usr/local/bin/ii-init-zram.sh
+if has_systemd; then
+  systemctl disable --now zramswap 2>/dev/null || true
+  cat > /etc/systemd/system/ii-zram.service <<'EOF_ZRAM_SVC'
+[Unit]
+Description=InternetIncome ZRAM ZSTD
+DefaultDependencies=no
+After=local-fs.target
+Before=swap.target docker.service
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/ii-init-zram.sh
+RemainAfterExit=yes
+[Install]
+WantedBy=swap.target
+EOF_ZRAM_SVC
+  systemctl daemon-reload 2>/dev/null || true
+  systemctl enable --now ii-zram.service 2>/dev/null || true
+fi
+/usr/local/bin/ii-init-zram.sh
+
 
 SWAPPINESS=100
 sysctl -w vm.swappiness=100 >/dev/null 2>&1 || true
@@ -488,11 +530,7 @@ for cid in $(docker ps -aq 2>/dev/null); do
   prev_rc=${prev_rc:-0}; prev_t=${prev_t:-0}; stopped_at=${stopped_at:-0}
 
   if (( stopped_at > 0 )); then
-    if (( now - stopped_at >= COOLDOWN )); then
-      say "[$cname] Het cooldown. Mo lai an toan."
-      docker start "$cid" >/dev/null 2>&1 || true
-      echo "$rc $now 0" > "$f"
-    fi
+    # Khong tu mo lai app deo tai khoan — mo tay sau khi check proxy
     continue
   fi
 
@@ -531,9 +569,6 @@ PROFILES=/usr/local/lib/ii-app-profiles.sh
 MEM_MB=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
 TIER_IDX=$(ii_tier_idx "$MEM_MB" 2>/dev/null || echo 2)
 
-find /root /opt /home /srv -maxdepth 4 -name "internetIncome.sh" -exec sed -i "s/--restart=always/--restart=unless-stopped/g" {} + 2>/dev/null || true
-find /root /opt /home /srv -maxdepth 4 -name "internetIncome.sh" -exec sed -i "s/--restart always/--restart=unless-stopped/g" {} + 2>/dev/null || true
-
 for cid in $(docker ps -aq 2>/dev/null); do
   c_img=$(docker inspect -f '{{.Config.Image}}' "$cid" 2>/dev/null || true)
   c_name=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null | sed 's|^/||' || true)
@@ -555,41 +590,42 @@ EOF_AUTOSYNC
 chmod +x /usr/local/bin/ii-autosync.sh
 ln -sf /usr/local/bin/ii-autosync.sh /usr/bin/ii-autosync 2>/dev/null || true
 
+
 auto_patch_engageub_repo() {
-  log "Dang quet va PATCH RAM DOCKER OCI + FIX LỖI IPV6..."
+  log "Dong bo properties TEST (SOCKS5 DNS off). KHONG ghi MAX_MEMORY, KHONG sed internetIncome.sh"
   ROOTS=(/opt /root /home /srv /home/ubuntu /home/opc)
-  if [[ -n "$BASE_DIR" ]]; then ROOTS+=("$BASE_DIR"); fi
-
-  while IFS= read -r sh_file; do
-    d=$(dirname "$sh_file")
-    if [[ -f "${d}/properties.conf" ]]; then
-      sed -i "s/MAX_MEMORY=.*/MAX_MEMORY=${CONTAINER_MEM_LIMIT}/" "${d}/properties.conf" 2>/dev/null || true
-      grep -q "MAX_MEMORY=" "${d}/properties.conf" || echo "MAX_MEMORY=${CONTAINER_MEM_LIMIT}" >> "${d}/properties.conf"
-    fi
-
-    if [[ -f "$sh_file" ]]; then
-      cp -n "$sh_file" "${sh_file}.bak" 2>/dev/null || true
-      sed -i 's/--sysctl net.ipv6.conf.[a-z0-9_]*.disable_ipv6=[0-9]//g' "$sh_file" 2>/dev/null || true
-
-      if ! grep -q "\--restart" "$sh_file"; then
-        sed -i "s/docker run -d/docker run -d --restart=unless-stopped/g" "$sh_file" 2>/dev/null || true
+  if [[ -n "${BASE_DIR:-}" ]]; then ROOTS+=("$BASE_DIR"); fi
+  while IFS= read -r f; do
+    [[ -f "$f" ]] || continue
+    grep -qE 'USE_SOCKS5_DNS|USE_PROXIES|USE_DNS_OVER_HTTPS' "$f" || continue
+    cp -a "$f" "${f}.bak.$(date +%Y%m%d%H%M%S)" 2>/dev/null || true
+    # go MAX_MEMORY do setup Oracle cu de lai (de ii-autosync / II tu lo)
+    sed -i -E '/^[[:space:]]*MAX_MEMORY=/d;/^[[:space:]]*MEMORY_RESERVATION=/d;/^[[:space:]]*MEMORY_SWAP=/d;/^[[:space:]]*CPU=/d' "$f" || true
+    set_kv() {
+      local k="$1" v="$2"
+      if grep -qE "^[[:space:]]*#?[[:space:]]*${k}=" "$f"; then
+        sed -i -E "s|^[[:space:]]*#?[[:space:]]*${k}=.*|${k}=${v}|" "$f"
+      else
+        printf '\n%s=%s\n' "$k" "$v" >> "$f"
       fi
-
-      if ! grep -q "\--memory" "$sh_file"; then
-        sed -i "s/docker run -d/docker run -d --memory=\"${CONTAINER_MEM_LIMIT}\" --memory-swap=\"${CONTAINER_SWAP_LIMIT}\"/g" "$sh_file"
-      fi
-
-      sed -i "s/--memory=\"[0-9]*[a-z]*\"/--memory=\"${CONTAINER_MEM_LIMIT}\"/g" "$sh_file" 2>/dev/null || true
-      sed -i "s/--memory-swap=\"[0-9]*[a-z]*\"/--memory-swap=\"${CONTAINER_SWAP_LIMIT}\"/g" "$sh_file" 2>/dev/null || true
-
-      sed -i -E '/mysterium|myst/I s/--memory="[0-9]+[a-zA-Z]+"/--memory="250m"/g' "$sh_file" 2>/dev/null || true
-      sed -i -E '/mysterium|myst/I s/--memory-swap="[0-9]+[a-zA-Z]+"/--memory-swap="500m"/g' "$sh_file" 2>/dev/null || true
-
-      sed -i -E '/wipter/I s/--memory="[0-9]+[a-zA-Z]+"/--memory="350m"/g' "$sh_file" 2>/dev/null || true
-      sed -i -E '/wipter/I s/--memory-swap="[0-9]+[a-zA-Z]+"/--memory-swap="600m"/g' "$sh_file" 2>/dev/null || true
-    fi
-  done < <(find "${ROOTS[@]}" -maxdepth 4 -name internetIncome.sh -type f 2>/dev/null | sort -u)
+    }
+    set_kv USE_DIRECT_CONNECTION false
+    set_kv USE_PROXIES true
+    set_kv USE_VPNS false
+    set_kv USE_MULTI_IP false
+    set_kv USE_SOCKS5_DNS false
+    set_kv USE_DNS_OVER_HTTPS true
+    set_kv USE_DNSCRYPT true
+    set_kv USE_DNS_CACHE true
+    set_kv USE_TUN2PROXY false
+    set_kv USE_DOCKER_EMBEDDED_DNS false
+    set_kv USE_CUSTOM_NETWORK false
+    set_kv AUTO_UPDATE_CONTAINERS false
+    set_kv ENABLE_LOGS false
+    echo "[OK] properties $(dirname "$f")"
+  done < <(find "${ROOTS[@]}" -maxdepth 5 -name properties.conf -type f 2>/dev/null | sort -u)
 }
+
 auto_patch_engageub_repo
 /usr/local/bin/ii-autosync.sh || true
 
@@ -610,8 +646,12 @@ cat > /etc/docker/daemon.json <<EOF_DAEMON
 EOF_DAEMON
 
 if has_systemd; then
-  systemctl restart docker 2>/dev/null || true
-  systemctl enable --now docker >/dev/null 2>&1 || true
+  systemctl daemon-reload 2>/dev/null || true
+  if systemctl is-active docker >/dev/null 2>&1; then
+    systemctl reload docker 2>/dev/null || true
+  else
+    systemctl enable --now docker >/dev/null 2>&1 || true
+  fi
 fi
 
 CHECK_DOCKER=0
@@ -671,7 +711,7 @@ if has_systemd; then
   cat > /etc/systemd/system/ii-boot-staggered.service <<'EOF_BOOT_SVC'
 [Unit]
 Description=InternetIncome Staggered Container Boot
-After=docker.service zramswap.service
+After=docker.service ii-zram.service
 Wants=docker.service
 
 [Service]
@@ -1043,6 +1083,3 @@ cp -f /home/ubuntu/setup_oracle_cloud.sh /home/opc/setup_oracle_cloud.sh 2>/dev/
 
 echo "============================= SETUP XONG (100% AUTO-PILOT OCI MASTER 2026 - FULL ULTIMATE) =============================="
 /usr/local/bin/ii-status.sh || true
-ORACLE_MASTER_EOF
-
-sudo chmod +x /home/ubuntu/setup_oracle_cloud.sh
