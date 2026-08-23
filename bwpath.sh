@@ -3,7 +3,7 @@
 # Path theo chau + ma tran CONG RA (DC hay chan). Khong dung docker/iptables.
 set -u
 export LC_ALL=C LANG=C
-VER="4.5.2"
+VER="4.6.3"
 
 SELF="$(readlink -f "$0" 2>/dev/null || echo "$0")"
 DIR="${BWPATH_DIR:-/var/log/bwpath}"
@@ -159,7 +159,7 @@ cmd_hw() {
     local hip igeo
     hip="$(curl -4 -fsS --max-time 4 https://api.ipify.org 2>/dev/null || true)"
     if [ -n "$hip" ]; then
-      igeo="$(curl -fsS --max-time 4 "http://ip-api.com/json/${hip}?fields=country,isp,as,hosting,proxy,mobile" 2>/dev/null || true)"
+      igeo="$(curl -fsS --max-time 4 "http://ip-api.com/json/${hip}?fields=continent,country,city,isp,as,hosting,proxy,mobile" 2>/dev/null || true)"
       echo "MAY ip=$hip ${igeo:-}"
     fi
   } | tee "$DIR/hw.txt"
@@ -181,9 +181,9 @@ cmd_auto() {
   if bw_recent; then echo "[bwpath] bo qua bw (<50p)"
   else echo "[bwpath] Mbps nhe..."; cmd_bw || true; fi
   echo ""; cmd_report || true
-  echo ""; cmd_fit || true
-  echo ""; cmd_risk || true
+  echo ""; cmd_map || true
   echo ""; cmd_cap || true
+  echo ""; cmd_tun || true
   echo ""
   echo "Daemon: $(svc_active && echo DANG CHAY || echo ?). Khong dung Docker. Log $DIR"
 }
@@ -346,8 +346,14 @@ cmd_once() {
   p="$(curl_probe https://hil-speed.hetzner.com/ "$tmp/h" "$tmp/b")"; usw="$(echo "$p" | awk '{print $1}')"
   p="$(curl_probe https://mirror.aarnet.edu.au/ "$tmp/h" "$tmp/b")"; au="$(echo "$p" | awk '{print $1}')"
   p="$(curl_probe https://mirror.uepg.br/ "$tmp/h" "$tmp/b")"; br="$(echo "$p" | awk '{print $1}')"
-  echo "UNICAST SG(DO-SGP1)=$sg peer=$sgip | DE(Hetzner)=$de peer=$deip | USE(ASH)=$use peer=$useip"
-  echo "  ping 8.8.8.8 / UL Cloudflare = ANYCAST (rtt khong phai 'o My/SG')"
+  p="$(curl_probe https://ftp.jaist.ac.jp/ "$tmp/h" "$tmp/b")"; jp="$(echo "$p" | awk '{print $1}')"; jpip="$(echo "$p" | awk '{print $4}')"
+  p="$(curl_probe https://www.bbc.co.uk/ "$tmp/h" "$tmp/b")"; uk="$(echo "$p" | awk '{print $1}')"; ukip="$(echo "$p" | awk '{print $4}')"
+  printf '%s\n' "$vn $sg $sgip $jp $jpip $au $de $deip $uk $ukip $fr $use $useip $usw $br" > "$DIR/last_tcp.txt"
+  echo "LAN_DO tcp_ms peer"
+  echo "  VN=$vn  SG(DO)=$sg peer=$sgip  JP=$jp peer=$jpip  AU=$au"
+  echo "  DE=$de peer=$deip  UK(bbc)=$uk peer=$ukip  FR=$fr"
+  echo "  USE(ASH)=$use peer=$useip  USW=$usw  BR=$br"
+  echo "  8.8.8.8/UL-CF = ANYCAST (khong dung lam toa do)"
 
   local i okc=0
   for i in 1 2 3 4; do
@@ -549,46 +555,132 @@ cmd_risk() {
   fi
 }
 
+cmd_map() {
+  echo "======== VUNG MAY (gan -> xa, chi so) ========"
+  local cc="" city="" cont="" 
+  if [ -f "$DIR/hw.txt" ]; then
+    cc="$(sed -n 's/.*"country":"\([^"]*\)".*/\1/p' "$DIR/hw.txt" | head -1)"
+    city="$(sed -n 's/.*"city":"\([^"]*\)".*/\1/p' "$DIR/hw.txt" | head -1)"
+    cont="$(sed -n 's/.*"continent":"\([^"]*\)".*/\1/p' "$DIR/hw.txt" | head -1)"
+  fi
+  echo "  IP_o: country=${cc:-?} city=${city:-?} continent=${cont:-?}"
+  echo "  Thu tu: vung may truoc, roi vong ra (SEA/AU/EU/UK/NA/SA tuy noi dat)."
+  [ -f "$SFILE" ] || return 0
+  awk -F, -v cc="$cc" -v cont="$cont" '
+    $1=="ts"{next} NF<20{next}
+    {n++
+     if($6+0<80){lg+=$6;nlg++}
+     if($7+0>0){rg+=$7;nrg++; if(mn==""||$7<mn)mn=$7; if($7>mx)mx=$7}
+     if($12+0>0){vn+=$12;nvn++} if($13+0>0){sg+=$13;nsg++}
+     if($14+0>0){de+=$14;nde++} if($15+0>0){fr+=$15;nfr++}
+     if($16+0>0){ue+=$16;nue++} if($17+0>0){uw+=$17;nuw++}
+     if($18+0>0){au+=$18;nau++} if($19+0>0){br+=$19;nbr++}
+     if($20+0>0){par+=$20;np++}}
+    END{
+      if(!n){print "  chua mau tcp"; exit}
+      vn=nvn?vn/nvn:0; sg=nsg?sg/nsg:0; de=nde?de/nde:0; fr=nfr?fr/nfr:0
+      ue=nue?ue/nue:0; uw=nuw?uw/nuw:0; au=nau?au/nau:0; br=nbr?br/nbr:0
+      loss=nlg?lg/nlg:0; rtt=nrg?rg/nrg:0; span=nrg?mx-mn:0
+      sea=(cc=="Vietnam"||cc=="Singapore"||cc=="Thailand"||cc=="Malaysia"||cc=="Indonesia"||cc=="Cambodia"||cc=="Laos"||cc=="Philippines")
+      nam=(cc=="Canada"||cc=="United States"||cont=="North America")
+      print "  -- GAN MAY --"
+      if(sea){
+        printf "  VN tcp_ms=%.0f  SG(DO) tcp_ms=%.0f  (SEA)\n", vn, sg
+      } else if(nam){
+        printf "  USE(ASH) tcp_ms=%.0f  USW tcp_ms=%.0f  (Bac My)\n", ue, uw
+      } else {
+        printf "  DE tcp_ms=%.0f  FR tcp_ms=%.0f  USE tcp_ms=%.0f\n", de, fr, ue
+      }
+      print "  -- XA DAN --"
+      if(sea){
+        printf "  AU=%.0f  DE=%.0f  FR=%.0f  USE=%.0f  USW=%.0f  BR=%.0f\n", au,de,fr,ue,uw,br
+      } else if(nam){
+        printf "  FR=%.0f  DE=%.0f (xem peer, 8ms+Fastly khong phai DE)  VN=%.0f  SG=%.0f  AU=%.0f  BR=%.0f\n", fr,de,vn,sg,au,br
+      } else {
+        printf "  VN=%.0f  SG=%.0f  AU=%.0f  USW=%.0f  BR=%.0f\n", vn,sg,au,uw,br
+      }
+      printf "  -- ON DINH (so, khong diem) --\n"
+      printf "  n_tcp=%d  loss8.8=%.2f%%  rtt8.8=%.1fms  span=%.1fms  par=%.1f\n", n, loss, rtt, span, np?par/np:0
+    }
+  ' "$SFILE"
+  if [ -f "$DIR/last_tcp.txt" ]; then
+    echo "  -- LAN VUA DO (co JP/UK + peer) --"
+    echo "  $(cat "$DIR/last_tcp.txt")"
+  fi
+}
+
+
+cmd_tun() {
+  echo "======== TUN THUC (docker tren may nay) ========"
+  echo "  Khong probe qua docker. Chi liet ke container dang co."
+  if ! have docker; then echo "  khong co docker"; return 0; fi
+  if ! docker info >/dev/null 2>&1; then echo "  docker daemon khong doc duoc"; return 0; fi
+  echo "  -- ps (name status restart ports) --"
+  docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}\t{{.Ports}}' 2>/dev/null | head -80
+  echo "  -- stats 1 lan (CPU% MEM) --"
+  docker stats --no-stream --format 'table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.NetIO}}\t{{.PIDs}}' 2>/dev/null | head -80
+  echo "  -- ten tun* --"
+  docker ps -a --format '{{.Names}} {{.Status}}' 2>/dev/null | grep -E '^tun' || echo "  (khong ten tun*)"
+}
+
+
 cmd_cap() {
-  echo "======== TRAN / GOI Y $VER ========"
-  local ul=0 ntun=0 nall=0 mem ncpu chip=x86
+  echo "======== SUC GANH / ON DINH $VER ========"
+  echo "  Cong thuc tu so do MAY (UL, RAM, load). Khong do tung TUN."
+  local ul=0 mem avail ncpu load1 ntun=0 nall=0 napps=0
   mem="$(awk '/MemTotal/{printf "%.0f",$2/1024}' /proc/meminfo)"
+  avail="$(awk '/MemAvailable/{printf "%.0f",$2/1024}' /proc/meminfo)"
   ncpu="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)"
-  [ -f "$DIR/hw.txt" ] && chip="$(awk -F= '/chip=/{print $2; exit}' "$DIR/hw.txt" | awk '{print $1}')"
-  [ -f "$BFILE" ] && ul="$(awk -F, '$1!="ts"&&$2+0>0{u+=$2;n++} END{if(n) printf "%.1f",u/n; else print 0}' "$BFILE")"
+  load1="$(awk '{print $1}' /proc/loadavg)"
+  [ -f "$BFILE" ] && ul="$(awk -F, '$1!="ts"&&$2+0>0{u+=$2;n++} END{if(n) printf "%.2f",u/n; else print 0}' "$BFILE")"
   if have docker; then
     ntun="$(docker ps --format '{{.Names}}' 2>/dev/null | grep -cE '^tun' || true)"
     nall="$(docker ps -q 2>/dev/null | wc -l | tr -d ' ')"
+    napps=$(( nall - ntun ))
+    (( napps < 0 )) && napps=0
   fi
-  # Tran TUN theo UL host (moi proxy US van di qua UL nay)
-  local tmax=1
-  tmax="$(awk -v u="$ul" 'BEGIN{if(u+0<0.5)print 2; else if(u<1)print 3; else if(u<4)print 8; else if(u<8)print 14; else if(u<16)print 22; else print 30}')"
-  # Tran RAM: ~80MB/TUN+app nhe; 6GB ~ 25 nhe, tru OS 800
-  local rmax=$(( (mem - 800) / 80 ))
-  (( rmax < 2 )) && rmax=2
-  local cap=$tmax
-  (( rmax < cap )) && cap=$rmax
-  echo "  KHONG do tung TUN. Tran = UL+RAM MAY (moi TUN US chung 1 ong)."
-  echo "  UL_tb=${ul}Mbps  RAM=${mem}MB  ncpu=$ncpu  chip=${chip:-?}  docker_run=${nall:-0} tun_dang_chay=${ntun:-0}"
-  echo "  GOI Y SO TUN NHE: ${cap}   (UL~${tmax}  RAM~${rmax})"
-  if [ "${ntun:-0}" -gt "$cap" ]; then
-    echo "  CANH BAO: dang ${ntun} TUN > tran ${cap} — de timeout/reconnect, khong phai 'setup sai'."
+  local ntcp=0 loss=0 span=0
+  if [ -f "$SFILE" ]; then
+    eval "$(awk -F, '
+      $1=="ts"{next} NF<20{next}
+      {n++; if($6+0<80){lg+=$6;nlg++} if($7+0>0){if(mn==""||$7<mn)mn=$7; if($7>mx)mx=$7; nrg++}}
+      END{printf "ntcp=%d loss=%.3f span=%.1f\n", n, nlg?lg/nlg:0, nrg?mx-mn:0}
+    ' "$SFILE")"
   fi
-  echo "  Pawns + PacketStream CUNG 1 IP proxy: XUNG DOT POLICY (1 device/IP), khong phai xung dot ARM."
-  echo "  Traffmo thuong chiu DC. Pawns/PS can proxy RESI — IP Oracle/VPS DC khong tinh resi."
-  case "$chip" in
-    ampere|arm64)
-      echo "  AMPERE: tat Proxyrack/Peer2Profit/Proxylite/browser (amd64/QEMU)."
-      echo "  Traffmo + (Pawns XOR PacketStream) OK neu image aarch64 va proxy resi cho Pawns/PS."
-      ;;
-  esac
-  local pub itype=na
-  pub="$(cat "$ST.ip" 2>/dev/null || true)"
-  if [ -n "$pub" ] && [ "$pub" != fail ]; then
-    itype="$(curl -fsS --max-time 4 "http://ip-api.com/json/${pub}?fields=hosting,proxy,mobile,isp" 2>/dev/null || true)"
-    echo "  IP_HOST ${pub} ${itype:-?}  (hosting=true = DC; app resi nhin IP PROXY khong phai IP nay neu TUN OK)"
+  # UL: 1 app ~0.7Mbps/TUN, 2~1.1, 3~1.5 (cung 1 ong host)
+  # RAM: tru OS 300 neu <2G else 800; 1app 70MB, 2=110, 3=150 / TUN
+  # CPU: ~8/5/4 TUN moi vCPU
+  local reserve=800
+  (( mem < 2000 )) && reserve=300
+  local ramfree=$(( mem - reserve ))
+  (( ramfree < 80 )) && ramfree=80
+  tun_ul()  { awk -v u="$ul" -v p="$1" 'BEGIN{if(u+0<=0){print 0; exit} printf "%d", int(u/p)}'; }
+  tun_ram() { awk -v r="$ramfree" -v m="$1" 'BEGIN{printf "%d", int(r/m)}'; }
+  tun_cpu() { awk -v c="$ncpu" -v k="$1" 'BEGIN{printf "%d", int(c*k)}'; }
+  local u1 u2 u3 r1 r2 r3 c1 c2 c3 t1 t2 t3
+  u1="$(tun_ul 0.7)"; u2="$(tun_ul 1.1)"; u3="$(tun_ul 1.5)"
+  r1="$(tun_ram 70)"; r2="$(tun_ram 110)"; r3="$(tun_ram 150)"
+  c1="$(tun_cpu 8)"; c2="$(tun_cpu 5)"; c3="$(tun_cpu 4)"
+  min3() { awk -v a="$1" -v b="$2" -v c="$3" 'BEGIN{m=a; if(b<m)m=b; if(c<m)m=c; if(m<0)m=0; print m}'; }
+  if awk -v u="$ul" 'BEGIN{exit !(u+0<=0)}'; then
+    t1="$(min3 9999 "$r1" "$c1")"
+    t2="$(min3 9999 "$r2" "$c2")"
+    t3="$(min3 9999 "$r3" "$c3")"
+    u1=chua_do; u2=chua_do; u3=chua_do
+  else
+    t1="$(min3 "$u1" "$r1" "$c1")"
+    t2="$(min3 "$u2" "$r2" "$c2")"
+    t3="$(min3 "$u3" "$r3" "$c3")"
   fi
+  echo "  DO (so may): UL_tb=${ul}Mbps  RAM=${mem}MB avail=${avail}MB  ncpu=${ncpu}  load1=${load1}"
+  echo "  DO (so may): n_tcp=${ntcp:-0}  loss8.8=${loss:-?}  span_ms=${span:-?}  (n_tcp<8 = chua du mau)"
+  echo "  DO (docker): run=${nall}  tun=${ntun}  app_khac_tun=${napps}"
+  echo "  CONG THUC (KHONG do tung TUN; 0.7/1.1/1.5 Mbps va 70/110/150MB la he so, khong phai so do):"
+  echo "    1 app/TUN:  ${t1}   (UL ${u1} / RAM ${r1} / CPU ${c1})"
+  echo "    2 app/TUN:  ${t2}   (UL ${u2} / RAM ${r2} / CPU ${c2})"
+  echo "    3 app/TUN:  ${t3}   (UL ${u3} / RAM ${r3} / CPU ${c3})"
 }
+
 
 cmd_uninstall() {
   [ "$(id -u)" -eq 0 ] || return 1
@@ -607,6 +699,7 @@ case "${1:-auto}" in
   4|fit) cmd_fit; cmd_risk; cmd_cap ;;
   risk) cmd_risk ;;
   cap) cmd_cap ;;
+  tun) cmd_tun ;;
   5|install) cmd_install ;;
   6|uninstall) cmd_uninstall ;;
   7|purge) purge_old; echo purged ;;
