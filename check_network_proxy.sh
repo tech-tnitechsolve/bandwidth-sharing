@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Script: check_network_proxy.sh (Ban Hoan Thien - Zero Bug - Pure ASCII)
-# Do luong thuc te 100%: Host Network, Speedtest, Socket & Boc tach IP Dead
+# Script: check_network_proxy.sh (Ban Chuan Xac Tuyet Doi - Chong Xoa Nham Node)
+# Tich hop: Do Live RX/TX + Tong Traffic Tich Luy (Lifetime MB) + Soi Socket
 # ==============================================================================
 
 if [ "$EUID" -ne 0 ]; then
@@ -24,7 +24,7 @@ USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
 clear
 echo -e "${CYAN}${BOLD}================================================================================${NC}"
 echo -e "${GREEN}${BOLD}   HE THONG DO LUONG DUONG TRUYEN & PROXY (SO LIEU THUC TE - ZERO MOCK DATA)   ${NC}"
-echo -e "${YELLOW}       (Tu dong vuot Firewall, Cloudflare WAF, Chan ICMP Ping & Bop goi)        ${NC}"
+echo -e "${YELLOW}        (Tich hop phan biet Node Nghir/Cho Task vs Node Chet that su)          ${NC}"
 echo -e "${CYAN}${BOLD}================================================================================${NC}\n"
 
 # 1. KIEM TRA VA CAI DAT CONG CU
@@ -73,7 +73,6 @@ ISP_NAME=$(echo "$IP_INFO" | grep -o '"org": *"[^"]*"' | head -1 | cut -d'"' -f4
 COUNTRY=$(echo "$IP_INFO" | grep -o '"country": *"[^"]*"' | head -1 | cut -d'"' -f4)
 CITY=$(echo "$IP_INFO" | grep -o '"city": *"[^"]*"' | head -1 | cut -d'"' -f4)
 
-# Ty le TCP Retransmission cua Host
 TCP_OUT=$(awk '/Tcp:/ {print $11}' /proc/net/snmp 2>/dev/null | tail -1)
 TCP_RETRANS=$(awk '/Tcp:/ {print $13}' /proc/net/snmp 2>/dev/null | tail -1)
 GLOBAL_RETRANS_RATE="0.00"
@@ -195,10 +194,11 @@ run_direct_speedtest "6. Asia (Singapore)" \
     "https://sin-speed.hetzner.com/100MB.bin" \
     "Linode SG"
 
-# 5. DO LUU LUONG CONTAINER DOCKER (PARALLEL SAMPLING 2S)
-echo -e "\n${PURPLE}${BOLD}--- [4] DO DU LIEU CONTAINER & SUC KHOE SOCKET (LIVE METRICS) ---${NC}"
+# 5. DO LUU LUONG CONTAINER DOCKER (LIVE RX/TX + TONG MB TICH LUY)
+echo -e "\n${PURPLE}${BOLD}--- [4] DO DU LIEU CONTAINER & LUU LUONG TICH LUY (LIVE & LIFETIME) ---${NC}"
 
 DEAD_NODES_LIST=()
+IDLE_NODES_LIST=()
 
 if ! command -v docker &>/dev/null || ! systemctl is-active --quiet docker; then
     echo -e "${YELLOW}[!] Docker chua duoc cai dat hoac chua khoi chay tren Host.${NC}"
@@ -208,11 +208,11 @@ else
         echo -e "${YELLOW}[!] Hien khong co Container Docker nao dang chay.${NC}"
     else
         echo -e "${YELLOW}[*] Dang do dong loat toan bo container trong 2 giay...${NC}\n"
-        printf "${BOLD}%-20s | %-15s | %-12s | %-12s | %-12s${NC}\n" \
-            "Container" "Image" "Live RX" "Live TX" "Trang thai TCP"
-        echo "-------------------------------------------------------------------------------"
+        printf "${BOLD}%-20s | %-15s | %-12s | %-12s | %-12s | %-10s${NC}\n" \
+            "Container" "Image" "Live RX" "Live TX" "Tong MB Cay" "Sockets"
+        echo "-----------------------------------------------------------------------------------------------"
 
-        declare -A C_PIDS C_NAMES C_IMAGES C_RX1 C_TX1
+        declare -A C_PIDS C_NAMES C_IMAGES C_RX1 C_TX1 C_TOTAL_MB
 
         for CID in $CONTAINERS; do
             CPID=$(docker inspect -f '{{.State.Pid}}' "$CID" 2>/dev/null)
@@ -221,9 +221,14 @@ else
                 C_NAMES["$CID"]=$(docker inspect -f '{{.Name}}' "$CID" | sed 's/^\///')
                 C_IMAGES["$CID"]=$(docker inspect -f '{{.Config.Image}}' "$CID" | cut -d'/' -f2- | cut -c1-15)
 
+                # Doc bytes hien tai
                 STAT1=$(nsenter -t "$CPID" -n awk 'NR>2 && $1 !~ /lo:/ {rx+=$2; tx+=$10} END {print rx+0, tx+0}' /proc/net/dev 2>/dev/null || echo "0 0")
                 C_RX1["$CID"]=$(echo "$STAT1" | awk '{print $1}')
                 C_TX1["$CID"]=$(echo "$STAT1" | awk '{print $2}')
+
+                # Tinh tong MB tich luy tu luc bat dau chay
+                TOT_BYTES=$(( ${C_RX1["$CID"]} + ${C_TX1["$CID"]} ))
+                C_TOTAL_MB["$CID"]=$(awk -v b="$TOT_BYTES" 'BEGIN {printf "%.1f", b / 1048576}')
             fi
         done
 
@@ -250,43 +255,64 @@ else
             CONNS=$(( CONNS - 1 ))
             [ "$CONNS" -lt 0 ] && CONNS=0
 
-            printf "%-20s | %-15s | ${CYAN}%-8s KB/s${NC} | ${GREEN}%-8s KB/s${NC} | %s conns\n" \
-                "${C_NAMES[$CID]:0:19}" "${C_IMAGES[$CID]:0:14}" "$RX_KBS" "$TX_KBS" "$CONNS"
+            TOTAL_MB="${C_TOTAL_MB[$CID]}"
 
-            # Phat hien Node Dead / Stalled (0.0 KB/s va <= 2 conns)
+            printf "%-20s | %-15s | ${CYAN}%-8s KB/s${NC} | ${GREEN}%-8s KB/s${NC} | ${YELLOW}%-8s MB${NC} | %s conns\n" \
+                "${C_NAMES[$CID]:0:19}" "${C_IMAGES[$CID]:0:14}" "$RX_KBS" "$TX_KBS" "$TOTAL_MB" "$CONNS"
+
+            # Kiem tra neu Live = 0.0 KB/s
             if (( $(echo "$RX_VAL <= 0.0" | bc -l 2>/dev/null || echo "0") )) && \
-               (( $(echo "$TX_VAL <= 0.1" | bc -l 2>/dev/null || echo "0") )) && \
-               [ "$CONNS" -le 2 ]; then
+               (( $(echo "$TX_VAL <= 0.1" | bc -l 2>/dev/null || echo "0") )); then
                 
                 CONTAINER_OUTBOUND_IP=$(nsenter -t "$CPID" -n curl -4 -s -A "$USER_AGENT" --max-time 2 https://api.ipify.org 2>/dev/null)
                 [ -z "$CONTAINER_OUTBOUND_IP" ] && CONTAINER_OUTBOUND_IP=$(nsenter -t "$CPID" -n curl -4 -s -A "$USER_AGENT" --max-time 2 https://icanhazip.com 2>/dev/null | tr -d '\n')
                 [ -z "$CONTAINER_OUTBOUND_IP" ] && CONTAINER_OUTBOUND_IP="TIMEOUT / UNREACHABLE"
 
-                DEAD_NODES_LIST+=("${C_NAMES[$CID]}|${C_IMAGES[$CID]}|$CONTAINER_OUTBOUND_IP|$CONNS")
+                # PHAN LOAI THONG MINH:
+                # 1. Neu Tong MB > 2.0 MB hoac Conns >= 2 -> Day la Node IDLE (Nghi giua cac dot Task) -> GIU NGUYEN!
+                if (( $(echo "$TOTAL_MB >= 2.0" | bc -l 2>/dev/null || echo "0") )) || [ "$CONNS" -ge 2 ]; then
+                    IDLE_NODES_LIST+=("${C_NAMES[$CID]}|${C_IMAGES[$CID]}|$CONTAINER_OUTBOUND_IP|$CONNS|$TOTAL_MB")
+                else
+                    # 2. Neu Tong MB gan nhu 0 va chi co 1 conn -> Day moi la Node Dead/Block that su
+                    DEAD_NODES_LIST+=("${C_NAMES[$CID]}|${C_IMAGES[$CID]}|$CONTAINER_OUTBOUND_IP|$CONNS|$TOTAL_MB")
+                fi
             fi
         done
     fi
 fi
 
-# 6. DANH SACH CANH BAO: CAC NODE / IP BI TREO (DEAD / STALLED)
-echo -e "\n${PURPLE}${BOLD}--- [5] DANH SACH NODE / IP KHONG CO TRAFFIC (ZERO TRAFFIC & STALLED) ---${NC}"
+# 6. PHAN TICH DANH SACH NODE (BAO VE NODE IDLE & CHI RO NODE CHET)
+echo -e "\n${PURPLE}${BOLD}--- [5] DANH GIA TRANG THAI CHI TIET TUNG NODE (ANTI-MISTAKE AUDIT) ---${NC}"
 
-if [ ${#DEAD_NODES_LIST[@]} -eq 0 ]; then
-    echo -e " 🟢 ${GREEN}${BOLD}HOAN HAO:${NC} Toan bo container deu co luong du lieu hoat dong (Active Traffic) binh thuong."
-else
-    echo -e " 🔴 ${RED}${BOLD}CANH BAO:${NC} Phat hien ${#DEAD_NODES_LIST[@]} container dang bi dung / khong phat sinh du lieu:\n"
-    printf "${BOLD}%-22s | %-15s | %-20s | %-8s | %-20s${NC}\n" \
-        "Container Bi Treo" "Platform" "IP Outbound Cua Node" "Sockets" "Nguyen Nhan Nghi Van"
+# Hien thi danh sach Node Idle (Dang nghi de cho dot Task tiep theo)
+if [ ${#IDLE_NODES_LIST[@]} -gt 0 ]; then
+    echo -e " 🟢 ${GREEN}${BOLD}NHOM NODE DANG CHO TASK (IDLE - DANG KIEM TIEN RAT TOT - KHONG XOA):${NC}"
+    printf "${BOLD}%-22s | %-14s | %-18s | %-14s | %-20s${NC}\n" \
+        "Container" "Platform" "IP Outbound" "Da Cay Duoc" "Khuyen Nghi"
     echo "--------------------------------------------------------------------------------------------------"
+    for item in "${IDLE_NODES_LIST[@]}"; do
+        IFS="|" read -r i_name i_img i_ip i_conns i_mb <<< "$item"
+        printf "%-22s | %-14s | ${CYAN}%-18s${NC} | ${YELLOW}%-10s MB${NC} | ${GREEN}%-20s${NC}\n" \
+            "${i_name:0:21}" "${i_img:0:13}" "$i_ip" "$i_mb" "GIU NGUYEN (Kiem Tot)"
+    done
+    echo ""
+fi
 
+# Hien thi danh sach Node Chet That Su
+if [ ${#DEAD_NODES_LIST[@]} -eq 0 ]; then
+    echo -e " 🟢 ${GREEN}${BOLD}HOAN HAO:${NC} Khong co bat ky node nao bi chet hay bi block tren he thong."
+else
+    echo -e " 🔴 ${RED}${BOLD}CANH BAO: CAC NODE CHET THAT SU (CAN KIEM TRA HOAC XOA):${NC}"
+    printf "${BOLD}%-22s | %-14s | %-18s | %-10s | %-20s${NC}\n" \
+        "Container Bi Loi" "Platform" "IP Outbound" "Da Cay" "Nguyen Nhan Nghi Van"
+    echo "--------------------------------------------------------------------------------------------------"
     for item in "${DEAD_NODES_LIST[@]}"; do
-        IFS="|" read -r d_name d_img d_ip d_conns <<< "$item"
-        reason="Proxy Dead / Het Han"
-        [ "$d_ip" == "TIMEOUT / UNREACHABLE" ] && reason="Mat ket noi Outbound"
-        [ "$d_conns" -le 2 ] && [ "$d_ip" != "TIMEOUT / UNREACHABLE" ] && reason="App Bi Block / 0 Task"
+        IFS="|" read -r d_name d_img d_ip d_conns d_mb <<< "$item"
+        reason="App Block / 0 Task"
+        [ "$d_ip" == "TIMEOUT / UNREACHABLE" ] && reason="Proxy Dead / Mat Mang"
 
-        printf "%-22s | %-15s | ${YELLOW}%-20s${NC} | %-8s | ${RED}%-20s${NC}\n" \
-            "${d_name:0:21}" "${d_img:0:14}" "$d_ip" "$d_conns conn" "$reason"
+        printf "%-22s | %-14s | ${YELLOW}%-18s${NC} | ${RED}%-8s MB${NC} | ${RED}%-20s${NC}\n" \
+            "${d_name:0:21}" "${d_img:0:13}" "$d_ip" "$d_mb" "$reason"
     done
 fi
 
