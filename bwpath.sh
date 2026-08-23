@@ -3,7 +3,7 @@
 # Path theo chau + ma tran CONG RA (DC hay chan). Khong dung docker/iptables.
 set -u
 export LC_ALL=C LANG=C
-VER="4.2.0"
+VER="4.2.1"
 
 SELF="$(readlink -f "$0" 2>/dev/null || echo "$0")"
 DIR="${BWPATH_DIR:-/var/log/bwpath}"
@@ -232,12 +232,13 @@ cmd_ports() {
   elif have nslookup; then nslookup -timeout=2 google.com 8.8.8.8 >/dev/null 2>&1 && u53=1 || u53=0
   fi
   t853="$(tcp_open 1.1.1.1 853)"
-  t8080="$(tcp_open example.com 8080)"
-  t8443="$(tcp_open example.com 8443)"
-  t9443="$(tcp_open example.com 9443)"
-  t1080="$(tcp_open 1.1.1.1 1080)"
-  t3128="$(tcp_open 1.1.1.1 3128)"
-  t2053="$(tcp_open 1.1.1.1 2053)"
+  # portquiz.net mo moi cong — phan biet CHAN outbound vs "dich khong listen"
+  t8080="$(tcp_open portquiz.net 8080)"
+  t8443="$(tcp_open portquiz.net 8443)"
+  t9443="$(tcp_open portquiz.net 9443)"
+  t1080="$(tcp_open portquiz.net 1080)"
+  t3128="$(tcp_open portquiz.net 3128)"
+  t2053="$(tcp_open portquiz.net 2053)"
   quic=0; curl -4 -sS --http3-only --max-time 4 -o /dev/null https://cloudflare.com >/dev/null 2>&1 && quic=1 || true
   ip6=0; curl -6 -fsS --max-time 5 https://api64.ipify.org >/dev/null 2>&1 && ip6=1 || true
   printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
