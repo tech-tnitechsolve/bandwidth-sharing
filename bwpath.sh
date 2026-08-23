@@ -3,7 +3,7 @@
 # Path theo chau + ma tran CONG RA (DC hay chan). Khong dung docker/iptables.
 set -u
 export LC_ALL=C LANG=C
-VER="4.6.3"
+VER="4.6.4"
 
 SELF="$(readlink -f "$0" 2>/dev/null || echo "$0")"
 DIR="${BWPATH_DIR:-/var/log/bwpath}"
@@ -184,6 +184,7 @@ cmd_auto() {
   echo ""; cmd_map || true
   echo ""; cmd_cap || true
   echo ""; cmd_tun || true
+  echo ""; cmd_ket || true
   echo ""
   echo "Daemon: $(svc_active && echo DANG CHAY || echo ?). Khong dung Docker. Log $DIR"
 }
@@ -682,6 +683,41 @@ cmd_cap() {
 }
 
 
+cmd_ket() {
+  echo "======== KET LUAN ========"
+  local cc="" ul=0 ntun=0 nspn=0 nbw=0
+  [ -f "$DIR/hw.txt" ] && cc="$(sed -n 's/.*"country":"\([^"]*\)".*/\1/p' "$DIR/hw.txt" | head -1)"
+  [ -f "$BFILE" ] && eval "$(awk -F, '$1!="ts"{n++; if($2+0>0){u+=$2;nu++}} END{printf "ul=%.1f nbw=%d\n", nu?u/nu:0, n}' "$BFILE")"
+  if have docker; then
+    ntun="$(docker ps --format '{{.Names}}' 2>/dev/null | grep -cE '^tun' || true)"
+    nspn="$(docker ps --format '{{.Names}}' 2>/dev/null | grep -cE 'tun-' || true)"
+  fi
+  local ipok=""
+  case "$cc" in
+    Vietnam) ipok="IP Viet Nam (cung khu)" ;;
+    Canada|"United States") ipok="IP My/Canada (cung khu)" ;;
+    *) ipok="IP cung quoc gia may" ;;
+  esac
+  echo "  May dat: ${cc:-chua ro}"
+  echo "  Chi nen dung: $ipok"
+  if awk -v n="$nbw" 'BEGIN{exit !(n+0<2)}'; then
+    echo "  Bang thong len: da do 1 lan — CHUA biet bi bop hay khong (can them vai gio)"
+  else
+    echo "  Bang thong len: da co nhieu lan do — xem dong FUP_UL o REPORT (thap hon nhieu = bi tu)"
+  fi
+  local ong=$ntun
+  echo "  Ong dang chay (ten tun*): $ntun"
+  if awk -v u="$ul" -v o="$ong" 'BEGIN{exit !(u+0>0 && o+0>0 && u/o<0.15)}'; then
+    echo "  Ganh: MONG — nhieu ong chung mot duong len. Khong ket luan setup sai."
+  elif awk -v u="$ul" 'BEGIN{exit !(u+0<=0)}'; then
+    echo "  Ganh: chua do duong len"
+  else
+    echo "  Ganh: duong len chua thay ket so voi so ong (mau con it thi chua chac)"
+  fi
+  echo "  Them IP: chi cung khu. Khong them neu dang MONG."
+}
+
+
 cmd_uninstall() {
   [ "$(id -u)" -eq 0 ] || return 1
   have systemctl && { systemctl disable --now bwpath.service 2>/dev/null || true; rm -f /etc/systemd/system/bwpath.service; }
@@ -700,6 +736,7 @@ case "${1:-auto}" in
   risk) cmd_risk ;;
   cap) cmd_cap ;;
   tun) cmd_tun ;;
+  ket) cmd_ket ;;
   5|install) cmd_install ;;
   6|uninstall) cmd_uninstall ;;
   7|purge) purge_old; echo purged ;;
