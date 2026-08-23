@@ -3,7 +3,7 @@
 # Path theo chau + ma tran CONG RA (DC hay chan). Khong dung docker/iptables.
 set -u
 export LC_ALL=C LANG=C
-VER="4.6.5"
+VER="4.6.7"
 
 SELF="$(readlink -f "$0" 2>/dev/null || echo "$0")"
 DIR="${BWPATH_DIR:-/var/log/bwpath}"
@@ -103,8 +103,13 @@ ensure_install() {
   echo "$old" | grep -Eq '^[0-9]+\.' || old="?"
   install_files
   if [ "$old" != "$VER" ]; then
-    echo "[bwpath] cap nhat $old -> $VER — xoa mau cu (SG anycast / csv lech)"
-    reset_series
+    echo "[bwpath] cap nhat $old -> $VER"
+    if [ -f "$SFILE" ] && [ "$(head -1 "$SFILE")" = "$HDR_S" ]; then
+      echo "[bwpath] giu csv (cung cot) — FUP/tre khong mat"
+    else
+      echo "[bwpath] cot log lech — do lai tu dau"
+      reset_series
+    fi
     have systemctl && systemctl restart bwpath.service 2>/dev/null || true
   else
     echo "[bwpath] da cai $VER"
@@ -180,12 +185,9 @@ cmd_auto() {
   cmd_ports || true
   if bw_recent; then echo "[bwpath] bo qua bw (<50p)"
   else echo "[bwpath] Mbps nhe..."; cmd_bw || true; fi
-  echo ""; cmd_report || true
-  echo ""; cmd_map || true
-  echo ""; cmd_cap || true
-  echo ""; cmd_tun || true
   echo ""; cmd_ket || true
   echo ""; cmd_xung || true
+  echo ""; cmd_report || true
   echo ""
   echo "Daemon: $(svc_active && echo DANG CHAY || echo ?). Khong dung Docker. Log $DIR"
 }
@@ -686,83 +688,96 @@ cmd_cap() {
 
 cmd_ket() {
   echo "======== KET LUAN ========"
-  local cc="" ul=0 ntun=0 nspn=0 nbw=0
+  local cc="" ul=0 nbw=0 dlvn=0 dluse=0 dlde=0
   [ -f "$DIR/hw.txt" ] && cc="$(sed -n 's/.*"country":"\([^"]*\)".*/\1/p' "$DIR/hw.txt" | head -1)"
-  [ -f "$BFILE" ] && eval "$(awk -F, '$1!="ts"{n++; if($2+0>0){u+=$2;nu++}} END{printf "ul=%.1f nbw=%d\n", nu?u/nu:0, n}' "$BFILE")"
-  if have docker; then
-    ntun="$(docker ps --format '{{.Names}}' 2>/dev/null | grep -cE '^tun' || true)"
-    nspn="$(docker ps --format '{{.Names}}' 2>/dev/null | grep -cE 'tun-' || true)"
+  [ -f "$BFILE" ] && eval "$(awk -F, '
+    $1=="ts"{next}
+    {n++; if($2+0>0){u+=$2;nu++} if($4+0>0){v+=$4;nv++} if($5+0>0){d+=$5;nd++} if($6+0>0){e+=$6;ne++}}
+    END{printf "ul=%.1f nbw=%d dlvn=%.1f dlde=%.1f dluse=%.1f\n", nu?u/nu:0,n, nv?v/nv:0, nd?d/nd:0, ne?e/ne:0}
+  ' "$BFILE")"
+  local vn=na use=na usw=na fr=na
+  if [ -f "$DIR/last_tcp.txt" ]; then
+    vn="$(awk '{print $1}' "$DIR/last_tcp.txt")"
+    use="$(awk '{print $12}' "$DIR/last_tcp.txt")"
+    usw="$(awk '{print $14}' "$DIR/last_tcp.txt")"
+    fr="$(awk '{print $11}' "$DIR/last_tcp.txt")"
   fi
+  local ntun=0
+  have docker && ntun="$(docker ps --format '{{.Names}}' 2>/dev/null | grep -cE '^tun' || true)"
   local ipok=""
   case "$cc" in
-    Vietnam) ipok="IP Viet Nam (cung khu)" ;;
-    Canada|"United States") ipok="IP My/Canada (cung khu)" ;;
-    *) ipok="IP cung quoc gia may" ;;
+    Vietnam) ipok="IP Viet Nam" ;;
+    Canada|"United States") ipok="IP My/Canada" ;;
+    *) ipok="IP cung noi dat may" ;;
   esac
-  echo "  May dat: ${cc:-chua ro}"
-  echo "  Chi nen dung: $ipok"
+  echo "  May: ${cc:-?}  →  dung $ipok"
+  echo "  --- Toc do ---"
+  echo "  Len (upload):     ${ul} Mbps"
+  if [ "$cc" = Vietnam ]; then
+    echo "  Tai trong nuoc:   ${dlvn} Mbps   (0 = file do hong, khong phai het mang)"
+    echo "  Tai ra My:        ${dluse} Mbps"
+  else
+    echo "  Tai My (ASH):     ${dluse} Mbps"
+    echo "  Tai DE (tham khao): ${dlde} Mbps"
+  fi
+  echo "  --- Do tre (bat tay, ms) ---"
+  if [ "$cc" = Vietnam ]; then
+    echo "  Cung khu VN:      ${vn} ms"
+    echo "  Ra My:            ${use} ms    Ra FR: ${fr} ms"
+  else
+    echo "  Cung khu My:      ${use} ms (dong)   ${usw} ms (tay)"
+    echo "  Ra VN:            ${vn} ms    Ra FR: ${fr} ms"
+  fi
   if awk -v n="$nbw" 'BEGIN{exit !(n+0<2)}'; then
-    echo "  Bang thong len: da do 1 lan — CHUA biet bi bop hay khong (can them vai gio)"
+    echo "  Bop mang: CHUA BIET (moi do toc do 1 lan, de them vai gio)"
   else
-    echo "  Bang thong len: da co nhieu lan do — xem dong FUP_UL o REPORT (thap hon nhieu = bi tu)"
+    echo "  Bop mang: xem dong FUP_UL ben duoi (nhieu lan do)"
   fi
-  local ong=$ntun
-  echo "  Ong dang chay (ten tun*): $ntun"
-  if awk -v u="$ul" -v o="$ong" 'BEGIN{exit !(u+0>0 && o+0>0 && u/o<0.15)}'; then
-    echo "  Ganh: MONG — nhieu ong chung mot duong len. Khong ket luan setup sai."
-  elif awk -v u="$ul" 'BEGIN{exit !(u+0<=0)}'; then
-    echo "  Ganh: chua do duong len"
+  echo "  Ong TUN: $ntun"
+  if awk -v u="$ul" -v o="$ntun" 'BEGIN{exit !(u+0>0 && o+0>0 && u/o<0.15)}'; then
+    echo "  Ganh: MONG — nhieu ong chung duong len. Them IP: khong."
   else
-    echo "  Ganh: duong len chua thay ket so voi so ong (mau con it thi chua chac)"
+    echo "  Ganh: chua thay ket. Them IP: chi $ipok."
   fi
-  echo "  Them IP: chi cung khu. Khong them neu dang MONG."
 }
 
 
 cmd_xung() {
   echo "======== XUNG DOT CUNG IP ========"
-  echo "  Cung suffix = cung 1 IP/TUN. Khong ban setup."
   if ! have docker || ! docker info >/dev/null 2>&1; then echo "  khong doc duoc docker"; return 0; fi
   docker ps --format '{{.Names}}' 2>/dev/null | awk '
     {
       n=tolower($0)
-      app="khac"
+      app="x"
       if (n ~ /pawns/) app="Pawns"
-      else if (n ~ /packetstream/) app="PacketStream"
+      else if (n ~ /packetstream/) app="PS"
       else if (n ~ /traffmon/) app="Traffmo"
       else if (n ~ /earnfm/) app="EarnFM"
       else if (n ~ /bitping/) app="Bitping"
-      else if (n ~ /honeygain/) app="Honeygain"
+      else if (n ~ /honeygain/) app="HG"
       else if (n ~ /earnapp/) app="EarnApp"
-      else if (n ~ /^tun/ || n ~ /-tun-/) app="TUN"
-      else if (n ~ /peer|spide|spn-/) app="SPN"
-      # suffix: chuoi hex/so cuoi
-      s=$0
-      sub(/^[^0-9a-fA-F]*/, "", s)
-      # lay tu khoi hash dai
-      if (match($0, /[0-9a-f]{8,}[0-9a-f]*/)) suf=substr($0, RSTART)
-      else suf=$0
-      if (app=="TUN") next
-      if (app=="khac") next
-      key[suf]=key[suf] app " "
-      cnt[suf app]++
+      else next
+      if (match($0, /[0-9a-f]{10,}/)) suf=substr($0, RSTART, 16)
+      else suf="host"
+      g[suf]=g[suf] "," app
     }
     END{
-      for (s in key) {
-        line=key[s]
-        hit=0
-        if (line ~ /Pawns/ && line ~ /PacketStream/) { print "  XUNG DOT: Pawns + PacketStream  (" s ")"; hit=1 }
-        if (cnt[s "Pawns"]>1) { print "  XUNG DOT: 2 Pawns  (" s ")"; hit=1 }
-        if (cnt[s "PacketStream"]>1) { print "  XUNG DOT: 2 PacketStream  (" s ")"; hit=1 }
-        if (cnt[s "Honeygain"]>1) { print "  XUNG DOT: 2 Honeygain  (" s ")"; hit=1 }
-        if (cnt[s "EarnApp"]>1) { print "  XUNG DOT: 2 EarnApp  (" s ")"; hit=1 }
-        if (line ~ /Pawns/ && line ~ /Traffmo/) { print "  OK thuong: Traffmo + Pawns  (" substr(s,1,12) "...)" }
-        if (line ~ /EarnFM/ && line ~ /Bitping/) { print "  IP HOST: EarnFM + Bitping (+ app khac) di IP may, khong qua TUN" }
+      ok=0; bad=0; host=""
+      for (s in g) {
+        line=g[s]
+        if (line ~ /Pawns/ && line ~ /PS/) { bad++; bd=bd " Pawns+PS" }
+        nP=gsub(/Pawns/,"Pawns",line); if (nP>1) { bad++; bd=bd " 2xPawns" }
+        nS=gsub(/PS/,"PS",line); if (nS>1) { bad++; bd=bd " 2xPS" }
+        if (line ~ /Pawns/ && line ~ /Traffmo/ && line !~ /PS/) ok++
+        if (line ~ /EarnFM/ || (line ~ /Bitping/ && line ~ /Traffmo/ && line !~ /Pawns/)) host="co"
       }
+      if (bad) print "  XUNG DOT:" bd
+      else print "  XUNG DOT: khong (Pawns+PS / trung app)"
+      if (ok) print "  " ok " ong: Traffmo + Pawns (thuong OK)"
+      if (host=="co") print "  IP may (khong TUN): EarnFM/Bitping/Traffmo — IP Oracle"
+      print "  1 IP = 1 Pawns hoac 1 PacketStream, khong ca hai."
     }
   '
-  echo "  Quy tac: 1 IP = 1 Pawns XOR 1 PacketStream. Traffmo thuong di kem duoc."
-  echo "  Honeygain/EarnApp: 1 app / 1 IP."
 }
 
 
