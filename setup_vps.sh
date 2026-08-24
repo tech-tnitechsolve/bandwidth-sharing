@@ -60,13 +60,13 @@ PUBLIC_IP=$(curl -s4 -m 2 https://api.ipify.org 2>/dev/null || curl -s4 -m 2 htt
 
 TIER_NAME=""
 if (( MEM_MB <= 2500 )); then
-  TIER_NAME="TIER 1 (1-2 CPU / 2GB RAM - LIGHTWEIGHT PROXIES)"
+  TIER_NAME="TIER 1 (${CPU} CPU / 2GB RAM - LIGHTWEIGHT PROXIES)"
 elif (( MEM_MB <= 5000 )); then
-  TIER_NAME="TIER 2 (2 CPU / 4GB RAM - BALANCED PROXIES)"
+  TIER_NAME="TIER 2 (${CPU} CPU / 4GB RAM - BALANCED PROXIES)"
 elif (( MEM_MB <= 9000 )); then
-  TIER_NAME="TIER 3 (2 CPU / 8GB RAM - HIGH DENSITY PROXIES)"
+  TIER_NAME="TIER 3 (${CPU} CPU / 8GB RAM - HIGH DENSITY PROXIES)"
 else
-  TIER_NAME="TIER 4 (2+ CPU / 12GB+ RAM - DEDICATED WIPTER / HEAVY APPS)"
+  TIER_NAME="TIER 4 (${CPU} CPU / 12GB+ RAM - DEDICATED WIPTER / HEAVY APPS)"
 fi
 
 if (( MEM_MB >= 9000 )) || (( DISK_TOTAL_MB <= 25000 )); then
@@ -97,7 +97,10 @@ apt-get update -y -qq || { clear_apt_locks; apt-get update -y -qq; }
 apt-get install -y -qq --no-install-recommends \
   -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
   curl wget git unzip jq bc ca-certificates uuid-runtime cron logrotate net-tools inotify-tools \
-  iptables-persistent netfilter-persistent systemd-timesyncd vnstat nload dnsutils || true
+  iptables-persistent netfilter-persistent systemd-timesyncd vnstat nload dnsutils util-linux || true
+
+# Cài đặt bổ sung module kernel cho ZRAM nếu có
+apt-get install -y -qq linux-modules-extra-$(uname -r) 2>/dev/null || true
 
 # --- CẤU HÌNH ƯU TIÊN IPV4 CHO PROXY IP-AUTH ---
 log "Cau hinh uu tien IPv4 (/etc/gai.conf) cho Proxy IP-Auth..."
@@ -171,12 +174,19 @@ cat > /usr/local/bin/ii-init-zram.sh <<'EOF_ZRAM_INIT'
 #!/usr/bin/env bash
 MEM_MB=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
 ZRAM_BYTES=$(( MEM_MB * 1024 * 1024 ))
+
 modprobe zram num_devices=1 2>/dev/null || true
+
+# Kích hoạt qua hot_add nếu thiết bị zram0 chưa xuất hiện
+if [[ ! -b /dev/zram0 ]] && [[ -f /sys/class/zram-control/hot_add ]]; then
+  cat /sys/class/zram-control/hot_add >/dev/null 2>&1 || true
+fi
+
 if [[ -b /dev/zram0 ]]; then
   swapon --show 2>/dev/null | grep -q "/dev/zram0" && swapoff /dev/zram0 2>/dev/null || true
   if grep -q "zstd" /sys/block/zram0/comp_algorithm 2>/dev/null; then
     echo zstd > /sys/block/zram0/comp_algorithm 2>/dev/null || true
-  else
+  elif grep -q "lz4" /sys/block/zram0/comp_algorithm 2>/dev/null; then
     echo lz4 > /sys/block/zram0/comp_algorithm 2>/dev/null || true
   fi
   echo "$ZRAM_BYTES" > /sys/block/zram0/disksize 2>/dev/null || true
@@ -874,14 +884,16 @@ echo "UPTIME       : $(uptime -p 2>/dev/null || uptime)"
 echo "KERNEL/VIRT  : $(uname -r) ($(systemd-detect-virt 2>/dev/null || echo 'unknown'))"
 
 MEM_MB=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
+CPU_CORES=$(nproc 2>/dev/null || echo 1)
+
 if (( MEM_MB <= 2500 )); then
-  echo -e "HARDWARE TIER: ${C_B}[TIER 1: 1-2 CPU / 2GB RAM - LIGHTWEIGHT PROXIES]${C_0}"
+  echo -e "HARDWARE TIER: ${C_B}[TIER 1: ${CPU_CORES} CPU / 2GB RAM - LIGHTWEIGHT PROXIES]${C_0}"
 elif (( MEM_MB <= 5000 )); then
-  echo -e "HARDWARE TIER: ${C_B}[TIER 2: 2 CPU / 4GB RAM - BALANCED PROXIES]${C_0}"
+  echo -e "HARDWARE TIER: ${C_B}[TIER 2: ${CPU_CORES} CPU / 4GB RAM - BALANCED PROXIES]${C_0}"
 elif (( MEM_MB <= 9000 )); then
-  echo -e "HARDWARE TIER: ${C_B}[TIER 3: 2 CPU / 8GB RAM - HIGH DENSITY PROXIES]${C_0}"
+  echo -e "HARDWARE TIER: ${C_B}[TIER 3: ${CPU_CORES} CPU / 8GB RAM - HIGH DENSITY PROXIES]${C_0}"
 else
-  echo -e "HARDWARE TIER: ${C_B}[TIER 4: 2+ CPU / 12GB+ RAM - DEDICATED WIPTER / HEAVY APPS]${C_0}"
+  echo -e "HARDWARE TIER: ${C_B}[TIER 4: ${CPU_CORES} CPU / 12GB+ RAM - DEDICATED WIPTER / HEAVY APPS]${C_0}"
 fi
 
 ISSUES_COUNT=0
