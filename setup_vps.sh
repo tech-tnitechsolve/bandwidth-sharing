@@ -1,7 +1,8 @@
 cat << 'MASTER_EOF' > ~/setup_vps.sh
 #!/usr/bin/env bash
 #============================================================================
-#  setup_vps.sh (2026 ULTIMATE MASTER - ZERO DOWNTIME & ADVANCED TELEMETRY)
+#  setup_vps.sh (2026 SMART ADAPTIVE MASTER - DYNAMIC HARDWARE SCALING)
+#  Auto-Tuning: KSM Engine, Multi-Core RPS, Netdev Budget & ZRAM ZSTD
 #============================================================================
 set -Eeuo pipefail
 
@@ -64,9 +65,9 @@ if (( MEM_MB <= 2500 )); then
 elif (( MEM_MB <= 5000 )); then
   TIER_NAME="TIER 2 (${CPU} CPU / 4GB RAM - BALANCED PROXIES)"
 elif (( MEM_MB <= 9000 )); then
-  TIER_NAME="TIER 3 (${CPU} CPU / 8GB RAM - HIGH DENSITY PROXIES)"
+  TIER_NAME="TIER 3 (${CPU} CPU / 8GB RAM - HIGH DENSITY PROXIES [400+ IPs])"
 else
-  TIER_NAME="TIER 4 (${CPU} CPU / 12GB+ RAM - DEDICATED WIPTER / HEAVY APPS)"
+  TIER_NAME="TIER 4 (${CPU} CPU / 12GB+ RAM - DEDICATED HEAVY / ENTERPRISE)"
 fi
 
 if (( MEM_MB >= 9000 )) || (( DISK_TOTAL_MB <= 25000 )); then
@@ -99,7 +100,7 @@ apt-get install -y -qq --no-install-recommends \
   curl wget git unzip jq bc ca-certificates uuid-runtime cron logrotate net-tools inotify-tools \
   iptables-persistent netfilter-persistent systemd-timesyncd vnstat nload dnsutils util-linux || true
 
-# Cài đặt bổ sung module kernel cho ZRAM nếu có
+# Nạp module Kernel bổ sung cho ZRAM
 apt-get install -y -qq linux-modules-extra-$(uname -r) 2>/dev/null || true
 
 # --- CẤU HÌNH ƯU TIÊN IPV4 CHO PROXY IP-AUTH ---
@@ -177,7 +178,6 @@ ZRAM_BYTES=$(( MEM_MB * 1024 * 1024 ))
 
 modprobe zram num_devices=1 2>/dev/null || true
 
-# Kích hoạt qua hot_add nếu thiết bị zram0 chưa xuất hiện
 if [[ ! -b /dev/zram0 ]] && [[ -f /sys/class/zram-control/hot_add ]]; then
   cat /sys/class/zram-control/hot_add >/dev/null 2>&1 || true
 fi
@@ -255,22 +255,55 @@ EOF_DOCKER_SVC
   fi
 fi
 
-# KSM
+#============================================================================
+# [SMART ADAPTIVE KSM ENGINE - ĐIỀU PHỐI KSM THEO TỔNG DUNG LƯỢNG RAM]
+#============================================================================
 if [[ -f /sys/kernel/mm/ksm/run ]]; then
-  echo 1 > /sys/kernel/mm/ksm/run 2>/dev/null || true
-  echo 300 > /sys/kernel/mm/ksm/sleep_millisecs 2>/dev/null || true
-  echo 1250 > /sys/kernel/mm/ksm/pages_to_scan 2>/dev/null || true
+  if (( MEM_MB <= 2500 )); then
+    # Tier 1: RAM <= 2.5GB -> Bật KSM tích cực để cứu RAM chống OOM
+    echo 1 > /sys/kernel/mm/ksm/run 2>/dev/null || true
+    echo 500 > /sys/kernel/mm/ksm/sleep_millisecs 2>/dev/null || true
+    echo 1000 > /sys/kernel/mm/ksm/pages_to_scan 2>/dev/null || true
+  elif (( MEM_MB <= 5000 )); then
+    # Tier 2: RAM <= 5GB -> KSM thư giãn (Relaxed), tiết kiệm CPU
+    echo 1 > /sys/kernel/mm/ksm/run 2>/dev/null || true
+    echo 2000 > /sys/kernel/mm/ksm/sleep_millisecs 2>/dev/null || true
+    echo 300 > /sys/kernel/mm/ksm/pages_to_scan 2>/dev/null || true
+  else
+    # Tier 3 & Tier 4 (RAM >= 8GB): TẮT HOÀN TOÀN KSM để giải phóng 15% CPU cho 400+ IPs
+    echo 0 > /sys/kernel/mm/ksm/run 2>/dev/null || true
+  fi
 fi
+
+# Multi-Core Receive Packet Steering (RPS) Bitmask
+RPS_MASK=$(printf "%x" $(( (1 << CPU) - 1 )) 2>/dev/null || echo "f")
+for f in /sys/class/net/*/queues/rx-*/rps_cpus; do
+  echo "$RPS_MASK" > "$f" 2>/dev/null || true
+done
+
+# CPU Governor Performance
+for g in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+  echo performance > "$g" 2>/dev/null || true
+done
 
 SWAPPINESS=100
 sysctl -w vm.swappiness=100 >/dev/null 2>&1 || true
 
 if (( CPU <= 2 )); then
   SYN_BACKLOG=8192
+  NETDEV_BUDGET=300
+  NETDEV_USECS=2000
+  TIMER_MIG=1
 elif (( CPU <= 4 )); then
   SYN_BACKLOG=16384
+  NETDEV_BUDGET=600
+  NETDEV_USECS=4000
+  TIMER_MIG=0
 else
   SYN_BACKLOG=32768
+  NETDEV_BUDGET=1000
+  NETDEV_USECS=4000
+  TIMER_MIG=0
 fi
 
 echo "=============================================================="
@@ -343,7 +376,7 @@ sysctl -w net.ipv6.conf.all.disable_ipv6=0 >/dev/null 2>&1 || true
 sysctl -w net.ipv6.conf.default.disable_ipv6=0 >/dev/null 2>&1 || true
 sysctl -w net.ipv6.conf.lo.disable_ipv6=0 >/dev/null 2>&1 || true
 
-# --- TỐI ƯU KERNEL CHUYÊN SÂU ---
+# --- TỐI ƯU KERNEL CHUYÊN SÂU & NETWORK BATCHING ---
 SYSCTL_FILE=/etc/sysctl.d/99-internetincome.conf
 cat > "$SYSCTL_FILE" <<EOF_SYSCTL
 net.core.default_qdisc = fq
@@ -368,6 +401,10 @@ net.core.netdev_max_backlog = 65535
 net.core.rmem_max = 16777216
 net.core.wmem_max = 16777216
 net.ipv4.tcp_max_syn_backlog = ${SYN_BACKLOG}
+net.core.netdev_budget = ${NETDEV_BUDGET}
+net.core.netdev_budget_usecs = ${NETDEV_USECS}
+kernel.timer_migration = ${TIMER_MIG}
+fs.epoll.max_user_watches = 2097152
 net.ipv4.ip_local_port_range = 1024 65535
 net.ipv4.tcp_tw_reuse = 1
 net.ipv4.tcp_fin_timeout = 10
@@ -660,12 +697,14 @@ for cid in "${!LIVE_ACTUAL_MB[@]}"; do
   docker update \
     --memory-reservation="${soft_floor}m" \
     --memory="${target_burst}m" \
+    --cpu-shares=256 \
     --memory-swap="-1" \
     --restart="$P_POLICY" \
     "$cid" >/dev/null 2>&1 || \
   docker update \
     --memory-reservation="${soft_floor}m" \
     --memory="${target_burst}m" \
+    --cpu-shares=256 \
     --restart="$P_POLICY" \
     "$cid" >/dev/null 2>&1 || true
 done
@@ -840,11 +879,10 @@ EOF_RESTART
   cat > /etc/cron.d/internetincome <<'EOF_CRON'
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-*/5 * * * * root /usr/local/bin/ii-autosync.sh >/dev/null 2>&1
+*/30 * * * * root /usr/local/bin/ii-autosync.sh >/dev/null 2>&1
 15 4 * * 0 root /usr/local/bin/ii-restart-all.sh >/dev/null 2>&1
-*/10 * * * * root /usr/local/bin/ii-flapguard.sh >/dev/null 2>&1
+*/15 * * * * root /usr/local/bin/ii-flapguard.sh >/dev/null 2>&1
 0 2 * * 0 root /usr/local/bin/ii-clean-logs.sh >/dev/null 2>&1
-*/15 * * * * root for c in $(docker ps -aq -f status=exited 2>/dev/null); do n=$(docker inspect -f '{{.Name}}{{.Config.Image}}' "$c" 2>/dev/null); case "$n" in *honey*|*pawns*|*packetstream*|*packetshare*|*earnfm*|*wipter*|*depinext*|*ebesucher*|*adnade*|*earnapp*|*repocket*) ;; *) docker start "$c" >/dev/null 2>&1 ;; esac; done
 0 3 * * 0 root /usr/bin/docker network prune -f >/dev/null 2>&1
 15 3 * * 0 root /usr/bin/docker volume prune -f >/dev/null 2>&1
 30 5 * * 0 root /usr/bin/docker image prune -f >/dev/null 2>&1
@@ -858,7 +896,6 @@ if (( DO_CRON == 1 )); then install_cron_stack; fi
 
 #============================================================================
 # TELEMETRY DIAGNOSTIC (TẬP TRUNG 100% PHẦN CỨNG, ZRAM & CONTAINER AUDIT)
-# ĐÃ LOẠI BỎ PING/SPEEDTEST ĐỂ CHUYỂN HOÀN TOÀN SANG CHECK_NETWORK_PROXY.SH
 #============================================================================
 cat > /usr/local/bin/ii-status.sh <<'EOF_STATUS'
 #!/usr/bin/env bash
@@ -891,9 +928,9 @@ if (( MEM_MB <= 2500 )); then
 elif (( MEM_MB <= 5000 )); then
   echo -e "HARDWARE TIER: ${C_B}[TIER 2: ${CPU_CORES} CPU / 4GB RAM - BALANCED PROXIES]${C_0}"
 elif (( MEM_MB <= 9000 )); then
-  echo -e "HARDWARE TIER: ${C_B}[TIER 3: ${CPU_CORES} CPU / 8GB RAM - HIGH DENSITY PROXIES]${C_0}"
+  echo -e "HARDWARE TIER: ${C_B}[TIER 3: ${CPU_CORES} CPU / 8GB RAM - HIGH DENSITY PROXIES [400+ IPs]]${C_0}"
 else
-  echo -e "HARDWARE TIER: ${C_B}[TIER 4: ${CPU_CORES} CPU / 12GB+ RAM - DEDICATED WIPTER / HEAVY APPS]${C_0}"
+  echo -e "HARDWARE TIER: ${C_B}[TIER 4: ${CPU_CORES} CPU / 12GB+ RAM - DEDICATED HEAVY / ENTERPRISE]${C_0}"
 fi
 
 ISSUES_COUNT=0
@@ -1055,4 +1092,3 @@ echo "============================= SETUP XONG (2026 UNIVERSAL MASTER) =========
 /usr/local/bin/ii-status.sh || true
 MASTER_EOF
 chmod +x ~/setup_vps.sh
-sudo bash ~/setup_vps.sh
