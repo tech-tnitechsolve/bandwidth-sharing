@@ -376,6 +376,10 @@ sysctl -w net.ipv6.conf.all.disable_ipv6=0 >/dev/null 2>&1 || true
 sysctl -w net.ipv6.conf.default.disable_ipv6=0 >/dev/null 2>&1 || true
 sysctl -w net.ipv6.conf.lo.disable_ipv6=0 >/dev/null 2>&1 || true
 
+# --- VÁ LỖI DOCKER IPV6 CHO VPS NAT / LXC (XÓA CỜ SYSCTL GÂY CRASH) ---
+log "Tu dong quet va loai bo co IPv6 khong tuong thich trong Docker..."
+find /root /home /opt /srv -maxdepth 5 -type f -name "*.sh" -exec sed -i -E 's/--sysctl net\.ipv6\.conf\.[^ "'\'']+//g' {} + 2>/dev/null || true
+
 # --- TỐI ƯU KERNEL CHUYÊN SÂU & NETWORK BATCHING ---
 SYSCTL_FILE=/etc/sysctl.d/99-internetincome.conf
 cat > "$SYSCTL_FILE" <<EOF_SYSCTL
@@ -1087,6 +1091,13 @@ echo -e "${C_B}=================================================================
 EOF_STATUS
 chmod +x /usr/local/bin/ii-status.sh
 ln -sf /usr/local/bin/ii-status.sh /usr/bin/ii-status 2>/dev/null || true
+
+#============================================================================
+# [FIX IPV6 CHO DOCKER TRÊN VPS NAT / LXC]
+#============================================================================
+log "Quet sach co IPv6 loi trong cac script tool..."
+find /root /home /opt /srv -maxdepth 5 -type f -name "*.sh" -exec sed -i -E 's/--sysctl net\.ipv6\.conf\.[^ "'\'']+//g' {} + 2>/dev/null || true
+docker rm -f $(docker ps -aq --filter "status=created" --filter "status=exited") 2>/dev/null || true
 
 echo "============================= SETUP XONG (2026 UNIVERSAL MASTER) =============================="
 /usr/local/bin/ii-status.sh || true
