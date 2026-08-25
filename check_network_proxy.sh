@@ -1,389 +1,443 @@
-cat << 'EOF' > check_network_proxy.sh
 #!/usr/bin/env bash
 # ==============================================================================
-# Script: check_network_proxy.sh (AUTO-ELEVATE & AUTO-PERMISSION MASTER EDITION)
-# 100% Khong Dau - Tu dong cap quyen chmod +x & Tu dong nang quyen Sudo
+# Script: check_network_proxy.sh (InternetIncome Network & Proxy Telemetry Audit)
+# Phiên bản: 3.0 - Chuẩn hóa cho nhánh Test & Tối ưu tuyệt đối cho IP-Auth Proxies
+# Tính năng:
+#   - 100% PASSIVE TELEMETRY: Không gọi request ra ngoài qua Proxy (Bảo vệ IP-Auth).
+#   - Nhận diện chính xác IP Host Whitelist cho các loại Proxy IP-Authentication.
+#   - Đo lường Socket ESTABLISHED, RX/TX Delta, ZRAM/RAM, DNS, Ping & Speed 2 chiều.
 # ==============================================================================
 
-# 1. TU DONG CAP QUYEN THUC THI CHO CHINH FILE NAY
-[ -f "$0" ] && chmod +x "$0" 2>/dev/null
+set -uo pipefail
 
-# 2. TU DONG NANG QUYEN ROOT (SUDO) NEU CHAY BANG USER THUONG
-if [ "$EUID" -ne 0 ]; then
-    echo -e "\033[1;33m[*] Dang tu dong chuyen sang quyen root (sudo)... \033[0m"
-    exec sudo bash "$0" "$@"
+# ------------------------------------------------------------------------------
+# 1. BẢNG MÀU VÀ GIAO DIỆN
+# ------------------------------------------------------------------------------
+C_RESET='\033[0m'
+C_RED='\033[0;31m'
+C_GREEN='\033[0;32m'
+C_YELLOW='\033[0;33m'
+C_BLUE='\033[0;34m'
+C_PURPLE='\033[0;35m'
+C_CYAN='\033[0;36m'
+C_WHITE='\033[1;37m'
+C_BOLD='\033[1m'
+C_BG_BLUE='\033[44;37m'
+C_BG_GREEN='\033[42;30m'
+C_BG_RED='\033[41;37m'
+
+# ------------------------------------------------------------------------------
+# 2. CẤU HÌNH VÀ THAM SỐ DÒNG LỆNH
+# ------------------------------------------------------------------------------
+MODE_FAST=false
+MODE_ACTIVE_PROBE=false
+SAMPLE_INTERVAL=2
+
+show_help() {
+    echo -e "${C_BOLD}CÁCH SỬ DỤNG:${C_RESET}"
+    echo -e "  bash check_network_proxy.sh [TÙY CHỌN]"
+    echo -e ""
+    echo -e "${C_BOLD}TÙY CHỌN:${C_RESET}"
+    echo -e "  ${C_CYAN}--fast${C_RESET}         Kiểm tra siêu tốc (Bỏ qua Speedtest & Latency toàn cầu)."
+    echo -e "  ${C_CYAN}--probe${C_RESET}        Kích hoạt Egress IP Probe (Thăm dò IP qua container - Có delay an toàn)."
+    echo -e "  ${C_CYAN}--install${C_RESET}      Cài đặt shortcut '${C_GREEN}check-proxy${C_RESET}' vào /usr/local/bin."
+    echo -e "  ${C_CYAN}--help, -h${C_RESET}     Hiển thị hướng dẫn này."
+    echo -e ""
+    echo -e "${C_YELLOW}Lưu ý về IP-Auth:${C_RESET} Chế độ mặc định là ${C_GREEN}Passive 100%${C_RESET} (Không tạo request ra ngoài qua proxy,"
+    echo -e "tránh bị nhà cung cấp proxy đánh dấu spam hoặc rate-limit)."
+    exit 0
+}
+
+# Xử lý tham số
+for arg in "$@"; do
+    case "$arg" in
+        --fast) MODE_FAST=true ;;
+        --probe) MODE_ACTIVE_PROBE=true ;;
+        --install)
+            cp "$0" /usr/local/bin/check-proxy 2>/dev/null || sudo cp "$0" /usr/local/bin/check-proxy
+            chmod +x /usr/local/bin/check-proxy 2>/dev/null || sudo chmod +x /usr/local/bin/check-proxy
+            echo -e "${C_GREEN}✓ Đã cài đặt thành công! Bạn có thể gõ lệnh '${C_WHITE}check-proxy${C_GREEN}' ở bất kỳ đâu.${C_RESET}"
+            exit 0
+            ;;
+        --help|-h) show_help ;;
+        *) echo -e "${C_RED}Tùy chọn không hợp lệ: $arg${C_RESET}"; show_help ;;
+    esac
+done
+
+# Kiểm tra quyền root
+if [[ $EUID -ne 0 ]]; then
+    echo -e "${C_RED}LỖI: Script cần quyền root để đọc Network Namespace của Container.${C_RESET}"
+    echo -e "Vui lòng chạy lại với: ${C_YELLOW}sudo bash $0${C_RESET}"
+    exit 1
 fi
 
-# 3. TU DONG TAO LENH GO NHANH 'check-proxy' TRONG HE THONG
-if [ ! -f /usr/local/bin/check-proxy ]; then
-    cp "$0" /usr/local/bin/check-proxy 2>/dev/null && chmod +x /usr/local/bin/check-proxy 2>/dev/null
-fi
+# ------------------------------------------------------------------------------
+# 3. KIỂM TRA VÀ CÀI ĐẶT CÔNG CỤ CẦN THIẾT
+# ------------------------------------------------------------------------------
+ensure_dependencies() {
+    local missing_pkgs=()
+    command -v curl >/dev/null 2>&1 || missing_pkgs+=("curl")
+    command -v bc >/dev/null 2>&1 || missing_pkgs+=("bc")
+    command -v jq >/dev/null 2>&1 || missing_pkgs+=("jq")
+    command -v ip >/dev/null 2>&1 || missing_pkgs+=("iproute2")
+    command -v ss >/dev/null 2>&1 || missing_pkgs+=("iproute2")
+    command -v nsenter >/dev/null 2>&1 || missing_pkgs+=("util-linux")
 
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[0;33m'
-BLUE='\033[0;34m'
-PURPLE='\033[0;35m'
-CYAN='\033[0;36m'
-BOLD='\033[1m'
-NC='\033[0m'
+    if [[ ${#missing_pkgs[@]} -gt 0 ]]; then
+        echo -e "${C_YELLOW}Đang cài đặt các gói phụ trợ thiếu: ${missing_pkgs[*]}...${C_RESET}"
+        apt-get update -qq >/dev/null 2>&1 || yum makecache -q >/dev/null 2>&1 || true
+        apt-get install -y -qq "${missing_pkgs[@]}" >/dev/null 2>&1 || yum install -y -q "${missing_pkgs[@]}" >/dev/null 2>&1 || true
+    fi
+}
+ensure_dependencies
 
-USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
-
-clear
-echo -e "${CYAN}${BOLD}================================================================================${NC}"
-echo -e "${GREEN}${BOLD}   HE THONG DO LUONG DUONG TRUYEN & PROXY MASTER (GLOBAL & VN MATRIX)         ${NC}"
-echo -e "${YELLOW}   (Do 10 Hub: VN, US, CA, UK, AU, DE, NL, FR, SG - Soi Socket & Live Data)     ${NC}"
-echo -e "${CYAN}${BOLD}================================================================================${NC}\n"
-
-# 4. KIEM TRA VA CAI DAT CONG CU
-echo -e "${BLUE}[*] Dang kiem tra cong cu he thong...${NC}"
-install_deps() {
-    local pkgs=("$@")
-    if command -v apt-get &>/dev/null; then
-        apt-get update -qq >/dev/null 2>&1
-        apt-get install -y -qq "${pkgs[@]}" >/dev/null 2>&1
-    elif command -v yum &>/dev/null; then
-        yum install -y -q "${pkgs[@]}" >/dev/null 2>&1
-    elif command -v dnf &>/dev/null; then
-        dnf install -y -q "${pkgs[@]}" >/dev/null 2>&1
+# ------------------------------------------------------------------------------
+# 4. HÀM TIỆN ÍCH ĐỊNH DẠNG & ĐO ĐẠC HỆ THỐNG
+# ------------------------------------------------------------------------------
+format_bytes() {
+    local bytes=$1
+    if (( $(echo "$bytes >= 1073741824" | bc -l 2>/dev/null || echo 0) )); then
+        printf "%.2f GB" "$(echo "$bytes / 1073741824" | bc -l)"
+    elif (( $(echo "$bytes >= 1048576" | bc -l 2>/dev/null || echo 0) )); then
+        printf "%.2f MB" "$(echo "$bytes / 1048576" | bc -l)"
+    elif (( $(echo "$bytes >= 1024" | bc -l 2>/dev/null || echo 0) )); then
+        printf "%.2f KB" "$(echo "$bytes / 1024" | bc -l)"
+    else
+        printf "%d B" "$bytes"
     fi
 }
 
-REQ_PKGS=()
-command -v jq &>/dev/null || REQ_PKGS+=("jq")
-command -v bc &>/dev/null || REQ_PKGS+=("bc")
-command -v curl &>/dev/null || REQ_PKGS+=("curl")
-command -v wget &>/dev/null || REQ_PKGS+=("wget")
-command -v ss &>/dev/null || REQ_PKGS+=("iproute2")
-command -v nsenter &>/dev/null || REQ_PKGS+=("util-linux")
-command -v ping &>/dev/null || REQ_PKGS+=("iputils-ping")
-
-[ ${#REQ_PKGS[@]} -gt 0 ] && install_deps "${REQ_PKGS[@]}"
-
-# 5. XAC DINH GIAO DIEN MANG & PUBLIC IPV4
-PRIMARY_IFACE=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{print $5; exit}')
-[ -z "$PRIMARY_IFACE" ] && PRIMARY_IFACE=$(ip -4 route show default 2>/dev/null | awk '{print $5; exit}')
-
-LOCAL_SRC_IP=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{print $7; exit}')
-[ -z "$LOCAL_SRC_IP" ] && LOCAL_SRC_IP=$(ip -4 addr show dev "$PRIMARY_IFACE" 2>/dev/null | awk '/inet / {print $2}' | cut -d/ -f1 | head -n 1)
-
-get_public_ipv4() {
-    local ip=""
-    ip=$(curl -4 -s -A "$USER_AGENT" --interface "$PRIMARY_IFACE" --max-time 4 https://api.ipify.org 2>/dev/null)
-    [ -z "$ip" ] && ip=$(curl -4 -s -A "$USER_AGENT" --interface "$PRIMARY_IFACE" --max-time 4 https://icanhazip.com 2>/dev/null | tr -d '\n')
-    [ -z "$ip" ] && ip=$(curl -4 -s -A "$USER_AGENT" --interface "$PRIMARY_IFACE" --max-time 4 https://ifconfig.me 2>/dev/null)
-    [ -z "$ip" ] && ip=$(curl -4 -s -A "$USER_AGENT" --interface "$PRIMARY_IFACE" --max-time 4 https://checkip.amazonaws.com 2>/dev/null | tr -d '\n')
-    echo "$ip"
+format_rate() {
+    local bytes_per_sec=$1
+    local bits_per_sec
+    bits_per_sec=$(echo "$bytes_per_sec * 8" | bc -l 2>/dev/null || echo 0)
+    if (( $(echo "$bits_per_sec >= 1000000" | bc -l 2>/dev/null || echo 0) )); then
+        printf "%.2f Mbps" "$(echo "$bits_per_sec / 1000000" | bc -l)"
+    elif (( $(echo "$bits_per_sec >= 1000" | bc -l 2>/dev/null || echo 0) )); then
+        printf "%.2f Kbps" "$(echo "$bits_per_sec / 1000" | bc -l)"
+    else
+        printf "%.0f bps" "$bits_per_sec"
+    fi
 }
 
-PUBLIC_IPV4=$(get_public_ipv4)
+# Lấy card mạng chính và Default Gateway
+PRIMARY_IFACE=$(ip -4 route show default 2>/dev/null | awk '{print $5}' | head -n1)
+if [[ -z "$PRIMARY_IFACE" ]]; then
+    PRIMARY_IFACE=$(ip link show up 2>/dev/null | grep -E '^[0-9]+: (eth|ens|enp|eno|vtnet)' | awk -F': ' '{print $2}' | head -n1)
+fi
+PRIMARY_IFACE=${PRIMARY_IFACE:-"eth0"}
 
-IP_INFO=$(curl -4 -s -A "$USER_AGENT" --interface "$PRIMARY_IFACE" --max-time 5 "http://ip-api.com/json/${PUBLIC_IPV4}?fields=status,country,city,isp,org,countryCode" 2>/dev/null)
-ISP_NAME=$(echo "$IP_INFO" | grep -o '"org": *"[^"]*"' | head -1 | cut -d'"' -f4)
-[ -z "$ISP_NAME" ] && ISP_NAME=$(echo "$IP_INFO" | grep -o '"isp": *"[^"]*"' | head -1 | cut -d'"' -f4)
-COUNTRY=$(echo "$IP_INFO" | grep -o '"country": *"[^"]*"' | head -1 | cut -d'"' -f4)
-COUNTRY_CODE=$(echo "$IP_INFO" | grep -o '"countryCode": *"[^"]*"' | head -1 | cut -d'"' -f4)
-CITY=$(echo "$IP_INFO" | grep -o '"city": *"[^"]*"' | head -1 | cut -d'"' -f4)
+DEFAULT_GW=$(ip -4 route show default 2>/dev/null | awk '{print $3}' | head -n1)
+DEFAULT_GW=${DEFAULT_GW:-"Không xác định"}
 
-# Ty le TCP Retransmission
-TCP_OUT=$(awk '/Tcp:/ {print $11}' /proc/net/snmp 2>/dev/null | tail -1)
-TCP_RETRANS=$(awk '/Tcp:/ {print $13}' /proc/net/snmp 2>/dev/null | tail -1)
-GLOBAL_RETRANS_RATE="0.00"
-if [ -n "$TCP_OUT" ] && [ "$TCP_OUT" -gt 0 ] 2>/dev/null; then
-    GLOBAL_RETRANS_RATE=$(echo "scale=2; ($TCP_RETRANS * 100) / $TCP_OUT" | bc -l 2>/dev/null || echo "0.00")
+# Lấy IP Public Host (Chỉ qua card mạng chính - Khóa cứng interface)
+get_host_public_ip() {
+    local ip=""
+    local endpoints=(
+        "https://api.ipify.org"
+        "https://icanhazip.com"
+        "https://ifconfig.me"
+        "https://ipecho.net/plain"
+        "https://checkip.amazonaws.com"
+    )
+    for ep in "${endpoints[@]}"; do
+        ip=$(curl -s4 -m 3 --interface "$PRIMARY_IFACE" "$ep" 2>/dev/null | tr -d '[:space:]')
+        if [[ -n "$ip" && "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "$ip"
+            return 0
+        fi
+    done
+    echo "Không lấy được IP"
+}
+
+HOST_PUBLIC_IPV4=$(get_host_public_ip)
+
+# ------------------------------------------------------------------------------
+# 5. HIỂN THỊ HEADER & THÔNG TIN HỆ THỐNG
+# ------------------------------------------------------------------------------
+clear
+echo -e "${C_CYAN}==============================================================================${C_RESET}"
+echo -e "${C_WHITE}${C_BOLD}   INTERNETINCOME BANDWIDTH & PROXY TELEMETRY AUDIT TOOL (TEST BRANCH)       ${C_RESET}"
+echo -e "${C_CYAN}==============================================================================${C_RESET}"
+
+ARCH=$(uname -m)
+KERNEL=$(uname -r)
+CPUS=$(nproc 2>/dev/null || echo 1)
+UPTIME=$(uptime -p 2>/dev/null | sed 's/up //' || uptime)
+VIRT=$(systemd-detect-virt 2>/dev/null || echo "Dedicated/Unknown")
+
+# RAM & ZRAM
+RAM_TOTAL_KB=$(grep MemTotal /proc/meminfo | awk '{print $2}')
+RAM_AVAIL_KB=$(grep MemAvailable /proc/meminfo | awk '{print $2}')
+RAM_USED_KB=$(( RAM_TOTAL_KB - RAM_AVAIL_KB ))
+RAM_TOTAL_MB=$(( RAM_TOTAL_KB / 1024 ))
+RAM_USED_MB=$(( RAM_USED_KB / 1024 ))
+
+ZRAM_DEV="/dev/zram0"
+ZRAM_STATUS="${C_RED}Không kích hoạt${C_RESET}"
+if [[ -b "$ZRAM_DEV" ]]; then
+    ZRAM_SIZE_MB=$(cat /sys/block/zram0/disksize 2>/dev/null | awk '{print int($1/1048576)}')
+    ZRAM_ALGO=$(cat /sys/block/zram0/comp_algorithm 2>/dev/null | grep -o '\[.*\]' | tr -d '[]')
+    ZRAM_STATUS="${C_GREEN}Kích hoạt (${ZRAM_SIZE_MB} MB, Thuật toán: ${ZRAM_ALGO:-zstd})${C_RESET}"
 fi
 
-IP_FW=$(sysctl -n net.ipv4.ip_forward 2>/dev/null)
-IP_FW_STATUS="${RED}Tat (Container khong NAT duoc!)${NC}"
-[ "$IP_FW" -eq 1 ] 2>/dev/null && IP_FW_STATUS="${GREEN}Da Bat (San sang NAT IP Whitelist)${NC}"
+# Congestion Control (BBR)
+TCP_CC=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "cubics")
 
-echo -e "\n${PURPLE}${BOLD}--- [1] THONG TIN MANG GOC & IP AUTHENTICATION ---${NC}"
-echo -e " 🔑 ${BOLD}IP WHITELIST (Dung cho Dashboard Proxy):${NC} ${GREEN}${BOLD}${PUBLIC_IPV4}${NC}"
-printf "%-26s: %s (IP LAN: %s)\n" "Card mang Outbound" "$PRIMARY_IFACE" "$LOCAL_SRC_IP"
-printf "%-26s: %s (%s, %s)\n" "Nha mang / DataCenter" "$ISP_NAME" "$CITY" "$COUNTRY"
-printf "%-26s: %b\n" "IPv4 Forwarding (NAT)" "$IP_FW_STATUS"
-printf "%-26s: %s%%\n" "Ty le TCP Retransmission" "$GLOBAL_RETRANS_RATE"
+echo -e " ${C_BOLD}1. THÔNG SỐ HỆ THỐNG & TÀI NGUYÊN:${C_RESET}"
+echo -e "    • Phần cứng/Ảo hóa : ${C_GREEN}$VIRT${C_RESET} | Kiến trúc: ${C_GREEN}$ARCH${C_RESET} | CPU: ${C_GREEN}$CPUS cores${C_RESET}"
+echo -e "    • Kernel / Uptime   : ${C_WHITE}$KERNEL${C_RESET} | ${C_WHITE}$UPTIME${C_RESET}"
+echo -e "    • RAM Vật lý        : ${C_YELLOW}${RAM_USED_MB} MB / ${RAM_TOTAL_MB} MB${C_RESET} ($(( RAM_USED_MB * 100 / RAM_TOTAL_MB ))% đã dùng)"
+echo -e "    • Bộ nhớ ZRAM       : $ZRAM_STATUS"
+echo -e "    • TCP Congestion    : ${C_GREEN}$TCP_CC${C_RESET} $([[ "$TCP_CC" == "bbr" ]] && echo "✓" || echo "(Khuyến nghị BBR)")"
+echo -e "    • Interface / GW    : ${C_WHITE}$PRIMARY_IFACE${C_RESET} | Default Gateway: ${C_WHITE}$DEFAULT_GW${C_RESET}"
 
-# 6. DO DO TRE HYBRID (10 HUBS TOAN CAU & NOI DIA)
-echo -e "\n${PURPLE}${BOLD}--- [2] DO DO TRE HYBRID (PING ICMP + TCP CONNECT BYPASS) ---${NC}"
-printf "${BOLD}%-26s | %-12s | %-12s | %-16s${NC}\n" "Khu vuc Hub Proxy" "Do tre (Ping)" "Giao thuc" "Trang thai"
-echo "---------------------------------------------------------------------------"
+# Hộp IP Whitelist nổi bật
+echo -e ""
+echo -e " ${C_BG_BLUE}${C_WHITE}${C_BOLD} [!] HOST PUBLIC IP DÀNH CHO IP-AUTHENTICATION PROXIES (WHITELIST IP) ${C_RESET}"
+echo -e " ${C_BOLD} >>> IP HOST HIỆN TẠI : ${C_GREEN}${C_BOLD}${HOST_PUBLIC_IPV4}${C_RESET}"
+echo -e " ${C_YELLOW} Hãy đảm bảo IP trên đã được Whitelist chính xác trong Dashboard nhà cung cấp Proxy!${C_RESET}"
+echo -e "${C_CYAN}------------------------------------------------------------------------------${C_RESET}"
 
-test_hybrid_ping() {
-    local region="$1"
-    local icmp_target="$2"
-    local http_target="$3"
+# ------------------------------------------------------------------------------
+# 6. KIỂM TRA DNS & PHÂN GIẢI DIRECT TỪ HOST
+# ------------------------------------------------------------------------------
+echo -e " ${C_BOLD}2. KIỂM TRA CẤU HÌNH DNS HOST:${C_RESET}"
+DNS_SERVERS=$(grep -E '^nameserver' /etc/resolv.conf 2>/dev/null | awk '{print $2}' | tr '\n' ' ')
+RESOLV_LINK=$(ls -l /etc/resolv.conf 2>/dev/null | awk '{print $NF}' || echo "/etc/resolv.conf")
 
-    local ping_cmd
-    ping_cmd=$(ping -4 -I "$PRIMARY_IFACE" -c 4 -W 2 "$icmp_target" 2>/dev/null)
-    local loss=$(echo "$ping_cmd" | grep -o '[0-9]*% packet loss' | cut -d'%' -f1)
+echo -e "    • DNS Servers       : ${C_GREEN}${DNS_SERVERS:-Không tìm thấy}${C_RESET}"
+echo -e "    • /etc/resolv.conf  : ${C_WHITE}$RESOLV_LINK${C_RESET}"
 
-    if [ -n "$loss" ] && [ "$loss" -lt 100 ]; then
-        local raw_ping=$(echo "$ping_cmd" | tail -1 | awk -F '/' '{print $5}')
-        [ -z "$raw_ping" ] && raw_ping=$(echo "$ping_cmd" | grep -o 'avg = [0-9.]*' | cut -d' ' -f3)
-        local avg_ping=$(awk -v p="$raw_ping" 'BEGIN {printf "%.1f", p}' 2>/dev/null || echo "$raw_ping")
-        printf "%-26s | ${GREEN}%-9s ms${NC} | %-12s | %b\n" "$region" "$avg_ping" "ICMP Ping" "${GREEN}Mo (Sach)${NC}"
+DNS_TEST_RESULT="${C_RED}Thất bại${C_RESET}"
+if host -W 2 cloudflare.com >/dev/null 2>&1 || ping -c 1 -W 2 cloudflare.com >/dev/null 2>&1; then
+    DNS_TEST_RESULT="${C_GREEN}Hoạt động tốt (Direct Upstream)${C_RESET}"
+fi
+echo -e "    • Phân giải DNS Host: $DNS_TEST_RESULT"
+echo -e "${C_CYAN}------------------------------------------------------------------------------${C_RESET}"
+
+# ------------------------------------------------------------------------------
+# 7. KIỂM TRA ĐƯỜNG TRUYỀN & LATENCY TOÀN CẦU (NẾU KHÔNG DÙNG --FAST)
+# ------------------------------------------------------------------------------
+if [[ "$MODE_FAST" == false ]]; then
+    echo -e " ${C_BOLD}3. ĐỘ TRỄ (LATENCY) TỪ HOST ĐẾN CÁC HUB CHÍNH:${C_RESET}"
+    
+    test_ping() {
+        local name=$1
+        local target=$2
+        local res
+        res=$(ping -c 2 -W 2 -I "$PRIMARY_IFACE" "$target" 2>/dev/null | tail -1 | awk -F '/' '{print $5}')
+        if [[ -n "$res" ]]; then
+            printf "    • %-18s [%-15s] : ${C_GREEN}%6.1f ms${C_RESET}\n" "$name" "$target" "$res"
+        else
+            printf "    • %-18s [%-15s] : ${C_RED}Timeout / Blocked${C_RESET}\n" "$name" "$target"
+        fi
+    }
+
+    test_ping "Cloudflare DNS" "1.1.1.1"
+    test_ping "Google DNS"     "8.8.8.8"
+    test_ping "Singapore Hub"  "1.0.0.1"
+    test_ping "Tokyo Hub"      "103.102.166.224"
+    test_ping "Frankfurt Hub"  "194.25.0.68"
+    test_ping "US West (CA)"   "199.102.73.1"
+    test_ping "US East (VA)"   "208.67.222.222"
+
+    echo -e ""
+    echo -e " ${C_BOLD}4. ĐO TỐC ĐỘ ĐƯỜNG TRUYỀN GỐC HOST (DOWNLOAD / UPLOAD DUPLEX):${C_RESET}"
+    echo -e "    ${C_YELLOW}Đang đo tốc độ trực tiếp từ Host Interface (Cloudflare Edge)...${C_RESET}"
+    
+    DL_SPEED="Không đo được"
+    UL_SPEED="Không đo được"
+
+    # Download test 10MB (timeout 5s)
+    DL_RAW=$(curl -s4 -m 5 --interface "$PRIMARY_IFACE" -w "%{speed_download}" -o /dev/null "https://speed.cloudflare.com/__down?bytes=10485760" 2>/dev/null || echo 0)
+    if (( $(echo "$DL_RAW > 0" | bc -l 2>/dev/null || echo 0) )); then
+        DL_SPEED=$(format_rate "$DL_RAW")
+    fi
+
+    # Upload test 2MB (timeout 5s)
+    UL_PAYLOAD=$(head -c 2097152 /dev/zero 2>/dev/null || true)
+    if [[ -n "$UL_PAYLOAD" ]]; then
+        UL_RAW=$(curl -s4 -m 5 --interface "$PRIMARY_IFACE" -X POST -d "$UL_PAYLOAD" -w "%{speed_upload}" -o /dev/null "https://speed.cloudflare.com/__up" 2>/dev/null || echo 0)
+        if (( $(echo "$UL_RAW > 0" | bc -l 2>/dev/null || echo 0) )); then
+            UL_SPEED=$(format_rate "$UL_RAW")
+        fi
+    fi
+
+    echo -e "    • Direct Download : ${C_GREEN}${C_BOLD}$DL_SPEED${C_RESET}"
+    echo -e "    • Direct Upload   : ${C_GREEN}${C_BOLD}$UL_SPEED${C_RESET}"
+    echo -e "${C_CYAN}------------------------------------------------------------------------------${C_RESET}"
+fi
+
+# ------------------------------------------------------------------------------
+# 8. PASSIVE CONTAINER & PROXY TELEMETRY (CHÍNH XÁC CHO INTERNETINCOME)
+# ------------------------------------------------------------------------------
+echo -e " ${C_BOLD}5. KIỂM TRA CHI TIẾT CONTAINER INTERNETINCOME & PROXY TELEMETRY:${C_RESET}"
+echo -e "    ${C_YELLOW}Phương pháp: Thu thập thụ động qua Kernel Namespace (Zero External Request)${C_RESET}"
+echo -e "    ${C_YELLOW}Đang lấy mẫu dữ liệu lưu lượng trong $SAMPLE_INTERVAL giây...${C_RESET}"
+
+CONTAINER_LIST=$(docker ps -a --format '{{.ID}}|{{.Names}}|{{.Status}}|{{.Image}}' 2>/dev/null || true)
+
+if [[ -z "$CONTAINER_LIST" ]]; then
+    echo -e "\n    ${C_RED}Không tìm thấy container Docker nào đang chạy trên máy!${C_RESET}"
+    echo -e "${C_CYAN}==============================================================================${C_RESET}"
+    exit 0
+fi
+
+# In Header bảng
+echo -e ""
+printf " ${C_BOLD}%-18s %-12s %-10s %-8s %-12s %-12s %-15s${C_RESET}\n" \
+    "CONTAINER" "TRẠNG THÁI" "RAM DÙNG" "SOCKETS" "TỐC ĐỘ (KB/s)" "TỔNG DỮ LIỆU" "ĐÁNH GIÁ PROXY"
+printf " %-18s %-12s %-10s %-8s %-12s %-12s %-15s\n" \
+    "------------------" "------------" "----------" "--------" "------------" "------------" "---------------"
+
+TOTAL_ACTIVE_NODES=0
+TOTAL_IDLE_NODES=0
+TOTAL_DEAD_NODES=0
+TOTAL_CONTAINERS=0
+
+declare -A T1_RX T1_TX CPIDS APP_NAMES APP_STATUS APP_MEM
+
+# Hàm đọc RX/TX tối ưu cho InternetIncome TUN/Bridge
+read_container_net_bytes() {
+    local pid=$1
+    if [[ ! -d "/proc/$pid/net" ]]; then
+        echo "0 0"
         return
     fi
-
-    local start_s=$(curl -4 -s -A "$USER_AGENT" --interface "$PRIMARY_IFACE" -w "%{time_connect}" -o /dev/null --max-time 4 "$http_target" 2>/dev/null)
-    if [ -n "$start_s" ] && (( $(echo "$start_s > 0" | bc -l 2>/dev/null || echo "0") )); then
-        local formatted_ping=$(awk -v s="$start_s" 'BEGIN {printf "%.1f", s * 1000}' 2>/dev/null)
-        printf "%-26s | ${CYAN}%-9s ms${NC} | %-12s | %b\n" "$region" "$formatted_ping" "TCP/HTTP" "${YELLOW}Vuot chan ICMP${NC}"
-    else
-        printf "%-26s | ${RED}%-9s ms${NC} | %-12s | %b\n" "$region" "Timeout" "Failed" "${RED}Mat ket noi${NC}"
-    fi
+    awk '
+        # Nếu có tun0/tap0 (hev-socks5-tunnel / tun2proxy): Lấy tun0 làm chuẩn payload
+        /tun0:|tap0:/ { tun_rx += $2; tun_tx += $10; has_tun = 1 }
+        /eth0:/       { eth_rx += $2; eth_tx += $10 }
+        END {
+            if (has_tun == 1) {
+                print tun_rx+0, tun_tx+0
+            } else {
+                print eth_rx+0, eth_tx+0
+            }
+        }
+    ' "/proc/$pid/net/dev" 2>/dev/null || echo "0 0"
 }
 
-test_hybrid_ping "0. VN (Noi dia - Viet Nam)" "203.162.4.191"  "http://mirror.bizflycloud.vn"
-test_hybrid_ping "1. Asia (Singapore)"        "139.162.23.4"   "http://speedtest.singapore.linode.com"
-test_hybrid_ping "2. US West (California)"   "104.223.10.2"   "http://speedtest.fremont.linode.com"
-test_hybrid_ping "3. US East (New Jersey)"   "208.77.17.2"    "http://speedtest.newark.linode.com"
-test_hybrid_ping "4. CA (Canada - Toronto)"   "139.162.111.4"  "http://speedtest.toronto1.linode.com"
-test_hybrid_ping "5. UK (Anh - London)"       "185.42.223.67"  "http://speedtest.london.linode.com"
-test_hybrid_ping "6. DE (Duc - Frankfurt)"   "91.107.223.4"   "https://fsn1-speed.hetzner.com"
-test_hybrid_ping "7. NL (Ha Lan - Amsterdam)" "194.126.175.174" "https://fsn1-speed.hetzner.com"
-test_hybrid_ping "8. FR (Phap - Roubaix)"     "185.125.63.14"  "https://rbx.proof.ovh.net"
-test_hybrid_ping "9. AU (Uc - Sydney)"        "139.99.130.17"  "https://syd.proof.ovh.net"
+# Lấy dữ liệu T1
+while IFS='|' read -r CID CNAME CSTAT CIMG; do
+    [[ -z "$CID" ]] && continue
+    ((TOTAL_CONTAINERS++))
+    
+    CPID=$(docker inspect --format '{{.State.Pid}}' "$CID" 2>/dev/null || echo 0)
+    CPIDS["$CID"]=$CPID
+    APP_NAMES["$CID"]=$CNAME
+    APP_STATUS["$CID"]=$CSTAT
+    
+    MEM_USAGE=$(docker stats --no-stream --format "{{.MemUsage}}" "$CID" 2>/dev/null | awk '{print $1}' || echo "N/A")
+    APP_MEM["$CID"]=$MEM_USAGE
 
-# 7. DO BANG THONG THUC TE QUA DATA CENTER LOOKING GLASS (10 HUBS)
-echo -e "\n${PURPLE}${BOLD}--- [3] DO BANG THONG THUC TE (DATA CENTER LOOKING GLASS) ---${NC}"
-echo -e "${YELLOW}Do thuc te qua port mang goc (Tu dong Follow 301/302 va chuyen link neu loi)...${NC}\n"
-printf "${BOLD}%-26s | %-16s | %-16s | %-12s${NC}\n" "Vi tri may chu Test" "Toc do Download" "Ha tang Server" "Trang thai"
-echo "----------------------------------------------------------------------------------"
-
-TMP_DIR="/tmp/bench_master_$(date +%s)"
-mkdir -p "$TMP_DIR"
-
-run_direct_speedtest() {
-    local target_name="$1"
-    local primary_url="$2"
-    local backup_url="$3"
-    local dc_name="$4"
-    local tag="$5"
-
-    local speed_raw
-    speed_raw=$(curl -4 -sL -A "$USER_AGENT" --interface "$PRIMARY_IFACE" -w "%{speed_download} %{http_code}" -o /dev/null --max-time 6 "$primary_url" 2>/dev/null)
-    local speed_bytes=$(echo "$speed_raw" | awk '{print $1}')
-    local http_code=$(echo "$speed_raw" | awk '{print $2}')
-
-    if [ "$http_code" != "200" ] || [ -z "$speed_bytes" ] || (( $(echo "$speed_bytes == 0" | bc -l 2>/dev/null || echo "1") )); then
-        speed_raw=$(curl -4 -sL -A "$USER_AGENT" --interface "$PRIMARY_IFACE" -w "%{speed_download} %{http_code}" -o /dev/null --max-time 6 "$backup_url" 2>/dev/null)
-        speed_bytes=$(echo "$speed_raw" | awk '{print $1}')
-        http_code=$(echo "$speed_raw" | awk '{print $2}')
-    fi
-
-    if [ "$http_code" == "200" ] && [ -n "$speed_bytes" ] && (( $(echo "$speed_bytes > 0" | bc -l 2>/dev/null || echo "0") )); then
-        local dl_mbps=$(awk -v b="$speed_bytes" 'BEGIN {printf "%.2f", (b * 8) / 1000000}')
-        printf "%-26s | ${GREEN}%-11s Mbps${NC} | %-16s | ${GREEN}%s${NC}\n" "$target_name" "$dl_mbps" "$dc_name" "OK (200)"
-        [ "$tag" == "intl" ] && echo "$dl_mbps" >> "$TMP_DIR/dl_intl.txt"
-        [ "$tag" == "vn" ] && echo "$dl_mbps" >> "$TMP_DIR/dl_vn.txt"
+    if [[ "$CPID" -gt 0 ]]; then
+        read -r r1 t1 < <(read_container_net_bytes "$CPID")
+        T1_RX["$CID"]=$r1
+        T1_TX["$CID"]=$t1
     else
-        printf "%-26s | ${RED}%-11s Mbps${NC} | %-16s | ${RED}%s${NC}\n" "$target_name" "0.00" "$dc_name" "Loi HTTP $http_code"
+        T1_RX["$CID"]=0
+        T1_TX["$CID"]=0
     fi
-}
+done <<< "$CONTAINER_LIST"
 
-run_direct_speedtest "0. VN (Noi dia - Viet Nam)" \
-    "http://mirror.bizflycloud.vn/ubuntu/ls-lR.gz" \
-    "http://mirrors.viettelidc.com.vn/ubuntu/ls-lR.gz" \
-    "BizFly / Viettel" "vn"
+# Chờ đúng khoảng thời gian mẫu
+sleep "$SAMPLE_INTERVAL"
 
-run_direct_speedtest "1. Asia (Singapore)" \
-    "http://speedtest.singapore.linode.com/100MB-singapore.bin" \
-    "https://sin-speed.hetzner.com/100MB.bin" \
-    "Linode SG" "intl"
-
-run_direct_speedtest "2. US West (California)" \
-    "http://speedtest.fremont.linode.com/100MB-fremont.bin" \
-    "http://speedtest.sfo12.us.leaseweb.net/100mb.bin" \
-    "Linode USA" "intl"
-
-run_direct_speedtest "3. US East (New Jersey)" \
-    "http://speedtest.newark.linode.com/100MB-newark.bin" \
-    "https://ash-speed.hetzner.com/100MB.bin" \
-    "Linode USA" "intl"
-
-run_direct_speedtest "4. CA (Canada - Toronto)" \
-    "http://speedtest.toronto1.linode.com/100MB-toronto.bin" \
-    "https://bhs.proof.ovh.net/files/100Mio.dat" \
-    "Linode CA / OVH" "intl"
-
-run_direct_speedtest "5. UK (Anh - London)" \
-    "http://speedtest.london.linode.com/100MB-london.bin" \
-    "https://rbx.proof.ovh.net/files/100Mio.dat" \
-    "Linode London" "intl"
-
-run_direct_speedtest "6. DE (Duc - Frankfurt)" \
-    "https://fsn1-speed.hetzner.com/100MB.bin" \
-    "http://speedtest.frankfurt.linode.com/100MB-frankfurt.bin" \
-    "Hetzner Germany" "intl"
-
-run_direct_speedtest "7. NL (Ha Lan - Amsterdam)" \
-    "http://speedtest.ams2.digitalocean.com/100mb.test" \
-    "https://fsn1-speed.hetzner.com/100MB.bin" \
-    "DigitalOcean NL" "intl"
-
-run_direct_speedtest "8. FR (Phap - Roubaix)" \
-    "https://rbx.proof.ovh.net/files/100Mio.dat" \
-    "https://fsn1-speed.hetzner.com/100MB.bin" \
-    "OVH France" "intl"
-
-run_direct_speedtest "9. AU (Uc - Sydney)" \
-    "https://syd.proof.ovh.net/files/100Mio.dat" \
-    "http://speedtest.syd1.linode.com/100MB-sydney.bin" \
-    "OVH Australia" "intl"
-
-# 8. DO LUU LUONG DOCKER (DO CHINH XAC NANO-GIAY & FORMAT GB TU DONG)
-echo -e "\n${PURPLE}${BOLD}--- [4] DO DU LIEU CONTAINER & LUU LUONG TICH LUY (LIVE & LIFETIME) ---${NC}"
-
-DEAD_NODES_LIST=()
-IDLE_NODES_LIST=()
-
-if ! command -v docker &>/dev/null || ! systemctl is-active --quiet docker; then
-    echo -e "${YELLOW}[!] Docker chua duoc cai dat hoac chua khoi chay tren Host.${NC}"
-else
-    CONTAINERS=$(docker ps -q)
-    if [ -z "$CONTAINERS" ]; then
-        echo -e "${YELLOW}[!] Hien khong co Container Docker nao dang chay.${NC}"
+# Vòng lặp tính toán T2 và hiển thị
+while IFS='|' read -r CID CNAME CSTAT CIMG; do
+    [[ -z "$CID" ]] && continue
+    CPID=${CPIDS["$CID"]}
+    MEM_STR=${APP_MEM["$CID"]:-"N/A"}
+    
+    DISP_NAME=$(echo "$CNAME" | cut -c1-18)
+    
+    # Đánh giá trạng thái Docker
+    if [[ "$CSTAT" =~ ^Up ]]; then
+        if [[ "$CSTAT" =~ Restarting ]]; then
+            DISP_STAT="${C_RED}Flapping${C_RESET}"
+            ((TOTAL_DEAD_NODES++))
+        else
+            DISP_STAT="${C_GREEN}Running${C_RESET}"
+        fi
     else
-        echo -e "${YELLOW}[*] Dang do dong loat toan bo container trong 2 giay...${NC}\n"
-        printf "${BOLD}%-20s | %-15s | %-12s | %-12s | %-12s | %-10s${NC}\n" \
-            "Container" "Image" "Live RX" "Live TX" "Tong Data" "Sockets"
-        echo "-----------------------------------------------------------------------------------------------"
-
-        declare -A C_PIDS C_NAMES C_IMAGES C_RX1 C_TX1 C_TOTAL_FORMAT C_TOTAL_RAW_MB
-
-        T1=$(date +%s%N)
-        for CID in $CONTAINERS; do
-            CPID=$(docker inspect -f '{{.State.Pid}}' "$CID" 2>/dev/null)
-            if [ -n "$CPID" ] && [ "$CPID" -gt 0 ] 2>/dev/null; then
-                C_PIDS["$CID"]="$CPID"
-                C_NAMES["$CID"]=$(docker inspect -f '{{.Name}}' "$CID" | sed 's/^\///')
-                C_IMAGES["$CID"]=$(docker inspect -f '{{.Config.Image}}' "$CID" | cut -d'/' -f2- | cut -c1-15)
-
-                STAT1=$(timeout 1 nsenter -t "$CPID" -n awk 'NR>2 && $1 !~ /lo:/ {rx+=$2; tx+=$10} END {print rx+0, tx+0}' /proc/net/dev 2>/dev/null || echo "0 0")
-                C_RX1["$CID"]=$(echo "$STAT1" | awk '{print $1}')
-                C_TX1["$CID"]=$(echo "$STAT1" | awk '{print $2}')
-
-                TOT_BYTES=$(( ${C_RX1["$CID"]} + ${C_TX1["$CID"]} ))
-                C_TOTAL_RAW_MB["$CID"]=$(awk -v b="$TOT_BYTES" 'BEGIN {printf "%.2f", b / 1048576}')
-
-                if (( $(echo "$TOT_BYTES >= 1048576000" | bc -l 2>/dev/null || echo "0") )); then
-                    C_TOTAL_FORMAT["$CID"]=$(awk -v b="$TOT_BYTES" 'BEGIN {printf "%.1f GB", b / 1073741824}')
-                else
-                    C_TOTAL_FORMAT["$CID"]=$(awk -v b="$TOT_BYTES" 'BEGIN {printf "%.1f MB", b / 1048576}')
-                fi
-            fi
-        done
-
-        sleep 2
-        T2=$(date +%s%N)
-
-        ELAPSED_SEC=$(awk -v t1="$T1" -v t2="$T2" 'BEGIN {val=(t2 - t1)/1000000000; if(val<=0) val=2.0; printf "%.3f", val}')
-
-        for CID in "${!C_PIDS[@]}"; do
-            CPID="${C_PIDS[$CID]}"
-            STAT2=$(timeout 1 nsenter -t "$CPID" -n awk 'NR>2 && $1 !~ /lo:/ {rx+=$2; tx+=$10} END {print rx+0, tx+0}' /proc/net/dev 2>/dev/null || echo "0 0")
-            RX2=$(echo "$STAT2" | awk '{print $1}')
-            TX2=$(echo "$STAT2" | awk '{print $2}')
-
-            DIFF_RX=$(( RX2 - C_RX1["$CID"] ))
-            DIFF_TX=$(( TX2 - C_TX1["$CID"] ))
-            [ "$DIFF_RX" -lt 0 ] && DIFF_RX=0
-            [ "$DIFF_TX" -lt 0 ] && DIFF_TX=0
-
-            RX_VAL=$(awk -v d="$DIFF_RX" -v s="$ELAPSED_SEC" 'BEGIN {printf "%.2f", (d / s) / 1024}')
-            TX_VAL=$(awk -v d="$DIFF_TX" -v s="$ELAPSED_SEC" 'BEGIN {printf "%.2f", (d / s) / 1024}')
-
-            RX_KBS=$(awk -v v="$RX_VAL" 'BEGIN {printf "%.1f", v}')
-            TX_KBS=$(awk -v v="$TX_VAL" 'BEGIN {printf "%.1f", v}')
-
-            CONNS=$(timeout 1 nsenter -t "$CPID" -n ss -t state established 2>/dev/null | wc -l)
-            CONNS=$(( CONNS - 1 ))
-            [ "$CONNS" -lt 0 ] && CONNS=0
-
-            TOTAL_STR="${C_TOTAL_FORMAT[$CID]}"
-            TOTAL_MB="${C_TOTAL_RAW_MB[$CID]}"
-
-            printf "%-20s | %-15s | ${CYAN}%-8s KB/s${NC} | ${GREEN}%-8s KB/s${NC} | ${YELLOW}%-10s${NC} | %s conns\n" \
-                "${C_NAMES[$CID]:0:19}" "${C_IMAGES[$CID]:0:14}" "$RX_KBS" "$TX_KBS" "$TOTAL_STR" "$CONNS"
-
-            if (( $(echo "$RX_VAL <= 0.05" | bc -l 2>/dev/null || echo "0") )) && \
-               (( $(echo "$TX_VAL <= 0.15" | bc -l 2>/dev/null || echo "0") )); then
-                
-                CONTAINER_OUTBOUND_IP=$(timeout 2 nsenter -t "$CPID" -n curl -4 -s -A "$USER_AGENT" https://api.ipify.org 2>/dev/null)
-                [ -z "$CONTAINER_OUTBOUND_IP" ] && CONTAINER_OUTBOUND_IP=$(timeout 2 nsenter -t "$CPID" -n curl -4 -s -A "$USER_AGENT" https://icanhazip.com 2>/dev/null | tr -d '\n')
-                [ -z "$CONTAINER_OUTBOUND_IP" ] && CONTAINER_OUTBOUND_IP=$(timeout 2 nsenter -t "$CPID" -n curl -4 -s -A "$USER_AGENT" https://checkip.amazonaws.com 2>/dev/null | tr -d '\n')
-                [ -z "$CONTAINER_OUTBOUND_IP" ] && CONTAINER_OUTBOUND_IP="TIMEOUT / UNREACHABLE"
-
-                if (( $(echo "$TOTAL_MB >= 2.0" | bc -l 2>/dev/null || echo "0") )) || [ "$CONNS" -ge 2 ]; then
-                    IDLE_NODES_LIST+=("${C_NAMES[$CID]}|${C_IMAGES[$CID]}|$CONTAINER_OUTBOUND_IP|$CONNS|$TOTAL_STR")
-                else
-                    DEAD_NODES_LIST+=("${C_NAMES[$CID]}|${C_IMAGES[$CID]}|$CONTAINER_OUTBOUND_IP|$CONNS|$TOTAL_STR")
-                fi
-            fi
-        done
+        DISP_STAT="${C_RED}Stopped${C_RESET}"
+        ((TOTAL_DEAD_NODES++))
     fi
-fi
 
-# 9. PHAN TICH DANH SACH NODE (BAO VE NODE IDLE & CHI RO NODE CHET)
-echo -e "\n${PURPLE}${BOLD}--- [5] DANH GIA TRANG THAI CHI TIET TUNG NODE (ANTI-MISTAKE AUDIT) ---${NC}"
+    ESTAB_SOCKETS=0
+    DELTA_SPEED_KBS="0.0"
+    TOTAL_DATA_STR="0 B"
+    PROXY_HEALTH="${C_RED}Chết / Lỗi${C_RESET}"
 
-if [ ${#IDLE_NODES_LIST[@]} -gt 0 ]; then
-    echo -e " 🟢 ${GREEN}${BOLD}NHOM NODE DANG CHO TASK (IDLE - DANG KIEM TIEN RAT TOT - KHONG XOA):${NC}"
-    printf "${BOLD}%-22s | %-14s | %-18s | %-14s | %-20s${NC}\n" \
-        "Container" "Platform" "IP Outbound" "Da Cay Duoc" "Khuyen Nghi"
-    echo "--------------------------------------------------------------------------------------------------"
-    for item in "${IDLE_NODES_LIST[@]}"; do
-        IFS="|" read -r i_name i_img i_ip i_conns i_total <<< "$item"
-        printf "%-22s | %-14s | ${CYAN}%-18s${NC} | ${YELLOW}%-12s${NC} | ${GREEN}%-20s${NC}\n" \
-            "${i_name:0:21}" "${i_img:0:13}" "$i_ip" "$i_total" "GIU NGUYEN (Kiem Tot)"
-    done
-    echo ""
-fi
+    if [[ "$CPID" -gt 0 && -d "/proc/$CPID/net" ]]; then
+        read -r r2 t2 < <(read_container_net_bytes "$CPID")
 
-if [ ${#DEAD_NODES_LIST[@]} -eq 0 ]; then
-    echo -e " 🟢 ${GREEN}${BOLD}HOAN HAO:${NC} Khong co bat ky node nao bi chet hay bi block tren he thong."
+        # Đếm socket ESTABLISHED từ host vào namespace của container
+        ESTAB_SOCKETS=$(nsenter -t "$CPID" -n ss -tan state established 2>/dev/null | grep -vc 'Recv-Q' || echo 0)
+
+        r1=${T1_RX["$CID"]:-0}
+        t1=${T1_TX["$CID"]:-0}
+        delta_rx=$(( r2 - r1 ))
+        delta_tx=$(( t2 - t1 ))
+        delta_total=$(( delta_rx + delta_tx ))
+        [[ "$delta_total" -lt 0 ]] && delta_total=0
+
+        DELTA_SPEED_KBS=$(echo "scale=1; ($delta_total / $SAMPLE_INTERVAL) / 1024" | bc -l 2>/dev/null || echo "0.0")
+        
+        sum_total=$(( r2 + t2 ))
+        TOTAL_DATA_STR=$(format_bytes "$sum_total")
+
+        # Đánh giá sức khỏe Proxy hoàn toàn thụ động
+        if [[ "$ESTAB_SOCKETS" -gt 0 && $(echo "$DELTA_SPEED_KBS > 0" | bc -l 2>/dev/null || echo 0) -eq 1 ]]; then
+            PROXY_HEALTH="${C_GREEN}Tốt (Active)${C_RESET}"
+            ((TOTAL_ACTIVE_NODES++))
+        elif [[ "$ESTAB_SOCKETS" -gt 0 ]]; then
+            PROXY_HEALTH="${C_YELLOW}Chờ (Idle/Wait)${C_RESET}"
+            ((TOTAL_IDLE_NODES++))
+        elif [[ "$sum_total" -gt 1048576 ]]; then
+            PROXY_HEALTH="${C_YELLOW}Tạm nghỉ (Sleep)${C_RESET}"
+            ((TOTAL_IDLE_NODES++))
+        else
+            PROXY_HEALTH="${C_RED}Mất kết nối${C_RESET}"
+            ((TOTAL_DEAD_NODES++))
+        fi
+        
+        # Chỉ khi bật cờ --probe thủ công mới chạy Egress Probe
+        if [[ "$MODE_ACTIVE_PROBE" == true && "$CSTAT" =~ ^Up ]]; then
+            OUT_IP=$(timeout 3 nsenter -t "$CPID" -n curl -s4 -m 2 https://api.ipify.org 2>/dev/null || echo "Timeout")
+            PROXY_HEALTH="${PROXY_HEALTH} (${OUT_IP})"
+            sleep 0.2
+        fi
+    fi
+
+    printf " %-18s %-21b %-10s %-8s %-12s %-12s %-24b\n" \
+        "$DISP_NAME" "$DISP_STAT" "$MEM_STR" "$ESTAB_SOCKETS" "${DELTA_SPEED_KBS} K/s" "$TOTAL_DATA_STR" "$PROXY_HEALTH"
+
+done <<< "$CONTAINER_LIST"
+
+echo -e "${C_CYAN}------------------------------------------------------------------------------${C_RESET}"
+
+# ------------------------------------------------------------------------------
+# 9. TỔNG KẾT & KHUYẾN NGHỊ VẬN HÀNH
+# ------------------------------------------------------------------------------
+echo -e " ${C_BOLD}6. TỔNG KẾT TÌNH TRẠNG PROXY & CHIA SẺ BĂNG THÔNG:${C_RESET}"
+echo -e "    • Tổng số container đã quét  : ${C_WHITE}${C_BOLD}$TOTAL_CONTAINERS${C_RESET}"
+echo -e "    • Nodes hoạt động tốt (Active): ${C_GREEN}${C_BOLD}$TOTAL_ACTIVE_NODES${C_RESET} container (Đang có socket & phát sinh traffic)"
+echo -e "    • Nodes ở chế độ chờ (Idle)  : ${C_YELLOW}${C_BOLD}$TOTAL_IDLE_NODES${C_RESET} container (Proxy sống, chờ nhà mạng phân phối task)"
+echo -e "    • Nodes lỗi / Mất kết nối   : ${C_RED}${C_BOLD}$TOTAL_DEAD_NODES${C_RESET} container (Cần kiểm tra IP-Auth hoặc Proxy)"
+
+echo -e ""
+echo -e " ${C_BOLD}7. HƯỚNG DẪN XỬ LÝ NHANH KHI GẶP LỖI:${C_RESET}"
+if [[ "$TOTAL_DEAD_NODES" -gt 0 ]]; then
+    echo -e "    ${C_RED}[!] Phát hiện $TOTAL_DEAD_NODES nodes không có kết nối:${C_RESET}"
+    echo -e "    1. Kiểm tra Dashboard nhà cung cấp proxy: Đã whitelist đúng IP ${C_GREEN}${HOST_PUBLIC_IPV4}${C_RESET} chưa?"
+    echo -e "    2. Kiểm tra log FlapGuard: ${C_WHITE}cat /var/log/ii-flapguard.log${C_RESET}"
+    echo -e "    3. Khởi động lại hệ thống mạng nếu cần: ${C_WHITE}systemctl restart docker${C_RESET}"
 else
-    echo -e " 🔴 ${RED}${BOLD}CANH BAO: CAC NODE CHET THAT SU (CAN KIEM TRA HOAC XOA):${NC}"
-    printf "${BOLD}%-22s | %-14s | %-18s | %-10s | %-20s${NC}\n" \
-        "Container Bi Loi" "Platform" "IP Outbound" "Da Cay" "Nguyen Nhan Nghi Van"
-    echo "--------------------------------------------------------------------------------------------------"
-    for item in "${DEAD_NODES_LIST[@]}"; do
-        IFS="|" read -r d_name d_img d_ip d_conns d_total <<< "$item"
-        reason="App Block / 0 Task"
-        [ "$d_ip" == "TIMEOUT / UNREACHABLE" ] && reason="Proxy Dead / Mat Mang"
-
-        printf "%-22s | %-14s | ${YELLOW}%-18s${NC} | ${RED}%-8s${NC} | ${RED}%-20s${NC}\n" \
-            "${d_name:0:21}" "${d_img:0:13}" "$d_ip" "$d_total" "$reason"
-    done
+    echo -e "    ${C_GREEN}✓ Toàn bộ hệ thống đang hoạt động tối ưu. Không phát hiện xung đột IP-Auth.${C_RESET}"
 fi
 
-# 10. PHAN QUYET KET QUA TONG THE (THUAT TOAN NHAN DIEN VI TRI)
-echo -e "\n${CYAN}${BOLD}================================================================================${NC}"
-echo -e "${GREEN}${BOLD}                         KET LUAN & PHAN TICH TINH TRANG                        ${NC}"
-echo -e "${CYAN}${BOLD}================================================================================${NC}"
-
-echo -e "${BOLD}1. Phan tich Dinh tuyen & Kha nang gan Proxy:${NC}"
-
-if [[ "$COUNTRY_CODE" == "VN" ]] || [[ "$COUNTRY" == *"Vietnam"* ]]; then
-    VN_SPEED="0"
-    [ -f "$TMP_DIR/dl_vn.txt" ] && VN_SPEED=$(head -n 1 "$TMP_DIR/dl_vn.txt")
-    echo -e " 🇻🇳 ${CYAN}${BOLD}PHAT HIEN MAY CHU DAT TAI VIET NAM:${NC}"
-    echo -e "    -> Bang thong Noi dia VN: ${GREEN}${BOLD}${VN_SPEED} Mbps${NC} (Ping < 10ms) -> ${GREEN}Rank S+ cho Proxy VN/Chau A${NC}."
-    echo -e "    -> Bang thong Au My (US/UK/EU): Bi bop o muc 20-35 Mbps -> ${YELLOW}Khong nen nhet qua 50 Node Au My de tranh timeout${NC}."
-else
-    echo -e " 🌐 ${CYAN}${BOLD}MAY CHU QUOC TE (${COUNTRY}):${NC}"
-    echo -e "    -> Uu tien gan Proxy tai cac Hub gan vi tri VPS de dat toc do toi da va ping thap nhat."
-fi
-
-if [ "$IP_FW" -ne 1 ] 2>/dev/null; then
-    echo -e "\n ⚠️  ${RED}${BOLD}LOI NAT IP AUTHENTICATION:${NC}"
-    echo -e "    -> Go lenh: ${CYAN}sysctl -w net.ipv4.ip_forward=1 && echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf${NC}"
-fi
-
-rm -rf "$TMP_DIR"
-echo -e "\n${CYAN}================================================================================${NC}\n"
-EOF
-bash check_network_proxy.sh
+echo -e "${C_CYAN}==============================================================================${C_RESET}"
+echo -e " ${C_WHITE}Kiểm tra hoàn tất lúc: $(date '+%Y-%m-%d %H:%M:%S')${C_RESET}\n"
