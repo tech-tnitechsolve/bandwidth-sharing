@@ -9,12 +9,12 @@ curl -fLo libgcc.apk https://dl-cdn.alpinelinux.org/alpine/v3.20/main/x86_64/lib
 `````````````````````````````````````````````````````````````````````
 3. Fix properties.conf (tránh xung đột setup)
 
-######################### InternetIncome TEST — khop 4 setup host #########################
-# Giu token/email cua ban. Chi khoa mang/DNS/hieu nang o duoi la "chuan tranh xung dot".
-# Host (setup_vps / setup_vm / setup_oracle_cloud / setup_oracle_ARM64) lo:
-#   ZRAM, sysctl, resolv.conf DIRECT, flapguard, autosync memory, cron.
-# File nay KHONG duoc: SOCKS5 DNS, Docker Embedded DNS, gioi han CPU/RAM, watchtower.
-# DNS app = DoH + dnscrypt + cache TRONG TUN. DNS host van 1.1.1.1 (setup).
+######################### InternetIncome TEST — KHỚP 4 SETUP HOST #########################
+# Giữ nguyên token/email của bạn. Toàn bộ thông số Mạng/DNS/Hiệu năng đã được chuẩn hóa.
+# Host (setup_vps / setup_vm / setup_oracle_cloud / setup_oracle_ARM64) quản lý:
+#   ZRAM ZSTD, sysctl BBR, resolv.conf DIRECT, FlapGuard, Autosync Memory, Cron bảo trì.
+# File này KHÔNG ĐƯỢC: Bật SOCKS5 DNS, Docker Embedded DNS, giới hạn cứng CPU/RAM, Watchtower.
+# DNS App = DoH + DNS Cache TRONG TUN. DNS Host = 1.1.1.1 (Direct Upstream).
 ###########################################################################################
 
 DEVICE_NAME='ubuntu'
@@ -77,44 +77,45 @@ CUSTOM_FIREFOX=false
 CUSTOM_FIREFOX_USE_RANDOM_DISPLAY=false
 CUSTOM_CHROME=false
 
-######################### Auto Update #########################
-# setup cua ban xoa watchtower + tu prune image nhe. De II tu pull latest = danh nhau.
+######################### Auto Update (Host tự quản lý) #########################
+# Script setup Host đã tự gỡ Watchtower & có Cron prune image định kỳ.
 AUTO_UPDATE_CONTAINERS=false
 
-######################### Network — 1 che do: PROXY #########################
-# Khong bat 2 che do cung luc (direct+proxies / vpn / multi-ip).
+######################### Network — DUY NHẤT 1 CHẾ ĐỘ: PROXY #########################
+# Tuyệt đối không bật cùng lúc direct / vpn / multi-ip.
 USE_DIRECT_CONNECTION=false
 USE_PROXIES=true
 USE_VPNS=false
 USE_MULTI_IP=false
 
-# Proxy UDP/DNS khong on dinh → TAT. Resolve trong TUN, khong nho SOCKS5.
+# Proxy UDP/DNS không ổn định -> TẮT. Phân giải an toàn trong TUN, không nhờ SOCKS5.
 USE_SOCKS5_DNS=false
 
-# Test + proxy: DoH/TCP + dnscrypt + cache. Khong dung stub host 127.0.0.53.
+# Nhánh Test + Proxy: Sử dụng DoH (DNS-over-HTTPS qua TCP) + Cache nội bộ trong TUN.
 USE_DNS_OVER_HTTPS=true
 USE_DNSCRYPT=false
 USE_DNS_CACHE=true
 
-# Khong de Docker Embedded DNS (127.0.0.11) — lech geo + danh host direct-DNS.
+# Không dùng Docker Embedded DNS (127.0.0.11) để tránh lệch GeoIP & đè DNS Direct.
 USE_DOCKER_EMBEDDED_DNS=false
 
-# Khong ep tun2proxy: test + socks5 + DoH → hev-socks5-tunnel + dnscrypt (wiki).
+# Sử dụng mặc định hev-socks5-tunnel nhẹ & ổn định nhất cho High-Density Proxies.
 USE_TUN2PROXY=false
 
-# Chi khi >1000 proxy + da tune kernel (wiki). 4 setup host khong lam viec nay.
+# Không bật Custom Network (Chỉ dùng khi >1000 proxy và tự tune kernel riêng).
 USE_CUSTOM_NETWORK=false
 
-######################### Performance — de host lo RAM #########################
+######################### Performance & IP-Auth Hardening #########################
 ENABLE_LOGS=false
 USE_DOCKER_INIT=false
 
-# Stagger: setup da co ii-staggered-start luc reboot. Day la delay KHI II spawn lan dau.
+# Độ trễ khởi tạo container lúc chạy lần đầu (Lúc reboot đã có ii-staggered-start lo).
 DELAY_BETWEEN_CONTAINER=1
 
-VALIDATE_PROXIES=true
+# TẮT kiểm tra probe qua Proxy để bảo vệ tuyệt đối cho Proxy dạng IP-Authentication.
+VALIDATE_PROXIES=false
 
-# BOI COMMENT — neu bat MAX_MEMORY, danh nhau voi ii-autosync (docker update --memory).
+# GIỮ NGUYÊN COMMENT: Tuyệt đối không đặt giới hạn cứng để ii-autosync tự điều phối RAM.
 #MAX_MEMORY=1024m
 #MEMORY_RESERVATION=
 #MEMORY_SWAP=
