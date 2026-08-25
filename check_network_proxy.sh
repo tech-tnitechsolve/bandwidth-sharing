@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Script: check_network_proxy.sh (InternetIncome Network & Proxy Telemetry Audit)
-# Phiên bản: 3.0 - Chuẩn hóa cho nhánh Test & Tối ưu tuyệt đối cho IP-Auth Proxies
-# Tính năng:
-#   - 100% PASSIVE TELEMETRY: Không gọi request ra ngoài qua Proxy (Bảo vệ IP-Auth).
-#   - Nhận diện chính xác IP Host Whitelist cho các loại Proxy IP-Authentication.
-#   - Đo lường Socket ESTABLISHED, RX/TX Delta, ZRAM/RAM, DNS, Ping & Speed 2 chiều.
+# Mục đích: Đo đạc đường truyền Host & Kiểm tra Container Proxy chuẩn IP-Auth
+# Điểm tối ưu:
+#   - 100% PASSIVE: Không bao giờ gọi curl/request ra ngoài qua Proxy.
+#   - Bắt chính xác IP Host Whitelist tại card gốc ($PRIMARY_IFACE).
+#   - Đầy đủ Ping Hubs, Đo tốc độ Download/Upload, đếm Sockets & Delta lưu lượng.
 # ==============================================================================
 
 set -uo pipefail
@@ -23,76 +23,55 @@ C_CYAN='\033[0;36m'
 C_WHITE='\033[1;37m'
 C_BOLD='\033[1m'
 C_BG_BLUE='\033[44;37m'
-C_BG_GREEN='\033[42;30m'
-C_BG_RED='\033[41;37m'
 
 # ------------------------------------------------------------------------------
 # 2. CẤU HÌNH VÀ THAM SỐ DÒNG LỆNH
 # ------------------------------------------------------------------------------
 MODE_FAST=false
-MODE_ACTIVE_PROBE=false
 SAMPLE_INTERVAL=2
 
-show_help() {
-    echo -e "${C_BOLD}CÁCH SỬ DỤNG:${C_RESET}"
-    echo -e "  bash check_network_proxy.sh [TÙY CHỌN]"
-    echo -e ""
-    echo -e "${C_BOLD}TÙY CHỌN:${C_RESET}"
-    echo -e "  ${C_CYAN}--fast${C_RESET}         Kiểm tra siêu tốc (Bỏ qua Speedtest & Latency toàn cầu)."
-    echo -e "  ${C_CYAN}--probe${C_RESET}        Kích hoạt Egress IP Probe (Thăm dò IP qua container - Có delay an toàn)."
-    echo -e "  ${C_CYAN}--install${C_RESET}      Cài đặt shortcut '${C_GREEN}check-proxy${C_RESET}' vào /usr/local/bin."
-    echo -e "  ${C_CYAN}--help, -h${C_RESET}     Hiển thị hướng dẫn này."
-    echo -e ""
-    echo -e "${C_YELLOW}Lưu ý về IP-Auth:${C_RESET} Chế độ mặc định là ${C_GREEN}Passive 100%${C_RESET} (Không tạo request ra ngoài qua proxy,"
-    echo -e "tránh bị nhà cung cấp proxy đánh dấu spam hoặc rate-limit)."
-    exit 0
-}
-
-# Xử lý tham số
 for arg in "$@"; do
     case "$arg" in
         --fast) MODE_FAST=true ;;
-        --probe) MODE_ACTIVE_PROBE=true ;;
         --install)
             cp "$0" /usr/local/bin/check-proxy 2>/dev/null || sudo cp "$0" /usr/local/bin/check-proxy
             chmod +x /usr/local/bin/check-proxy 2>/dev/null || sudo chmod +x /usr/local/bin/check-proxy
-            echo -e "${C_GREEN}✓ Đã cài đặt thành công! Bạn có thể gõ lệnh '${C_WHITE}check-proxy${C_GREEN}' ở bất kỳ đâu.${C_RESET}"
+            echo -e "${C_GREEN}✓ Đã cài đặt lệnh 'check-proxy' vào hệ thống!${C_RESET}"
             exit 0
             ;;
-        --help|-h) show_help ;;
-        *) echo -e "${C_RED}Tùy chọn không hợp lệ: $arg${C_RESET}"; show_help ;;
+        --help|-h)
+            echo "Cách dùng: bash check_network_proxy.sh [--fast] [--install]"
+            exit 0
+            ;;
     esac
 done
 
-# Kiểm tra quyền root
 if [[ $EUID -ne 0 ]]; then
-    echo -e "${C_RED}LỖI: Script cần quyền root để đọc Network Namespace của Container.${C_RESET}"
-    echo -e "Vui lòng chạy lại với: ${C_YELLOW}sudo bash $0${C_RESET}"
+    echo -e "${C_RED}LỖI: Script cần quyền root để đọc thông số mạng.${C_RESET}"
+    echo -e "Vui lòng chạy: ${C_YELLOW}sudo bash $0${C_RESET}"
     exit 1
 fi
 
 # ------------------------------------------------------------------------------
-# 3. KIỂM TRA VÀ CÀI ĐẶT CÔNG CỤ CẦN THIẾT
+# 3. CÀI ĐẶT CÔNG CỤ PHỤ TRỢ NẾU THIẾU
 # ------------------------------------------------------------------------------
 ensure_dependencies() {
     local missing_pkgs=()
     command -v curl >/dev/null 2>&1 || missing_pkgs+=("curl")
     command -v bc >/dev/null 2>&1 || missing_pkgs+=("bc")
-    command -v jq >/dev/null 2>&1 || missing_pkgs+=("jq")
     command -v ip >/dev/null 2>&1 || missing_pkgs+=("iproute2")
     command -v ss >/dev/null 2>&1 || missing_pkgs+=("iproute2")
     command -v nsenter >/dev/null 2>&1 || missing_pkgs+=("util-linux")
 
     if [[ ${#missing_pkgs[@]} -gt 0 ]]; then
-        echo -e "${C_YELLOW}Đang cài đặt các gói phụ trợ thiếu: ${missing_pkgs[*]}...${C_RESET}"
-        apt-get update -qq >/dev/null 2>&1 || yum makecache -q >/dev/null 2>&1 || true
-        apt-get install -y -qq "${missing_pkgs[@]}" >/dev/null 2>&1 || yum install -y -q "${missing_pkgs[@]}" >/dev/null 2>&1 || true
+        apt-get update -qq >/dev/null 2>&1 || true
+        apt-get install -y -qq "${missing_pkgs[@]}" >/dev/null 2>&1 || true
     fi
 }
 ensure_dependencies
 
 # ------------------------------------------------------------------------------
-# 4. HÀM TIỆN ÍCH ĐỊNH DẠNG & ĐO ĐẠC HỆ THỐNG
+# 4. HÀM ĐỊNH DẠNG DỮ LIỆU
 # ------------------------------------------------------------------------------
 format_bytes() {
     local bytes=$1
@@ -120,7 +99,7 @@ format_rate() {
     fi
 }
 
-# Lấy card mạng chính và Default Gateway
+# Lấy card mạng chính & Default Gateway
 PRIMARY_IFACE=$(ip -4 route show default 2>/dev/null | awk '{print $5}' | head -n1)
 if [[ -z "$PRIMARY_IFACE" ]]; then
     PRIMARY_IFACE=$(ip link show up 2>/dev/null | grep -E '^[0-9]+: (eth|ens|enp|eno|vtnet)' | awk -F': ' '{print $2}' | head -n1)
@@ -130,16 +109,10 @@ PRIMARY_IFACE=${PRIMARY_IFACE:-"eth0"}
 DEFAULT_GW=$(ip -4 route show default 2>/dev/null | awk '{print $3}' | head -n1)
 DEFAULT_GW=${DEFAULT_GW:-"Không xác định"}
 
-# Lấy IP Public Host (Chỉ qua card mạng chính - Khóa cứng interface)
+# Lấy IP Public Host (Chỉ qua card mạng chính, không qua proxy)
 get_host_public_ip() {
     local ip=""
-    local endpoints=(
-        "https://api.ipify.org"
-        "https://icanhazip.com"
-        "https://ifconfig.me"
-        "https://ipecho.net/plain"
-        "https://checkip.amazonaws.com"
-    )
+    local endpoints=("https://api.ipify.org" "https://icanhazip.com" "https://ifconfig.me")
     for ep in "${endpoints[@]}"; do
         ip=$(curl -s4 -m 3 --interface "$PRIMARY_IFACE" "$ep" 2>/dev/null | tr -d '[:space:]')
         if [[ -n "$ip" && "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -153,7 +126,7 @@ get_host_public_ip() {
 HOST_PUBLIC_IPV4=$(get_host_public_ip)
 
 # ------------------------------------------------------------------------------
-# 5. HIỂN THỊ HEADER & THÔNG TIN HỆ THỐNG
+# 5. HIỂN THỊ THÔNG TIN HỆ THỐNG
 # ------------------------------------------------------------------------------
 clear
 echo -e "${C_CYAN}==============================================================================${C_RESET}"
@@ -166,7 +139,6 @@ CPUS=$(nproc 2>/dev/null || echo 1)
 UPTIME=$(uptime -p 2>/dev/null | sed 's/up //' || uptime)
 VIRT=$(systemd-detect-virt 2>/dev/null || echo "Dedicated/Unknown")
 
-# RAM & ZRAM
 RAM_TOTAL_KB=$(grep MemTotal /proc/meminfo | awk '{print $2}')
 RAM_AVAIL_KB=$(grep MemAvailable /proc/meminfo | awk '{print $2}')
 RAM_USED_KB=$(( RAM_TOTAL_KB - RAM_AVAIL_KB ))
@@ -181,7 +153,6 @@ if [[ -b "$ZRAM_DEV" ]]; then
     ZRAM_STATUS="${C_GREEN}Kích hoạt (${ZRAM_SIZE_MB} MB, Thuật toán: ${ZRAM_ALGO:-zstd})${C_RESET}"
 fi
 
-# Congestion Control (BBR)
 TCP_CC=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "cubics")
 
 echo -e " ${C_BOLD}1. THÔNG SỐ HỆ THỐNG & TÀI NGUYÊN:${C_RESET}"
@@ -200,7 +171,7 @@ echo -e " ${C_YELLOW} Hãy đảm bảo IP trên đã được Whitelist chính 
 echo -e "${C_CYAN}------------------------------------------------------------------------------${C_RESET}"
 
 # ------------------------------------------------------------------------------
-# 6. KIỂM TRA DNS & PHÂN GIẢI DIRECT TỪ HOST
+# 6. KIỂM TRA DNS HOST
 # ------------------------------------------------------------------------------
 echo -e " ${C_BOLD}2. KIỂM TRA CẤU HÌNH DNS HOST:${C_RESET}"
 DNS_SERVERS=$(grep -E '^nameserver' /etc/resolv.conf 2>/dev/null | awk '{print $2}' | tr '\n' ' ')
@@ -210,14 +181,14 @@ echo -e "    • DNS Servers       : ${C_GREEN}${DNS_SERVERS:-Không tìm thấy
 echo -e "    • /etc/resolv.conf  : ${C_WHITE}$RESOLV_LINK${C_RESET}"
 
 DNS_TEST_RESULT="${C_RED}Thất bại${C_RESET}"
-if host -W 2 cloudflare.com >/dev/null 2>&1 || ping -c 1 -W 2 cloudflare.com >/dev/null 2>&1; then
+if host -W 2 cloudflare.com >/dev/null 2>&1 || ping -c 1 -W 2 1.1.1.1 >/dev/null 2>&1; then
     DNS_TEST_RESULT="${C_GREEN}Hoạt động tốt (Direct Upstream)${C_RESET}"
 fi
 echo -e "    • Phân giải DNS Host: $DNS_TEST_RESULT"
 echo -e "${C_CYAN}------------------------------------------------------------------------------${C_RESET}"
 
 # ------------------------------------------------------------------------------
-# 7. KIỂM TRA ĐƯỜNG TRUYỀN & LATENCY TOÀN CẦU (NẾU KHÔNG DÙNG --FAST)
+# 7. ĐỘ TRỄ LATENCY & TỐC ĐỘ GỐC CỦA HOST
 # ------------------------------------------------------------------------------
 if [[ "$MODE_FAST" == false ]]; then
     echo -e " ${C_BOLD}3. ĐỘ TRỄ (LATENCY) TỪ HOST ĐẾN CÁC HUB CHÍNH:${C_RESET}"
@@ -228,19 +199,20 @@ if [[ "$MODE_FAST" == false ]]; then
         local res
         res=$(ping -c 2 -W 2 -I "$PRIMARY_IFACE" "$target" 2>/dev/null | tail -1 | awk -F '/' '{print $5}')
         if [[ -n "$res" ]]; then
-            printf "    • %-18s [%-15s] : ${C_GREEN}%6.1f ms${C_RESET}\n" "$name" "$target" "$res"
+            printf "    • %-20s [%-15s] : ${C_GREEN}%6.1f ms${C_RESET}\n" "$name" "$target" "$res"
         else
-            printf "    • %-18s [%-15s] : ${C_RED}Timeout / Blocked${C_RESET}\n" "$name" "$target"
+            printf "    • %-20s [%-15s] : ${C_RED}Timeout / Blocked${C_RESET}\n" "$name" "$target"
         fi
     }
 
-    test_ping "Cloudflare DNS" "1.1.1.1"
-    test_ping "Google DNS"     "8.8.8.8"
-    test_ping "Singapore Hub"  "1.0.0.1"
-    test_ping "Tokyo Hub"      "103.102.166.224"
-    test_ping "Frankfurt Hub"  "194.25.0.68"
-    test_ping "US West (CA)"   "199.102.73.1"
-    test_ping "US East (VA)"   "208.67.222.222"
+    test_ping "Cloudflare DNS Primary"   "1.1.1.1"
+    test_ping "Cloudflare DNS Secondary" "1.0.0.1"
+    test_ping "Google DNS Primary"       "8.8.8.8"
+    test_ping "Google DNS Secondary"     "8.8.4.4"
+    test_ping "Quad9 Security DNS"       "9.9.9.9"
+    test_ping "OpenDNS US East"          "208.67.222.222"
+    test_ping "OpenDNS US West"          "208.67.220.220"
+    test_ping "Lumen Global Hub"         "4.2.2.2"
 
     echo -e ""
     echo -e " ${C_BOLD}4. ĐO TỐC ĐỘ ĐƯỜNG TRUYỀN GỐC HOST (DOWNLOAD / UPLOAD DUPLEX):${C_RESET}"
@@ -249,16 +221,18 @@ if [[ "$MODE_FAST" == false ]]; then
     DL_SPEED="Không đo được"
     UL_SPEED="Không đo được"
 
-    # Download test 10MB (timeout 5s)
+    # Download test 10MB
     DL_RAW=$(curl -s4 -m 5 --interface "$PRIMARY_IFACE" -w "%{speed_download}" -o /dev/null "https://speed.cloudflare.com/__down?bytes=10485760" 2>/dev/null || echo 0)
     if (( $(echo "$DL_RAW > 0" | bc -l 2>/dev/null || echo 0) )); then
         DL_SPEED=$(format_rate "$DL_RAW")
     fi
 
-    # Upload test 2MB (timeout 5s)
-    UL_PAYLOAD=$(head -c 2097152 /dev/zero 2>/dev/null || true)
-    if [[ -n "$UL_PAYLOAD" ]]; then
-        UL_RAW=$(curl -s4 -m 5 --interface "$PRIMARY_IFACE" -X POST -d "$UL_PAYLOAD" -w "%{speed_upload}" -o /dev/null "https://speed.cloudflare.com/__up" 2>/dev/null || echo 0)
+    # Upload test 2MB (Stream payload trực tiếp tránh lỗi null byte)
+    TMP_UL_FILE="/tmp/ii_up_sample.bin"
+    head -c 2097152 /dev/urandom > "$TMP_UL_FILE" 2>/dev/null || true
+    if [[ -f "$TMP_UL_FILE" ]]; then
+        UL_RAW=$(curl -s4 -m 5 --interface "$PRIMARY_IFACE" -X POST --data-binary @"$TMP_UL_FILE" -w "%{speed_upload}" -o /dev/null "https://speed.cloudflare.com/__up" 2>/dev/null || echo 0)
+        rm -f "$TMP_UL_FILE"
         if (( $(echo "$UL_RAW > 0" | bc -l 2>/dev/null || echo 0) )); then
             UL_SPEED=$(format_rate "$UL_RAW")
         fi
@@ -270,21 +244,26 @@ if [[ "$MODE_FAST" == false ]]; then
 fi
 
 # ------------------------------------------------------------------------------
-# 8. PASSIVE CONTAINER & PROXY TELEMETRY (CHÍNH XÁC CHO INTERNETINCOME)
+# 8. PASSIVE CONTAINER & PROXY TELEMETRY (KHÔNG GỌI REQUEST QUA PROXY)
 # ------------------------------------------------------------------------------
 echo -e " ${C_BOLD}5. KIỂM TRA CHI TIẾT CONTAINER INTERNETINCOME & PROXY TELEMETRY:${C_RESET}"
 echo -e "    ${C_YELLOW}Phương pháp: Thu thập thụ động qua Kernel Namespace (Zero External Request)${C_RESET}"
-echo -e "    ${C_YELLOW}Đang lấy mẫu dữ liệu lưu lượng trong $SAMPLE_INTERVAL giây...${C_RESET}"
 
 CONTAINER_LIST=$(docker ps -a --format '{{.ID}}|{{.Names}}|{{.Status}}|{{.Image}}' 2>/dev/null || true)
 
 if [[ -z "$CONTAINER_LIST" ]]; then
-    echo -e "\n    ${C_RED}Không tìm thấy container Docker nào đang chạy trên máy!${C_RESET}"
+    echo -e "\n    ${C_YELLOW}[!] Chưa có container InternetIncome nào đang chạy trên máy.${C_RESET}"
+    echo -e "    ${C_WHITE}➔ Bạn hãy thực hiện theo file '${C_GREEN}fix_internetincome${C_WHITE}' để khởi chạy tool:${C_RESET}"
+    echo -e "       1. ${C_CYAN}git clone -b test https://github.com/engageub/InternetIncome.git ~/InternetIncome${C_RESET}"
+    echo -e "       2. Cấu hình ${C_CYAN}properties.conf${C_RESET} và danh sách proxy vào ${C_CYAN}proxies.txt${C_RESET}"
+    echo -e "       3. Chạy ${C_CYAN}bash internetIncome.sh --start${C_RESET}"
+    echo -e "       4. Gõ lệnh ${C_GREEN}check-proxy${C_RESET} để xem bảng dữ liệu lưu lượng từng proxy!"
     echo -e "${C_CYAN}==============================================================================${C_RESET}"
     exit 0
 fi
 
-# In Header bảng
+echo -e "    ${C_YELLOW}Đang lấy mẫu dữ liệu lưu lượng trong $SAMPLE_INTERVAL giây...${C_RESET}"
+
 echo -e ""
 printf " ${C_BOLD}%-18s %-12s %-10s %-8s %-12s %-12s %-15s${C_RESET}\n" \
     "CONTAINER" "TRẠNG THÁI" "RAM DÙNG" "SOCKETS" "TỐC ĐỘ (KB/s)" "TỔNG DỮ LIỆU" "ĐÁNH GIÁ PROXY"
@@ -298,7 +277,6 @@ TOTAL_CONTAINERS=0
 
 declare -A T1_RX T1_TX CPIDS APP_NAMES APP_STATUS APP_MEM
 
-# Hàm đọc RX/TX tối ưu cho InternetIncome TUN/Bridge
 read_container_net_bytes() {
     local pid=$1
     if [[ ! -d "/proc/$pid/net" ]]; then
@@ -306,7 +284,6 @@ read_container_net_bytes() {
         return
     fi
     awk '
-        # Nếu có tun0/tap0 (hev-socks5-tunnel / tun2proxy): Lấy tun0 làm chuẩn payload
         /tun0:|tap0:/ { tun_rx += $2; tun_tx += $10; has_tun = 1 }
         /eth0:/       { eth_rx += $2; eth_tx += $10 }
         END {
@@ -319,7 +296,7 @@ read_container_net_bytes() {
     ' "/proc/$pid/net/dev" 2>/dev/null || echo "0 0"
 }
 
-# Lấy dữ liệu T1
+# Lấy mẫu T1
 while IFS='|' read -r CID CNAME CSTAT CIMG; do
     [[ -z "$CID" ]] && continue
     ((TOTAL_CONTAINERS++))
@@ -342,10 +319,9 @@ while IFS='|' read -r CID CNAME CSTAT CIMG; do
     fi
 done <<< "$CONTAINER_LIST"
 
-# Chờ đúng khoảng thời gian mẫu
 sleep "$SAMPLE_INTERVAL"
 
-# Vòng lặp tính toán T2 và hiển thị
+# Tính toán T2 và hiển thị
 while IFS='|' read -r CID CNAME CSTAT CIMG; do
     [[ -z "$CID" ]] && continue
     CPID=${CPIDS["$CID"]}
@@ -353,7 +329,6 @@ while IFS='|' read -r CID CNAME CSTAT CIMG; do
     
     DISP_NAME=$(echo "$CNAME" | cut -c1-18)
     
-    # Đánh giá trạng thái Docker
     if [[ "$CSTAT" =~ ^Up ]]; then
         if [[ "$CSTAT" =~ Restarting ]]; then
             DISP_STAT="${C_RED}Flapping${C_RESET}"
@@ -373,8 +348,8 @@ while IFS='|' read -r CID CNAME CSTAT CIMG; do
 
     if [[ "$CPID" -gt 0 && -d "/proc/$CPID/net" ]]; then
         read -r r2 t2 < <(read_container_net_bytes "$CPID")
-
-        # Đếm socket ESTABLISHED từ host vào namespace của container
+        
+        # Đếm socket ESTABLISHED thực tế bên trong namespace (Thụ động 100%)
         ESTAB_SOCKETS=$(nsenter -t "$CPID" -n ss -tan state established 2>/dev/null | grep -vc 'Recv-Q' || echo 0)
 
         r1=${T1_RX["$CID"]:-0}
@@ -385,11 +360,10 @@ while IFS='|' read -r CID CNAME CSTAT CIMG; do
         [[ "$delta_total" -lt 0 ]] && delta_total=0
 
         DELTA_SPEED_KBS=$(echo "scale=1; ($delta_total / $SAMPLE_INTERVAL) / 1024" | bc -l 2>/dev/null || echo "0.0")
-        
         sum_total=$(( r2 + t2 ))
         TOTAL_DATA_STR=$(format_bytes "$sum_total")
 
-        # Đánh giá sức khỏe Proxy hoàn toàn thụ động
+        # Đánh giá hoàn toàn thụ động không gọi request ra ngoài
         if [[ "$ESTAB_SOCKETS" -gt 0 && $(echo "$DELTA_SPEED_KBS > 0" | bc -l 2>/dev/null || echo 0) -eq 1 ]]; then
             PROXY_HEALTH="${C_GREEN}Tốt (Active)${C_RESET}"
             ((TOTAL_ACTIVE_NODES++))
@@ -403,13 +377,6 @@ while IFS='|' read -r CID CNAME CSTAT CIMG; do
             PROXY_HEALTH="${C_RED}Mất kết nối${C_RESET}"
             ((TOTAL_DEAD_NODES++))
         fi
-        
-        # Chỉ khi bật cờ --probe thủ công mới chạy Egress Probe
-        if [[ "$MODE_ACTIVE_PROBE" == true && "$CSTAT" =~ ^Up ]]; then
-            OUT_IP=$(timeout 3 nsenter -t "$CPID" -n curl -s4 -m 2 https://api.ipify.org 2>/dev/null || echo "Timeout")
-            PROXY_HEALTH="${PROXY_HEALTH} (${OUT_IP})"
-            sleep 0.2
-        fi
     fi
 
     printf " %-18s %-21b %-10s %-8s %-12s %-12s %-24b\n" \
@@ -420,11 +387,11 @@ done <<< "$CONTAINER_LIST"
 echo -e "${C_CYAN}------------------------------------------------------------------------------${C_RESET}"
 
 # ------------------------------------------------------------------------------
-# 9. TỔNG KẾT & KHUYẾN NGHỊ VẬN HÀNH
+# 9. TỔNG KẾT
 # ------------------------------------------------------------------------------
 echo -e " ${C_BOLD}6. TỔNG KẾT TÌNH TRẠNG PROXY & CHIA SẺ BĂNG THÔNG:${C_RESET}"
 echo -e "    • Tổng số container đã quét  : ${C_WHITE}${C_BOLD}$TOTAL_CONTAINERS${C_RESET}"
-echo -e "    • Nodes hoạt động tốt (Active): ${C_GREEN}${C_BOLD}$TOTAL_ACTIVE_NODES${C_RESET} container (Đang có socket & phát sinh traffic)"
+echo -e "    • Nodes hoạt động tốt (Active): ${C_GREEN}${C_BOLD}$TOTAL_ACTIVE_NODES${C_RESET} container (Có kết nối & đang sinh doanh thu)"
 echo -e "    • Nodes ở chế độ chờ (Idle)  : ${C_YELLOW}${C_BOLD}$TOTAL_IDLE_NODES${C_RESET} container (Proxy sống, chờ nhà mạng phân phối task)"
 echo -e "    • Nodes lỗi / Mất kết nối   : ${C_RED}${C_BOLD}$TOTAL_DEAD_NODES${C_RESET} container (Cần kiểm tra IP-Auth hoặc Proxy)"
 
@@ -436,7 +403,7 @@ if [[ "$TOTAL_DEAD_NODES" -gt 0 ]]; then
     echo -e "    2. Kiểm tra log FlapGuard: ${C_WHITE}cat /var/log/ii-flapguard.log${C_RESET}"
     echo -e "    3. Khởi động lại hệ thống mạng nếu cần: ${C_WHITE}systemctl restart docker${C_RESET}"
 else
-    echo -e "    ${C_GREEN}✓ Toàn bộ hệ thống đang hoạt động tối ưu. Không phát hiện xung đột IP-Auth.${C_RESET}"
+    echo -e "    ${C_GREEN}✓ Toàn bộ hệ thống đang hoạt động tối ưu. Không phát sinh xung đột IP-Auth.${C_RESET}"
 fi
 
 echo -e "${C_CYAN}==============================================================================${C_RESET}"
