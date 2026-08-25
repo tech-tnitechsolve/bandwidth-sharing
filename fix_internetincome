@@ -1,0 +1,122 @@
+1. Lỗi nhân honegain: 
+
+curl -fsSL -o libgcc.apk https://dl-cdn.alpinelinux.org/alpine/v3.18/main/x86_64/libgcc-12.2.1_git20220924-r10.apk 2>/dev/null || true; curl -fsSL -o gcompat.apk https://dl-cdn.alpinelinux.org/alpine/v3.18/main/x86_64/gcompat-1.0.0-r4.apk 2>/dev/null || true; sed -i 's/\r$//' *.sh *.conf *.txt 2>/dev/null || true; chmod +x *.sh 2>/dev/null || true; echo -e "\n==================== [KIEM TOAN THU MUC TRUOC KHI KHOI DONG] ===================="; for f in internetIncome.sh properties.conf proxies.txt generateDeviceIds.sh restart.sh updateProxies.sh libgcc.apk gcompat.apk; do if [[ -f "$f" ]]; then echo -e "  \033[1;32m[OK CO SAN]\033[0m $f ($(stat -c%s "$f" 2>/dev/null || stat -f%z "$f") bytes)"; else echo -e "  \033[1;31m[XX THIEU]\033[0m  $f"; fi; done; echo "=================================================================================="
+
+`````````````````````````````````````````````````````````````````````
+2. Sửa trên Source Gốc Nhánh Test Internetincome:
+curl -fLo libgcc.apk https://dl-cdn.alpinelinux.org/alpine/v3.20/main/x86_64/libgcc-13.2.1_git20240309-r1.apk && curl -fLo gcompat.apk https://dl-cdn.alpinelinux.org/alpine/v3.20/main/x86_64/gcompat-1.1.0-r4.apk && dir libgcc.apk gcompat.apk
+
+`````````````````````````````````````````````````````````````````````
+3. Fix properties.conf (tránh xung đột setup)
+
+######################### InternetIncome TEST — khop 4 setup host #########################
+# Giu token/email cua ban. Chi khoa mang/DNS/hieu nang o duoi la "chuan tranh xung dot".
+# Host (setup_vps / setup_vm / setup_oracle_cloud / setup_oracle_ARM64) lo:
+#   ZRAM, sysctl, resolv.conf DIRECT, flapguard, autosync memory, cron.
+# File nay KHONG duoc: SOCKS5 DNS, Docker Embedded DNS, gioi han CPU/RAM, watchtower.
+# DNS app = DoH + dnscrypt + cache TRONG TUN. DNS host van 1.1.1.1 (setup).
+###########################################################################################
+
+DEVICE_NAME='ubuntu'
+
+REPOCKET_EMAIL=
+REPOCKET_API=
+
+TRAFFMONETIZER_TOKEN=
+
+EARN_FM_API=
+USE_EARN_FM_FLEETSHARE=false
+
+PROXYRACK_API=
+PROXYBASE_ACCOUNT_ID=
+
+IPROYALS_EMAIL=
+IPROYALS_PASSWORD=
+
+HONEYGAIN_EMAIL=
+HONEYGAIN_PASSWORD=
+HONEYGAIN_POT=false
+
+PEER2PROFIT_EMAIL=
+ANTGAIN_API_KEY=
+WIZARD_GAIN_EMAIL=
+
+PACKETSTREAM_CID=
+PROXYLITE_USER_ID=
+
+EARNAPP=false
+USE_EARNAPP_PRIVILEGED=false
+
+BITPING_EMAIL=
+BITPING_PASSWORD=
+
+PACKETSHARE_EMAIL=
+PACKETSHARE_PASSWORD=
+
+WIPTER_EMAIL=
+WIPTER_PASSWORD=
+
+UR_AUTH_TOKEN=
+UR_NETWORK_PROXY_MODE=false
+
+TITAN_HASH=
+
+MYSTERIUM=false
+UPROCK=false
+
+GRASS_EMAIL=
+GRASS_PASSWORD=
+GRADIENT_EMAIL=
+GRADIENT_PASSWORD=
+
+EBESUCHER_USERNAME=
+EBESUCHER_USE_RANDOM_DISPLAY=false
+ADNADE_USERNAME=
+ADNADE_USE_CHROME=false
+CUSTOM_FIREFOX=false
+CUSTOM_FIREFOX_USE_RANDOM_DISPLAY=false
+CUSTOM_CHROME=false
+
+######################### Auto Update #########################
+# setup cua ban xoa watchtower + tu prune image nhe. De II tu pull latest = danh nhau.
+AUTO_UPDATE_CONTAINERS=false
+
+######################### Network — 1 che do: PROXY #########################
+# Khong bat 2 che do cung luc (direct+proxies / vpn / multi-ip).
+USE_DIRECT_CONNECTION=false
+USE_PROXIES=true
+USE_VPNS=false
+USE_MULTI_IP=false
+
+# Proxy UDP/DNS khong on dinh → TAT. Resolve trong TUN, khong nho SOCKS5.
+USE_SOCKS5_DNS=false
+
+# Test + proxy: DoH/TCP + dnscrypt + cache. Khong dung stub host 127.0.0.53.
+USE_DNS_OVER_HTTPS=true
+USE_DNSCRYPT=false
+USE_DNS_CACHE=true
+
+# Khong de Docker Embedded DNS (127.0.0.11) — lech geo + danh host direct-DNS.
+USE_DOCKER_EMBEDDED_DNS=false
+
+# Khong ep tun2proxy: test + socks5 + DoH → hev-socks5-tunnel + dnscrypt (wiki).
+USE_TUN2PROXY=false
+
+# Chi khi >1000 proxy + da tune kernel (wiki). 4 setup host khong lam viec nay.
+USE_CUSTOM_NETWORK=false
+
+######################### Performance — de host lo RAM #########################
+ENABLE_LOGS=false
+USE_DOCKER_INIT=false
+
+# Stagger: setup da co ii-staggered-start luc reboot. Day la delay KHI II spawn lan dau.
+DELAY_BETWEEN_CONTAINER=1
+
+VALIDATE_PROXIES=true
+
+# BOI COMMENT — neu bat MAX_MEMORY, danh nhau voi ii-autosync (docker update --memory).
+#MAX_MEMORY=1024m
+#MEMORY_RESERVATION=
+#MEMORY_SWAP=
+#CPU=1
+
