@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Script: check_network_proxy.sh (TURBO CLUSTER-AWARE & ZERO-EXTERNAL-PROBE EDITION)
-# - Tự động nhận diện Thư mục / Cluster chứa Container bị lỗi
-# - 100% PASSIVE: Không bao giờ gọi request qua Proxy IP-Authentication
+# Script: check_network_proxy.sh (SEQUENTIAL ACCURATE BENCHMARK & CLUSTER AWARE)
+# - Đo tuần tự 10 Hub Looking Glass để đo chuẩn xác 100% công suất thực tế
+# - Tự động nhận diện Thư mục / Cluster chứa Container
+# - 100% PASSIVE: Tuyệt đối không gọi request qua Proxy IP-Authentication
 # ==============================================================================
 
 [ -f "$0" ] && chmod +x "$0" 2>/dev/null
@@ -30,7 +31,7 @@ USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
 clear
 echo -e "${CYAN}${BOLD}================================================================================${NC}"
 echo -e "${GREEN}${BOLD}   HE THONG DO LUONG DUONG TRUYEN & PROXY MASTER (GLOBAL & VN MATRIX)         ${NC}"
-echo -e "${YELLOW}   (Tu dong nhan dien Thu muc Cluster - Soi Socket & Live Data Thang Kernel)    ${NC}"
+echo -e "${YELLOW}   (Do Thuc Te 10 Hub - Nhan Dien Thu Muc Cluster - Soi Live Data Kernel)      ${NC}"
 echo -e "${CYAN}${BOLD}================================================================================${NC}\n"
 
 # 4. KIEM TRA VA CAI DAT CONG CU
@@ -100,7 +101,7 @@ echo -e "\n${PURPLE}${BOLD}--- [2] DO DO TRE HYBRID (PING ICMP + TCP CONNECT BYP
 printf "${BOLD}%-26s | %-12s | %-12s | %-16s${NC}\n" "Khu vuc Hub Proxy" "Do tre (Ping)" "Giao thuc" "Trang thai"
 echo "---------------------------------------------------------------------------"
 
-TMP_DIR="/tmp/bench_turbo_$(date +%s)"
+TMP_DIR="/tmp/bench_master_$(date +%s)"
 mkdir -p "$TMP_DIR"
 
 do_single_hybrid_ping() {
@@ -147,60 +148,94 @@ for i in {0..9}; do
     [ -f "$TMP_DIR/ping_$i.txt" ] && cat "$TMP_DIR/ping_$i.txt"
 done
 
-# 7. DO BANG THONG THUC TE (DATA CENTER LOOKING GLASS)
+# 7. DO BANG THONG THUC TE TUAN TU (DO CHUAN 100% DUNG LUC MANG CUA PORT)
 echo -e "\n${PURPLE}${BOLD}--- [3] DO BANG THONG THUC TE (DATA CENTER LOOKING GLASS) ---${NC}"
+echo -e "${YELLOW}Dang do tuan tu tung Server de do dung 100% cong suat thuc te cua VPS...${NC}\n"
 printf "${BOLD}%-26s | %-16s | %-16s | %-12s${NC}\n" "Vi tri may chu Test" "Toc do Download" "Ha tang Server" "Trang thai"
 echo "----------------------------------------------------------------------------------"
 
-do_single_speedtest() {
-    local idx="$1"
-    local target_name="$2"
-    local primary_url="$3"
-    local backup_url="$4"
-    local dc_name="$5"
-    local tag="$6"
+run_direct_speedtest() {
+    local target_name="$1"
+    local primary_url="$2"
+    local backup_url="$3"
+    local dc_name="$4"
+    local tag="$5"
 
     local speed_raw
-    speed_raw=$(curl -4 -sL -A "$USER_AGENT" --interface "$PRIMARY_IFACE" -w "%{speed_download} %{http_code}" -o /dev/null --max-time 4 "$primary_url" 2>/dev/null)
+    speed_raw=$(curl -4 -sL -A "$USER_AGENT" --interface "$PRIMARY_IFACE" -w "%{speed_download} %{http_code}" -o /dev/null --max-time 5 "$primary_url" 2>/dev/null)
     local speed_bytes=$(echo "$speed_raw" | awk '{print $1}')
     local http_code=$(echo "$speed_raw" | awk '{print $2}')
 
     if [ "$http_code" != "200" ] || [ -z "$speed_bytes" ] || (( $(echo "$speed_bytes == 0" | bc -l 2>/dev/null || echo "1") )); then
-        speed_raw=$(curl -4 -sL -A "$USER_AGENT" --interface "$PRIMARY_IFACE" -w "%{speed_download} %{http_code}" -o /dev/null --max-time 4 "$backup_url" 2>/dev/null)
+        speed_raw=$(curl -4 -sL -A "$USER_AGENT" --interface "$PRIMARY_IFACE" -w "%{speed_download} %{http_code}" -o /dev/null --max-time 5 "$backup_url" 2>/dev/null)
         speed_bytes=$(echo "$speed_raw" | awk '{print $1}')
         http_code=$(echo "$speed_raw" | awk '{print $2}')
     fi
 
     if [ "$http_code" == "200" ] && [ -n "$speed_bytes" ] && (( $(echo "$speed_bytes > 0" | bc -l 2>/dev/null || echo "0") )); then
         local dl_mbps=$(awk -v b="$speed_bytes" 'BEGIN {printf "%.2f", (b * 8) / 1000000}')
-        printf "%-26s | ${GREEN}%-11s Mbps${NC} | %-16s | ${GREEN}%s${NC}\n" "$target_name" "$dl_mbps" "$dc_name" "OK (200)" > "$TMP_DIR/speed_$idx.txt"
+        printf "%-26s | ${GREEN}%-11s Mbps${NC} | %-16s | ${GREEN}%s${NC}\n" "$target_name" "$dl_mbps" "$dc_name" "OK (200)"
         [ "$tag" == "vn" ] && echo "$dl_mbps" > "$TMP_DIR/dl_vn.txt"
     else
-        printf "%-26s | ${RED}%-11s Mbps${NC} | %-16s | ${RED}%s${NC}\n" "$target_name" "0.00" "$dc_name" "Loi HTTP $http_code" > "$TMP_DIR/speed_$idx.txt"
+        printf "%-26s | ${RED}%-11s Mbps${NC} | %-16s | ${RED}%s${NC}\n" "$target_name" "0.00" "$dc_name" "Loi HTTP $http_code"
     fi
 }
 
-do_single_speedtest 0 "0. VN (Noi dia - Viet Nam)" "http://mirror.bizflycloud.vn/ubuntu/ls-lR.gz" "http://mirrors.viettelidc.com.vn/ubuntu/ls-lR.gz" "BizFly / Viettel" "vn" &
-do_single_speedtest 1 "1. Asia (Singapore)" "http://speedtest.singapore.linode.com/100MB-singapore.bin" "https://sin-speed.hetzner.com/100MB.bin" "Linode SG" "intl" &
-do_single_speedtest 2 "2. US West (California)" "http://speedtest.fremont.linode.com/100MB-fremont.bin" "http://speedtest.sfo12.us.leaseweb.net/100mb.bin" "Linode USA" "intl" &
-do_single_speedtest 3 "3. US East (New Jersey)" "http://speedtest.newark.linode.com/100MB-newark.bin" "https://ash-speed.hetzner.com/100MB.bin" "Linode USA" "intl" &
-do_single_speedtest 4 "4. CA (Canada - Toronto)" "http://speedtest.toronto1.linode.com/100MB-toronto.bin" "https://bhs.proof.ovh.net/files/100Mio.dat" "Linode CA / OVH" "intl" &
-do_single_speedtest 5 "5. UK (Anh - London)" "http://speedtest.london.linode.com/100MB-london.bin" "https://rbx.proof.ovh.net/files/100Mio.dat" "Linode London" "intl" &
-do_single_speedtest 6 "6. DE (Duc - Frankfurt)" "https://fsn1-speed.hetzner.com/100MB.bin" "http://speedtest.frankfurt.linode.com/100MB-frankfurt.bin" "Hetzner Germany" "intl" &
-do_single_speedtest 7 "7. NL (Ha Lan - Amsterdam)" "http://speedtest.ams2.digitalocean.com/100mb.test" "https://fsn1-speed.hetzner.com/100MB.bin" "DigitalOcean NL" "intl" &
-do_single_speedtest 8 "8. FR (Phap - Paris/RBX)" "https://ping.online.net/100Mo.dat" "https://rbx.proof.ovh.net/files/100Mio.dat" "Scaleway/Online" "intl" &
-do_single_speedtest 9 "9. AU (Uc - Sydney)" "https://syd.proof.ovh.net/files/100Mio.dat" "http://speedtest.syd1.linode.com/100MB-sydney.bin" "OVH Australia" "intl" &
+run_direct_speedtest "0. VN (Noi dia - Viet Nam)" \
+    "http://mirror.bizflycloud.vn/ubuntu/ls-lR.gz" \
+    "http://mirrors.viettelidc.com.vn/ubuntu/ls-lR.gz" \
+    "BizFly / Viettel" "vn"
 
-wait
+run_direct_speedtest "1. Asia (Singapore)" \
+    "http://speedtest.singapore.linode.com/100MB-singapore.bin" \
+    "https://sin-speed.hetzner.com/100MB.bin" \
+    "Linode SG" "intl"
 
-for i in {0..9}; do
-    [ -f "$TMP_DIR/speed_$i.txt" ] && cat "$TMP_DIR/speed_$i.txt"
-done
+run_direct_speedtest "2. US West (California)" \
+    "http://speedtest.fremont.linode.com/100MB-fremont.bin" \
+    "http://speedtest.sfo12.us.leaseweb.net/100mb.bin" \
+    "Linode USA" "intl"
+
+run_direct_speedtest "3. US East (New Jersey)" \
+    "http://speedtest.newark.linode.com/100MB-newark.bin" \
+    "https://ash-speed.hetzner.com/100MB.bin" \
+    "Linode USA" "intl"
+
+run_direct_speedtest "4. CA (Canada - Toronto)" \
+    "http://speedtest.toronto1.linode.com/100MB-toronto.bin" \
+    "https://bhs.proof.ovh.net/files/100Mio.dat" \
+    "Linode CA / OVH" "intl"
+
+run_direct_speedtest "5. UK (Anh - London)" \
+    "http://speedtest.london.linode.com/100MB-london.bin" \
+    "https://lon-speed.hetzner.com/100MB.bin" \
+    "Linode London" "intl"
+
+run_direct_speedtest "6. DE (Duc - Frankfurt)" \
+    "https://fsn1-speed.hetzner.com/100MB.bin" \
+    "http://speedtest.frankfurt.linode.com/100MB-frankfurt.bin" \
+    "Hetzner Germany" "intl"
+
+run_direct_speedtest "7. NL (Ha Lan - Amsterdam)" \
+    "http://speedtest.ams2.digitalocean.com/100mb.test" \
+    "http://speedtest.tele2.net/100MB.zip" \
+    "DigitalOcean NL" "intl"
+
+# Fix dứt điểm lỗi HTTP 404 ở Pháp bằng cụm mirror Bouygues / OVH Gravelines
+run_direct_speedtest "8. FR (Phap - Paris/GRA)" \
+    "http://ipv4.bouygues.testdebit.info/100M.iso" \
+    "https://gra.proof.ovh.net/files/100Mio.dat" \
+    "Bouygues / OVH" "intl"
+
+run_direct_speedtest "9. AU (Uc - Sydney)" \
+    "http://speedtest.syd1.linode.com/100MB-sydney.bin" \
+    "https://syd.proof.ovh.net/files/100Mio.dat" \
+    "Linode Sydney" "intl"
 
 # 8. DO LUU LUONG DOCKER & QUET MAP THU MUC CLUSTER
 echo -e "\n${PURPLE}${BOLD}--- [4] DO DU LIEU CONTAINER & THU MUC CLUSTER (LIVE & LIFETIME) ---${NC}"
 
-# Quét map tên container -> Tên Thư mục Cluster
+# Tự động quét map tên container -> Thư mục Cluster
 declare -A CTR_TO_FOLDER
 while IFS= read -r cn_file; do
     folder_name=$(basename "$(dirname "$cn_file")")
