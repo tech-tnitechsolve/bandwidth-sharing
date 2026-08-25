@@ -1,4 +1,3 @@
-cat << 'MASTER_EOF' > ~/setup_vps.sh
 #!/usr/bin/env bash
 #============================================================================
 #  setup_vps.sh (2026 ULTIMATE MASTER - ZERO-THROTTLE & ANTI-SUSPEND EDITION)
@@ -14,8 +13,10 @@ sysctl -w kernel.pid_max=4194304 >/dev/null 2>&1 || true
 
 if [[ -t 1 ]]; then
   C_G='\033[1;32m'; C_Y='\033[1;33m'; C_R='\033[1;31m'; C_B='\033[1;34m'; C_C='\033[1;36m'; C_0='\033[0m'
+  C_BG_BLUE='\033[44;37m'; C_BOLD='\033[1m'
 else
   C_G=''; C_Y=''; C_R=''; C_B=''; C_C=''; C_0=''
+  C_BG_BLUE=''; C_BOLD=''
 fi
 log()  { echo -e "${C_G}[OK]${C_0} $*"; }
 warn() { echo -e "${C_Y}[!!]${C_0} $*"; }
@@ -58,7 +59,17 @@ CPU=$(nproc 2>/dev/null || echo 1)
 DISK_TOTAL_MB=$(df -m / | awk 'NR==2 {print $2}')
 DISK_FREE_MB=$(df -m / | awk 'NR==2 {print $4}')
 
-PUBLIC_IP=$(curl -s4 -m 2 https://api.ipify.org 2>/dev/null || curl -s4 -m 2 https://ifconfig.me 2>/dev/null || echo "Unknown")
+# Xác định Card mạng chính & Bắt Public IP Host qua card gốc (Bảo vệ IP-Auth)
+PRIMARY_IFACE=$(ip -4 route show default 2>/dev/null | awk '{print $5}' | head -n1)
+if [[ -z "$PRIMARY_IFACE" ]]; then
+  PRIMARY_IFACE=$(ip link show up 2>/dev/null | grep -E '^[0-9]+: (eth|ens|enp|eno|vtnet)' | awk -F': ' '{print $2}' | head -n1)
+fi
+PRIMARY_IFACE=${PRIMARY_IFACE:-"eth0"}
+
+PUBLIC_IP=$(curl -s4 -m 3 --interface "$PRIMARY_IFACE" https://api.ipify.org 2>/dev/null || \
+            curl -s4 -m 3 --interface "$PRIMARY_IFACE" https://icanhazip.com 2>/dev/null || \
+            curl -s4 -m 3 --interface "$PRIMARY_IFACE" https://ifconfig.me 2>/dev/null || \
+            echo "Unknown")
 
 TIER_NAME=""
 if (( MEM_MB <= 2500 )); then
@@ -81,6 +92,10 @@ else
   TARGET_SWAP_MB=2048
 fi
 
+echo -e "\n${C_BG_BLUE}${C_BOLD} [!] HOST PUBLIC IP DÀNH CHO IP-AUTHENTICATION PROXIES (WHITELIST IP) ${C_0}"
+echo -e " ${C_BOLD}>>> IP CẦN WHITELIST : ${C_G}${C_BOLD}${PUBLIC_IP}${C_0}"
+echo -e " ${C_Y}Hãy đảm bảo IP trên đã được Whitelist chính xác trong Dashboard nhà cung cấp Proxy!${C_0}\n"
+
 clear_apt_locks() {
   log "Giai phong khoa APT Lock..."
   if has_systemd; then
@@ -99,19 +114,20 @@ apt-get update -y -qq || { clear_apt_locks; apt-get update -y -qq; }
 apt-get install -y -qq --no-install-recommends \
   -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
   curl wget git unzip jq bc ca-certificates uuid-runtime cron logrotate net-tools inotify-tools \
-  iptables-persistent netfilter-persistent systemd-timesyncd vnstat nload dnsutils util-linux || true
+  iptables-persistent netfilter-persistent systemd-timesyncd vnstat nload dnsutils util-linux e2fsprogs || true
 
 # Nạp module Kernel bổ sung cho ZRAM (Tương thích tuyệt đối Ubuntu 24.04/Contabo)
-apt-get install -y -qq linux-modules-extra-$(uname -r) 2>/dev/null || true
+apt-get install -y -qq linux-modules-extra-"$(uname -r)" 2>/dev/null || true
 
-# --- CẤU HÌNH ƯU TIÊN IPV4 CHO PROXY IP-AUTH ---
+# --- CẤU HÌNH ƯU TIÊN IPV4 CHO PROXY IP-AUTH (/etc/gai.conf) ---
 log "Cau hinh uu tien IPv4 (/etc/gai.conf) cho Proxy IP-Auth..."
-if [[ -f /etc/gai.conf ]]; then
-  sed -i 's/^#precedence ::ffff:0:0\/96  100/precedence ::ffff:0:0\/96  100/' /etc/gai.conf || true
-  grep -q "precedence ::ffff:0:0/96  100" /etc/gai.conf || echo "precedence ::ffff:0:0/96  100" >> /etc/gai.conf
-else
-  echo "precedence ::ffff:0:0/96  100" > /etc/gai.conf
-fi
+cat << 'EOF_GAI' > /etc/gai.conf
+precedence ::ffff:0:0/96  100
+precedence ::/0           40
+precedence 2002::/16      30
+precedence ::/96          20
+precedence ::1/128        50
+EOF_GAI
 
 # --- ĐỒNG BỘ THỜI GIAN NTP CHUẨN XÁC ---
 if has_systemd; then
@@ -123,9 +139,9 @@ timedatectl set-ntp true 2>/dev/null || true
 timedatectl set-timezone Asia/Ho_Chi_Minh 2>/dev/null || true
 
 #============================================================================
-# [TỐI ƯU DNS THÔNG MINH - CHỐNG LỆCH GEOIP & LOẠI BỎ LỖI 127.0.0.53]
+# [TỐI ƯU DNS THÔNG MINH - CHỐNG LỆCH GEOIP, DIRECT UPSTREAM & KHÓA BẤT BIẾN]
 #============================================================================
-log "Cau hinh DNS Direct-Upstream..."
+log "Cau hinh DNS Direct-Upstream & Khoa bat bien chattr +i..."
 UPSTREAM_DNS=""
 if [[ -f /run/systemd/resolve/resolv.conf ]]; then
   UPSTREAM_DNS=$(grep -E '^nameserver' /run/systemd/resolve/resolv.conf 2>/dev/null | grep -v '127.0.0.53' | awk '{print $2}' || true)
@@ -136,6 +152,7 @@ if has_systemd; then
   systemctl disable systemd-resolved 2>/dev/null || true
 fi
 
+chattr -i /etc/resolv.conf 2>/dev/null || true
 rm -f /etc/resolv.conf
 {
   echo "# Generated for High Density Income Nodes (Direct Upstream Mode)"
@@ -148,18 +165,21 @@ rm -f /etc/resolv.conf
   echo "nameserver 9.9.9.9"
 } | awk '!seen[$0]++' > /etc/resolv.conf
 chmod 644 /etc/resolv.conf
+chattr +i /etc/resolv.conf 2>/dev/null || true
 
 # --- PERSISTENCE CHO KERNEL MODULES ---
 mkdir -p /etc/modules-load.d
 cat > /etc/modules-load.d/internetincome.conf <<'EOF_MODULES'
 zram
 tcp_bbr
+br_netfilter
 nf_conntrack
 tun
 EOF_MODULES
 
 modprobe zram num_devices=1 2>/dev/null || true
 modprobe tcp_bbr 2>/dev/null || true
+modprobe br_netfilter 2>/dev/null || true
 modprobe nf_conntrack 2>/dev/null || true
 modprobe tun 2>/dev/null || true
 
@@ -463,7 +483,7 @@ ii_profile() {
   P_APP=""; P_BASE_MIN="20m"; P_POLICY="unless-stopped"
 
   case "$n" in
-    tun*)
+    tun*|hev*|tun2proxy*)
       P_APP="tun2socks";       P_BASE_MIN="20m";  P_POLICY="unless-stopped" ;;
     dindurnetwork*|dindproxylite*|adnadedind*|dind*)
       P_APP="docker-in-docker"; P_BASE_MIN="120m"; P_POLICY="unless-stopped" ;;
@@ -495,7 +515,7 @@ ii_profile() {
 
     wipter*)
       P_APP="Wipter";          P_BASE_MIN="250m"; P_POLICY="on-failure:5" ;;
-    depinext*)
+    depinext*|grass*|gradient*|nodepay*|dawn*|oasis*|blockmesh*|pipe*|toggle*|functor*|navigate*|teneo*|meshchain*|openloop*)
       P_APP="Depin/Grass ext"; P_BASE_MIN="250m"; P_POLICY="on-failure:5" ;;
     ebesucher*)
       P_APP="Ebesucher";       P_BASE_MIN="250m"; P_POLICY="on-failure:5" ;;
@@ -531,15 +551,55 @@ ii_profile() {
   fi
 }
 
-II_SUSPEND_SENSITIVE="honey pawns packetstream packetshare earnfm wipter depinext ebesucher adnade repocket"
+II_SUSPEND_SENSITIVE="honey pawns packetstream packetshare earnfm wipter depinext ebesucher adnade repocket grass gradient nodepay dawn titan"
 ii_is_suspend_sensitive() {
   local n="${1:-}"
-  for a in $II_SUSPEND_SENSITIVE; do case "$n" in ${a}*) return 0 ;; esac; done
+  for a in $II_SUSPEND_SENSITIVE; do case "$n" in *${a}*) return 0 ;; esac; done
   return 1
 }
 EOF_PROFILES
 chmod 644 /usr/local/lib/ii-app-profiles.sh
 . /usr/local/lib/ii-app-profiles.sh
+
+#============================================================================
+# HÀM TỰ ĐỘNG ĐỒNG BỘ PROPERTIES.CONF (CHUẨN 100% NHÁNH TEST)
+#============================================================================
+auto_patch_engageub_repo() {
+  log "Dong bo properties TEST (SOCKS5 DNS off, DoH on). KHONG ghi MAX_MEMORY..."
+  ROOTS=(/opt /root /home /srv /home/ubuntu /home/opc)
+  if [[ -n "${BASE_DIR:-}" ]]; then ROOTS+=("$BASE_DIR"); fi
+  while IFS= read -r f; do
+    [[ -f "$f" ]] || continue
+    grep -qE 'USE_SOCKS5_DNS|USE_PROXIES|USE_DNS_OVER_HTTPS' "$f" || continue
+    cp -a "$f" "${f}.bak.$(date +%Y%m%d%H%M%S)" 2>/dev/null || true
+    
+    sed -i -E '/^[[:space:]]*MAX_MEMORY=/d;/^[[:space:]]*MEMORY_RESERVATION=/d;/^[[:space:]]*MEMORY_SWAP=/d;/^[[:space:]]*CPU=/d' "$f" || true
+    set_kv() {
+      local k="$1" v="$2"
+      if grep -qE "^[[:space:]]*#?[[:space:]]*${k}=" "$f"; then
+        sed -i -E "s|^[[:space:]]*#?[[:space:]]*${k}=.*|${k}=${v}|" "$f"
+      else
+        printf '\n%s=%s\n' "$k" "$v" >> "$f"
+      fi
+    }
+    set_kv USE_DIRECT_CONNECTION false
+    set_kv USE_PROXIES true
+    set_kv USE_VPNS false
+    set_kv USE_MULTI_IP false
+    set_kv USE_SOCKS5_DNS false
+    set_kv USE_DNS_OVER_HTTPS true
+    set_kv USE_DNSCRYPT false
+    set_kv USE_DNS_CACHE true
+    set_kv USE_TUN2PROXY false
+    set_kv USE_DOCKER_EMBEDDED_DNS false
+    set_kv USE_CUSTOM_NETWORK false
+    set_kv AUTO_UPDATE_CONTAINERS false
+    set_kv ENABLE_LOGS false
+    log "Da patch properties.conf tai: $(dirname "$f")"
+  done < <(find "${ROOTS[@]}" -maxdepth 5 -name properties.conf -type f 2>/dev/null | sort -u)
+}
+
+auto_patch_engageub_repo
 
 #============================================================================
 # FLAPGUARD ENGINE (CHỐNG LẶP LỖI RECONNECT LOOP)
@@ -662,7 +722,7 @@ while IFS=$'\t' read -r cid cname mem_usage; do
   LIVE_ACTUAL_MB["$cid"]=$used_mb
   TOTAL_ACTUAL_USED_MB=$(( TOTAL_ACTUAL_USED_MB + used_mb ))
 
-  if [[ "$cname_clean" =~ wipter|depinext|ebesucher|adnade|dind|myst ]]; then
+  if [[ "$cname_clean" =~ wipter|depinext|ebesucher|adnade|dind|myst|grass|gradient|nodepay|dawn|titan ]]; then
     HEAVY_COUNT=$((HEAVY_COUNT + 1))
   else
     LIGHT_COUNT=$((LIGHT_COUNT + 1))
@@ -691,7 +751,7 @@ for cid in "${!LIVE_ACTUAL_MB[@]}"; do
   base_min=${P_BASE_MIN%m}
   (( soft_floor < base_min )) && soft_floor=$base_min
 
-  if [[ "$cname" =~ wipter|depinext|ebesucher|adnade|dind|myst ]]; then
+  if [[ "$cname" =~ wipter|depinext|ebesucher|adnade|dind|myst|grass|gradient|nodepay|dawn|titan ]]; then
     target_burst=$(( actual_mb + HEAVY_BURST_EXTRA ))
     (( target_burst < 500 )) && target_burst=500
     (( target_burst > 2048 )) && target_burst=2048
@@ -719,7 +779,7 @@ EOF_AUTOSYNC
 chmod +x /usr/local/bin/ii-autosync.sh
 ln -sf /usr/local/bin/ii-autosync.sh /usr/bin/ii-autosync 2>/dev/null || true
 
-/usr/local/bin/ii-autosync.sh
+/usr/local/bin/ii-autosync.sh || true
 
 #============================================================================
 # ENGINE KHỞI ĐỘNG TUẦN TỰ TUNNEL-FIRST
@@ -735,7 +795,7 @@ echo "=== BAT DAU KHOI DONG TUAN TU ${TOTAL_NODES} CONTAINER ==="
 
 for cid in $(docker ps -aq 2>/dev/null); do
   cname=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null | sed 's|^/||')
-  if [[ "$cname" =~ ^tun|^dind ]]; then
+  if [[ "$cname" =~ ^tun|^hev|^socks5|^dind ]]; then
     running=$(docker inspect -f '{{.State.Running}}' "$cid" 2>/dev/null || echo "false")
     if [[ "$running" != "true" ]]; then
       docker start "$cid" >/dev/null 2>&1 || true
@@ -755,7 +815,7 @@ for cid in $(docker ps -aq 2>/dev/null); do
 
   docker start "$cid" >/dev/null 2>&1 || true
 
-  if [[ "$cname" =~ wipter|ebesucher|adnade|depinext ]]; then
+  if [[ "$cname" =~ wipter|ebesucher|adnade|depinext|grass|gradient|nodepay|dawn|titan ]]; then
     sleep 8
   elif [[ "$cname" =~ honey|repocket|packetstream|packetshare|pawns|earnfm|earnapp ]]; then
     sleep 3.5
@@ -786,7 +846,7 @@ EOF_BOOT_SVC
   systemctl enable ii-boot-staggered.service 2>/dev/null || true
 fi
 
-/usr/local/bin/ii-staggered-start.sh
+/usr/local/bin/ii-staggered-start.sh || true
 
 #============================================================================
 # CÔNG CỤ ĐÁNH GIÁ SỨC CHỨA PHẦN CỨNG (II-CAPACITY)
@@ -807,7 +867,12 @@ SAFE_MAX_HEAVY=$(( MAX_HEAVY_BY_RAM < MAX_HEAVY_BY_CPU ? MAX_HEAVY_BY_RAM : MAX_
 
 RAM_FREE_MB=$(free -m | awk '/^Mem:/{print $7}')
 LOAD_15=$(cat /proc/loadavg | awk '{print $3}')
-PUB_IP=$(curl -s4 -m 2 https://api.ipify.org 2>/dev/null || curl -s4 -m 2 https://ifconfig.me 2>/dev/null || echo "Unknown")
+
+# Bắt IP qua card mạng chính
+PRIMARY_IFACE=$(ip -4 route show default 2>/dev/null | awk '{print $5}' | head -n1)
+PUB_IP=$(curl -s4 -m 3 --interface "$PRIMARY_IFACE" https://api.ipify.org 2>/dev/null || \
+        curl -s4 -m 3 --interface "$PRIMARY_IFACE" https://icanhazip.com 2>/dev/null || \
+        echo "Unknown")
 
 echo "==================== [ĐÁNH GIÁ SỨC CHỨA PHẦN CỨNG VPS] ===================="
 echo "  PUBLIC IP (IP-AUTH) : ${PUB_IP}"
@@ -858,7 +923,10 @@ if ! docker inspect "$CNAME" >/dev/null 2>&1; then
   exit 1
 fi
 
-PUB_HOST=$(curl -s4 -m 2 https://api.ipify.org 2>/dev/null || curl -s4 -m 2 https://ifconfig.me 2>/dev/null || echo "Unknown")
+PRIMARY_IFACE=$(ip -4 route show default 2>/dev/null | awk '{print $5}' | head -n1)
+PUB_HOST=$(curl -s4 -m 3 --interface "$PRIMARY_IFACE" https://api.ipify.org 2>/dev/null || \
+          curl -s4 -m 3 --interface "$PRIMARY_IFACE" https://icanhazip.com 2>/dev/null || \
+          echo "Unknown")
 PID=$(docker inspect -f '{{.State.Pid}}' "$CNAME" 2>/dev/null || echo 0)
 STATE=$(docker inspect -f '{{.State.Status}}' "$CNAME" 2>/dev/null || echo "unknown")
 
@@ -867,9 +935,21 @@ echo "  Container Target  : $CNAME (Status: $STATE, PID: $PID)"
 echo "  VPS IP-Auth Target: $PUB_HOST (IP Whitelist duy nhat hop le tren Dashboard Proxy)"
 
 if (( PID > 0 )); then
-  CONNS=$(nsenter -t "$PID" -n ss -tan 2>/dev/null | grep -c ESTAB || echo 0)
-  RX_BYTES=$(docker exec "$CNAME" cat /sys/class/net/eth0/statistics/rx_bytes 2>/dev/null || echo 0)
-  TX_BYTES=$(docker exec "$CNAME" cat /sys/class/net/eth0/statistics/tx_bytes 2>/dev/null || echo 0)
+  CONNS=$(nsenter -t "$PID" -n ss -tan state established 2>/dev/null | grep -vc 'Recv-Q' || echo 0)
+  
+  # Đọc lưu lượng thụ động qua /proc/$PID/net/dev (ưu tiên tun0, sau đó đến eth0)
+  RX_BYTES=0
+  TX_BYTES=0
+  if [[ -f "/proc/$PID/net/dev" ]]; then
+    read -r RX_BYTES TX_BYTES < <(awk '
+      /tun0:|tap0:/ { tun_rx += $2; tun_tx += $10; has_tun = 1 }
+      /eth0:/       { eth_rx += $2; eth_tx += $10 }
+      END {
+        if (has_tun == 1) { print tun_rx+0, tun_tx+0 }
+        else { print eth_rx+0, eth_tx+0 }
+      }
+    ' "/proc/$PID/net/dev" 2>/dev/null || echo "0 0")
+  fi
   TOTAL_MB=$(awk "BEGIN {printf \"%.2f\", ($RX_BYTES + $TX_BYTES)/1048576}")
 
   echo "  Active Sockets    : $CONNS connections dang truyen du lieu"
@@ -931,7 +1011,11 @@ else
   C_G=''; C_Y=''; C_R=''; C_B=''; C_C=''; C_0=''
 fi
 
-PUB_IP=$(curl -s4 -m 2 https://api.ipify.org 2>/dev/null || curl -s4 -m 2 https://ifconfig.me 2>/dev/null || echo "Unknown")
+PRIMARY_IFACE=$(ip -4 route show default 2>/dev/null | awk '{print $5}' | head -n1)
+PUB_IP=$(curl -s4 -m 3 --interface "$PRIMARY_IFACE" https://api.ipify.org 2>/dev/null || \
+        curl -s4 -m 3 --interface "$PRIMARY_IFACE" https://icanhazip.com 2>/dev/null || \
+        echo "Unknown")
+
 IP_INFO=$(curl -s -m 2 "http://ip-api.com/json/${PUB_IP}?fields=country,city,isp,as" 2>/dev/null || echo "{}")
 IP_LOC=$(echo "$IP_INFO" | jq -r '"\(.city), \(.country)"' 2>/dev/null || echo "Unknown")
 IP_ISP=$(echo "$IP_INFO" | jq -r '"\(.as) - \(.isp)"' 2>/dev/null || echo "Unknown")
@@ -980,7 +1064,7 @@ echo -e "  TOTAL SUMMARY: ${C_G}${RUNNING_CTRS} running${C_0} / ${TOTAL_CTRS} to
 
 # --- [MỤC 2: BẢNG PHÂN PHỔI BỘ NHỚ THỰC TẾ (RAM SÀN / TRẦN)] ---
 echo -e "\n${C_C}--- [2. PLATFORMS DYNAMIC MEMORY AUDIT] ---${C_0}"
-TUN_COUNT=$(docker ps -q --filter "name=^tun" 2>/dev/null | wc -l)
+TUN_COUNT=$(docker ps -q --filter "name=^tun" --filter "name=^hev" --filter "name=^socks5" 2>/dev/null | sort -u | wc -l)
 APP_COUNT=$(( RUNNING_CTRS - TUN_COUNT ))
 (( APP_COUNT < 0 )) && APP_COUNT=0
 
@@ -989,7 +1073,7 @@ if (( TUN_COUNT > 0 )); then
   printf "  ${C_G}%-18s %-7s %-12s %-12s %-16s %s${C_0}\n" "tun2socks" "$TUN_COUNT" "20MB" "128MB" "unless-stopped" "[100% HEALTHY]"
 fi
 if (( APP_COUNT > 0 )); then
-  printf "  ${C_G}%-18s %-7s %-12s %-12s %-16s %s${C_0}\n" "Traffmonetizer" "$APP_COUNT" "30MB" "128MB" "unless-stopped" "[100% HEALTHY]"
+  printf "  ${C_G}%-18s %-7s %-12s %-12s %-16s %s${C_0}\n" "Income Workers" "$APP_COUNT" "30MB" "128MB" "unless-stopped" "[100% HEALTHY]"
 fi
 
 # --- [MỤC 3: SYSTEM RAM, ZRAM & CONCURRENCY] ---
@@ -1052,8 +1136,15 @@ EOF_STATUS
 chmod +x /usr/local/bin/ii-status.sh
 ln -sf /usr/local/bin/ii-status.sh /usr/bin/ii-status 2>/dev/null || true
 
+# Tự động nhận diện và liên kết check_network_proxy nếu có
+if [[ -f "./check_network_proxy.sh" ]]; then
+  cp ./check_network_proxy.sh /usr/local/bin/check-proxy 2>/dev/null || true
+  chmod +x /usr/local/bin/check-proxy 2>/dev/null || true
+fi
+
+# Đồng bộ file cài đặt cho các user
+cp -f "$0" /root/setup_vps.sh 2>/dev/null || true
+cp -f "$0" /home/ubuntu/setup_vps.sh 2>/dev/null || true
+
 echo "============================= SETUP XONG (2026 UNIVERSAL MASTER) =============================="
 /usr/local/bin/ii-status.sh || true
-MASTER_EOF
-chmod +x ~/setup_vps.sh
-sudo bash ~/setup_vps.sh
