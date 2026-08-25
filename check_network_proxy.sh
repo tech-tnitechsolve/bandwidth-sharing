@@ -1,11 +1,8 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Script: check_network_proxy.sh (InternetIncome Network & Proxy Telemetry Audit)
-# Mục đích: Đo đạc đường truyền Host & Kiểm tra Container Proxy chuẩn IP-Auth
-# Điểm tối ưu:
-#   - 100% PASSIVE: Không bao giờ gọi curl/request ra ngoài qua Proxy.
-#   - Bắt chính xác IP Host Whitelist tại card gốc ($PRIMARY_IFACE).
-#   - Đầy đủ Ping Hubs, Đo tốc độ Download/Upload, đếm Sockets & Delta lưu lượng.
+# Script: check_network_proxy.sh (InternetIncome Global Network & Proxy Telemetry)
+# Kiểm tra: Đường truyền Host (VN, AU, SG, JP, HK, EU, US) & Container Proxy
+# Tối ưu lõi: 100% PASSIVE TELEMETRY (Tuyệt đối không gọi request qua Proxy IP-Auth)
 # ==============================================================================
 
 set -uo pipefail
@@ -25,7 +22,7 @@ C_BOLD='\033[1m'
 C_BG_BLUE='\033[44;37m'
 
 # ------------------------------------------------------------------------------
-# 2. CẤU HÌNH VÀ THAM SỐ DÒNG LỆNH
+# 2. XỬ LÝ THAM SỐ DÒNG LỆNH
 # ------------------------------------------------------------------------------
 MODE_FAST=false
 SAMPLE_INTERVAL=2
@@ -47,13 +44,13 @@ for arg in "$@"; do
 done
 
 if [[ $EUID -ne 0 ]]; then
-    echo -e "${C_RED}LỖI: Script cần quyền root để đọc thông số mạng.${C_RESET}"
-    echo -e "Vui lòng chạy: ${C_YELLOW}sudo bash $0${C_RESET}"
+    echo -e "${C_RED}LỖI: Script cần quyền root để đọc Network Namespace của container.${C_RESET}"
+    echo -e "Vui lòng chạy lại với: ${C_YELLOW}sudo bash $0${C_RESET}"
     exit 1
 fi
 
 # ------------------------------------------------------------------------------
-# 3. CÀI ĐẶT CÔNG CỤ PHỤ TRỢ NẾU THIẾU
+# 3. KIỂM TRA CÔNG CỤ CẦN THIẾT
 # ------------------------------------------------------------------------------
 ensure_dependencies() {
     local missing_pkgs=()
@@ -99,7 +96,7 @@ format_rate() {
     fi
 }
 
-# Lấy card mạng chính & Default Gateway
+# Lấy card mạng chính của Host
 PRIMARY_IFACE=$(ip -4 route show default 2>/dev/null | awk '{print $5}' | head -n1)
 if [[ -z "$PRIMARY_IFACE" ]]; then
     PRIMARY_IFACE=$(ip link show up 2>/dev/null | grep -E '^[0-9]+: (eth|ens|enp|eno|vtnet)' | awk -F': ' '{print $2}' | head -n1)
@@ -109,7 +106,7 @@ PRIMARY_IFACE=${PRIMARY_IFACE:-"eth0"}
 DEFAULT_GW=$(ip -4 route show default 2>/dev/null | awk '{print $3}' | head -n1)
 DEFAULT_GW=${DEFAULT_GW:-"Không xác định"}
 
-# Lấy IP Public Host (Chỉ qua card mạng chính, không qua proxy)
+# Lấy IP Public Host (Chỉ qua card mạng gốc, không qua proxy)
 get_host_public_ip() {
     local ip=""
     local endpoints=("https://api.ipify.org" "https://icanhazip.com" "https://ifconfig.me")
@@ -188,10 +185,10 @@ echo -e "    • Phân giải DNS Host: $DNS_TEST_RESULT"
 echo -e "${C_CYAN}------------------------------------------------------------------------------${C_RESET}"
 
 # ------------------------------------------------------------------------------
-# 7. ĐỘ TRỄ LATENCY & TỐC ĐỘ GỐC CỦA HOST
+# 7. ĐỘ TRỄ LATENCY QUỐC TẾ (VN, AU, SG, JP, HK, EU, US) & TỐC ĐỘ GỐC HOST
 # ------------------------------------------------------------------------------
 if [[ "$MODE_FAST" == false ]]; then
-    echo -e " ${C_BOLD}3. ĐỘ TRỄ (LATENCY) TỪ HOST ĐẾN CÁC HUB CHÍNH:${C_RESET}"
+    echo -e " ${C_BOLD}3. ĐỘ TRỄ (LATENCY) TỚI CÁC TRUNG TÂM MẠNG QUỐC TẾ & KHU VỰC:${C_RESET}"
     
     test_ping() {
         local name=$1
@@ -199,20 +196,22 @@ if [[ "$MODE_FAST" == false ]]; then
         local res
         res=$(ping -c 2 -W 2 -I "$PRIMARY_IFACE" "$target" 2>/dev/null | tail -1 | awk -F '/' '{print $5}')
         if [[ -n "$res" ]]; then
-            printf "    • %-20s [%-15s] : ${C_GREEN}%6.1f ms${C_RESET}\n" "$name" "$target" "$res"
+            printf "    • %-22s [%-15s] : ${C_GREEN}%6.1f ms${C_RESET}\n" "$name" "$target" "$res"
         else
-            printf "    • %-20s [%-15s] : ${C_RED}Timeout / Blocked${C_RESET}\n" "$name" "$target"
+            printf "    • %-22s [%-15s] : ${C_RED}Timeout / Blocked${C_RESET}\n" "$name" "$target"
         fi
     }
 
-    test_ping "Cloudflare DNS Primary"   "1.1.1.1"
-    test_ping "Cloudflare DNS Secondary" "1.0.0.1"
-    test_ping "Google DNS Primary"       "8.8.8.8"
-    test_ping "Google DNS Secondary"     "8.8.4.4"
-    test_ping "Quad9 Security DNS"       "9.9.9.9"
-    test_ping "OpenDNS US East"          "208.67.222.222"
-    test_ping "OpenDNS US West"          "208.67.220.220"
-    test_ping "Lumen Global Hub"         "4.2.2.2"
+    test_ping "Việt Nam (VNPT Hub)"     "203.162.0.181"
+    test_ping "Việt Nam (FPT Hub)"      "118.69.192.1"
+    test_ping "Singapore (SG)"          "139.162.23.4"
+    test_ping "Hong Kong (HK)"          "139.162.112.206"
+    test_ping "Tokyo, Nhật Bản (JP)"    "139.162.65.37"
+    test_ping "Sydney, Úc (AU)"         "139.162.244.17"
+    test_ping "Frankfurt, Đức (EU)"     "139.162.130.8"
+    test_ping "London, Anh (UK)"        "212.71.249.200"
+    test_ping "US West (California, Mỹ)" "173.255.245.5"
+    test_ping "US East (New York, Mỹ)"   "173.255.243.24"
 
     echo -e ""
     echo -e " ${C_BOLD}4. ĐO TỐC ĐỘ ĐƯỜNG TRUYỀN GỐC HOST (DOWNLOAD / UPLOAD DUPLEX):${C_RESET}"
@@ -227,7 +226,7 @@ if [[ "$MODE_FAST" == false ]]; then
         DL_SPEED=$(format_rate "$DL_RAW")
     fi
 
-    # Upload test 2MB (Stream payload trực tiếp tránh lỗi null byte)
+    # Upload test 2MB
     TMP_UL_FILE="/tmp/ii_up_sample.bin"
     head -c 2097152 /dev/urandom > "$TMP_UL_FILE" 2>/dev/null || true
     if [[ -f "$TMP_UL_FILE" ]]; then
@@ -244,7 +243,7 @@ if [[ "$MODE_FAST" == false ]]; then
 fi
 
 # ------------------------------------------------------------------------------
-# 8. PASSIVE CONTAINER & PROXY TELEMETRY (KHÔNG GỌI REQUEST QUA PROXY)
+# 8. PASSIVE CONTAINER & PROXY TELEMETRY (100% THỤ ĐỘNG - BẢO VỆ IP-AUTH)
 # ------------------------------------------------------------------------------
 echo -e " ${C_BOLD}5. KIỂM TRA CHI TIẾT CONTAINER INTERNETINCOME & PROXY TELEMETRY:${C_RESET}"
 echo -e "    ${C_YELLOW}Phương pháp: Thu thập thụ động qua Kernel Namespace (Zero External Request)${C_RESET}"
@@ -253,11 +252,10 @@ CONTAINER_LIST=$(docker ps -a --format '{{.ID}}|{{.Names}}|{{.Status}}|{{.Image}
 
 if [[ -z "$CONTAINER_LIST" ]]; then
     echo -e "\n    ${C_YELLOW}[!] Chưa có container InternetIncome nào đang chạy trên máy.${C_RESET}"
-    echo -e "    ${C_WHITE}➔ Bạn hãy thực hiện theo file '${C_GREEN}fix_internetincome${C_WHITE}' để khởi chạy tool:${C_RESET}"
-    echo -e "       1. ${C_CYAN}git clone -b test https://github.com/engageub/InternetIncome.git ~/InternetIncome${C_RESET}"
-    echo -e "       2. Cấu hình ${C_CYAN}properties.conf${C_RESET} và danh sách proxy vào ${C_CYAN}proxies.txt${C_RESET}"
-    echo -e "       3. Chạy ${C_CYAN}bash internetIncome.sh --start${C_RESET}"
-    echo -e "       4. Gõ lệnh ${C_GREEN}check-proxy${C_RESET} để xem bảng dữ liệu lưu lượng từng proxy!"
+    echo -e "    ${C_WHITE}➔ Bạn hãy khởi chạy tool theo nhánh test:${C_RESET}"
+    echo -e "       1. Điền ${C_CYAN}properties.conf${C_RESET} và danh sách proxy vào ${C_CYAN}proxies.txt${C_RESET}"
+    echo -e "       2. Chạy ${C_CYAN}bash internetIncome.sh --start${C_RESET}"
+    echo -e "       3. Gõ lại ${C_GREEN}check-proxy${C_RESET} để xem bảng dữ liệu lưu lượng từng proxy!"
     echo -e "${C_CYAN}==============================================================================${C_RESET}"
     exit 0
 fi
@@ -363,7 +361,7 @@ while IFS='|' read -r CID CNAME CSTAT CIMG; do
         sum_total=$(( r2 + t2 ))
         TOTAL_DATA_STR=$(format_bytes "$sum_total")
 
-        # Đánh giá hoàn toàn thụ động không gọi request ra ngoài
+        # Đánh giá hoàn toàn thụ động (Zero External Request)
         if [[ "$ESTAB_SOCKETS" -gt 0 && $(echo "$DELTA_SPEED_KBS > 0" | bc -l 2>/dev/null || echo 0) -eq 1 ]]; then
             PROXY_HEALTH="${C_GREEN}Tốt (Active)${C_RESET}"
             ((TOTAL_ACTIVE_NODES++))
@@ -391,8 +389,8 @@ echo -e "${C_CYAN}--------------------------------------------------------------
 # ------------------------------------------------------------------------------
 echo -e " ${C_BOLD}6. TỔNG KẾT TÌNH TRẠNG PROXY & CHIA SẺ BĂNG THÔNG:${C_RESET}"
 echo -e "    • Tổng số container đã quét  : ${C_WHITE}${C_BOLD}$TOTAL_CONTAINERS${C_RESET}"
-echo -e "    • Nodes hoạt động tốt (Active): ${C_GREEN}${C_BOLD}$TOTAL_ACTIVE_NODES${C_RESET} container (Có kết nối & đang sinh doanh thu)"
-echo -e "    • Nodes ở chế độ chờ (Idle)  : ${C_YELLOW}${C_BOLD}$TOTAL_IDLE_NODES${C_RESET} container (Proxy sống, chờ nhà mạng phân phối task)"
+echo -e "    • Nodes hoạt động tốt (Active): ${C_GREEN}${C_BOLD}$TOTAL_ACTIVE_NODES${C_RESET} container (Có socket & đang truyền data)"
+echo -e "    • Nodes ở chế độ chờ (Idle)  : ${C_YELLOW}${C_BOLD}$TOTAL_IDLE_NODES${C_RESET} container (Proxy sống, chờ phân phối task)"
 echo -e "    • Nodes lỗi / Mất kết nối   : ${C_RED}${C_BOLD}$TOTAL_DEAD_NODES${C_RESET} container (Cần kiểm tra IP-Auth hoặc Proxy)"
 
 echo -e ""
