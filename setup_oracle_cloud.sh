@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #============================================================================
-#  setup_oracle_cloud.sh — OCI x86, dong bo VPS/VM (ZRAM zstd, DNS direct, KHONG de MAX_MEMORY)
+#  setup_oracle_cloud.sh — OCI x86, đồng bộ VPS/VM (ZRAM zstd, DNS direct, IP-Auth Hardened)
 #============================================================================
 set -Eeuo pipefail
 
@@ -10,8 +10,10 @@ sysctl -w fs.inotify.max_user_instances=65536 >/dev/null 2>&1 || true
 
 if [[ -t 1 ]]; then
   C_G='\033[1;32m'; C_Y='\033[1;33m'; C_R='\033[1;31m'; C_B='\033[1;34m'; C_C='\033[1;36m'; C_0='\033[0m'
+  C_BG_BLUE='\033[44;37m'; C_BOLD='\033[1m'
 else
   C_G=''; C_Y=''; C_R=''; C_B=''; C_C=''; C_0=''
+  C_BG_BLUE=''; C_BOLD=''
 fi
 log()  { echo -e "${C_G}[OK]${C_0} $*"; }
 warn() { echo -e "${C_Y}[!!]${C_0} $*"; }
@@ -79,6 +81,21 @@ else
   TARGET_SWAP_MB=4096
 fi
 
+# Nhận diện chính xác Card mạng chính & Host Public IP Whitelist
+PRIMARY_IFACE=$(ip -4 route show default 2>/dev/null | awk '{print $5}' | head -n1)
+if [[ -z "$PRIMARY_IFACE" ]]; then
+  PRIMARY_IFACE=$(ip link show up 2>/dev/null | grep -E '^[0-9]+: (ens|enp|eth|eno)' | awk -F': ' '{print $2}' | head -n1)
+fi
+PRIMARY_IFACE=${PRIMARY_IFACE:-"ens3"}
+
+HOST_PUBLIC_IP=$(curl -s4 -m 3 --interface "$PRIMARY_IFACE" https://api.ipify.org 2>/dev/null || \
+                curl -s4 -m 3 --interface "$PRIMARY_IFACE" https://icanhazip.com 2>/dev/null || \
+                echo "Khong_xac_dinh")
+
+echo -e "\n${C_BG_BLUE}${C_BOLD} [!] HOST PUBLIC IP DÀNH CHO IP-AUTHENTICATION PROXIES (WHITELIST IP) ${C_0}"
+echo -e " ${C_BOLD}>>> IP CẦN WHITELIST : ${C_G}${C_BOLD}${HOST_PUBLIC_IP}${C_0}"
+echo -e " ${C_Y}Hãy đảm bảo IP trên đã được Whitelist chính xác trong Dashboard nhà cung cấp Proxy!${C_0}\n"
+
 clear_apt_locks() {
   log "Giai phong khoa APT Lock cua Oracle Cloud..."
   if has_systemd; then
@@ -113,8 +130,13 @@ timedatectl set-ntp true 2>/dev/null || true
 timedatectl set-timezone Asia/Ho_Chi_Minh 2>/dev/null || true
 log "Da dong bo thoi gian NTP chuan millisecond (Anti-Ban Token Ready)!"
 
-# DNS Direct Upstream
-log "Cau hinh DNS Direct-Upstream..."
+# DNS Direct Upstream & Khóa bất biến chattr +i
+log "Cau hinh DNS Direct-Upstream & Khoa bat bien..."
+if has_systemd && systemctl is-active --quiet systemd-resolved; then
+  systemctl stop systemd-resolved 2>/dev/null || true
+  systemctl disable systemd-resolved 2>/dev/null || true
+fi
+chattr -i /etc/resolv.conf 2>/dev/null || true
 rm -f /etc/resolv.conf
 {
   echo "# Generated for High Density Income Nodes (Direct Upstream Mode)"
@@ -124,6 +146,17 @@ rm -f /etc/resolv.conf
   echo "nameserver 9.9.9.9"
 } > /etc/resolv.conf
 chmod 644 /etc/resolv.conf
+chattr +i /etc/resolv.conf 2>/dev/null || true
+
+# Ép ưu tiên IPv4 cho IP-Authentication Proxies (/etc/gai.conf)
+log "Cau hinh /etc/gai.conf uu tien IPv4 tuyet doi cho IP-Auth..."
+cat << 'EOF_GAI' > /etc/gai.conf
+precedence ::ffff:0:0/96  100
+precedence ::/0           40
+precedence 2002::/16      30
+precedence ::/96          20
+precedence ::1/128        50
+EOF_GAI
 
 # Cài đặt Docker official
 if ! command -v docker >/dev/null 2>&1; then
@@ -145,28 +178,30 @@ EOF_DOCKER_SVC
   systemctl enable --now docker >/dev/null 2>&1 || true
 fi
 
-log "Kich hoat KSM (Kernel Samepage Merging) gop RAM ngam..."
+log "Kich hoat KSM (Kernel Samepage Merging) Aggressive gop RAM ngam..."
 if [[ -f /sys/kernel/mm/ksm/run ]]; then
   echo 1 > /sys/kernel/mm/ksm/run 2>/dev/null || true
-  echo 300 > /sys/kernel/mm/ksm/sleep_millisecs 2>/dev/null || true
-  echo 1250 > /sys/kernel/mm/ksm/pages_to_scan 2>/dev/null || true
-  log "Da kich hoat KSM toi uu cao thanh cong!"
+  echo 200 > /sys/kernel/mm/ksm/sleep_millisecs 2>/dev/null || true
+  echo 1500 > /sys/kernel/mm/ksm/pages_to_scan 2>/dev/null || true
+  log "Da kich hoat KSM Aggressive (Tiet kiem ~200MB RAM)!"
 fi
 
-
-# ZRAM giong VPS/VM: 100% RAM, zstd, pri 10 — disk swap chi pri 0
+# ZRAM: 100% RAM, zstd, pri 10 — disk swap chi pri 0
 log "ZRAM = RAM (zstd), dong bo VPS/VM"
 mkdir -p /etc/modules-load.d
 cat > /etc/modules-load.d/internetincome.conf <<'EOF_MODULES'
 zram
 tcp_bbr
+br_netfilter
 nf_conntrack
 tun
 EOF_MODULES
 modprobe zram num_devices=1 2>/dev/null || true
 modprobe tcp_bbr 2>/dev/null || true
+modprobe br_netfilter 2>/dev/null || true
 modprobe nf_conntrack 2>/dev/null || true
 modprobe tun 2>/dev/null || true
+
 cat > /usr/local/bin/ii-init-zram.sh <<'EOF_ZRAM_INIT'
 #!/usr/bin/env bash
 MEM_MB=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
@@ -184,6 +219,7 @@ mkswap /dev/zram0 >/dev/null 2>&1 || true
 swapon -p 10 /dev/zram0 2>/dev/null || true
 EOF_ZRAM_INIT
 chmod +x /usr/local/bin/ii-init-zram.sh
+
 if has_systemd; then
   systemctl disable --now zramswap 2>/dev/null || true
   cat > /etc/systemd/system/ii-zram.service <<'EOF_ZRAM_SVC'
@@ -203,7 +239,6 @@ EOF_ZRAM_SVC
   systemctl enable --now ii-zram.service 2>/dev/null || true
 fi
 /usr/local/bin/ii-init-zram.sh
-
 
 SWAPPINESS=100
 sysctl -w vm.swappiness=100 >/dev/null 2>&1 || true
@@ -240,10 +275,12 @@ fi
 apt-get clean 2>/dev/null || true
 journalctl --vacuum-size=10M 2>/dev/null || true
 
-log "Dang diet cac dich vu OS ngom RAM ngam..."
+log "Dang diet cac dich vu OS & Oracle Bloatware ngom RAM ngam..."
 if has_systemd; then
-  systemctl stop snapd multipathd udisks2 accountsservice earlyoom 2>/dev/null || true
-  systemctl disable snapd multipathd udisks2 accountsservice earlyoom 2>/dev/null || true
+  # Tiêu diệt oracle-cloud-agent giải phóng ~180MB RAM
+  systemctl stop oracle-cloud-agent oracle-cloud-agent-updater snapd multipathd udisks2 accountsservice earlyoom unattended-upgrades 2>/dev/null || true
+  systemctl disable oracle-cloud-agent oracle-cloud-agent-updater snapd multipathd udisks2 accountsservice earlyoom unattended-upgrades 2>/dev/null || true
+  systemctl mask oracle-cloud-agent oracle-cloud-agent-updater snapd 2>/dev/null || true
 fi
 apt-get purge -y snapd earlyoom 2>/dev/null || true
 rm -rf /var/cache/snapd/ /var/lib/snapd/ 2>/dev/null || true
@@ -261,9 +298,6 @@ Unattended-Upgrade::Automatic-Reboot "false";
 Unattended-Upgrade::Automatic-Reboot-WithUsers "false";
 EOF_APT
 
-modprobe nf_conntrack 2>/dev/null || true
-modprobe tcp_bbr 2>/dev/null || true
-
 modprobe tun 2>/dev/null || true
 if [[ ! -c /dev/net/tun ]]; then
   mkdir -p /dev/net 2>/dev/null || true
@@ -271,6 +305,7 @@ if [[ ! -c /dev/net/tun ]]; then
   chmod 600 /dev/net/tun 2>/dev/null || true
 fi
 
+# Mở khóa iptables Oracle Cloud cho Docker & TUN Routing
 iptables -P INPUT ACCEPT 2>/dev/null || true
 iptables -P FORWARD ACCEPT 2>/dev/null || true
 iptables -F FORWARD 2>/dev/null || true
@@ -297,7 +332,7 @@ vm.min_free_kbytes = 32768
 vm.page-cluster = 0
 vm.overcommit_memory = 1
 vm.swappiness = ${SWAPPINESS}
-vm.vfs_cache_pressure = 100
+vm.vfs_cache_pressure = 200
 vm.dirty_background_ratio = 3
 vm.dirty_ratio = 8
 fs.file-max = 2097152
@@ -344,7 +379,7 @@ EOF_JOURNAL
 if has_systemd; then systemctl restart systemd-journald 2>/dev/null || true; fi
 
 #============================================================================
-# THƯ VIỆN HỒ SƠ ỨNG DỤNG (20+ APP CHUẨN ĐỊNH MỨC RAM)
+# THƯ VIỆN HỒ SƠ ỨNG DỤNG (24+ APP CHUẨN ĐỊNH MỨC RAM)
 #============================================================================
 mkdir -p /usr/local/lib
 cat > /usr/local/lib/ii-app-profiles.sh <<'EOF_PROFILES'
@@ -372,7 +407,7 @@ ii_profile() {
   P_VPS="safe"; P_MAXIP=0; P_NOTE=""
 
   case "$n" in
-    tun*)
+    tun*|hev*|tun2proxy*)
       P_APP="tun2socks";  P_MEM=$(_p $t 25m 32m 48m 64m 80m);   P_SWAP=$(_p $t 50m 64m 96m 128m 160m)
       P_POLICY="unless-stopped"; P_NOTE="Ha tang mang proxy" ;;
     dindurnetwork*|dindproxylite*|adnadedind*|dind*)
@@ -435,8 +470,8 @@ ii_profile() {
     wipter*)
       P_APP="Wipter"; P_MEM=$(_p $t 320m 350m 400m 500m 600m); P_SWAP=$(_p $t 600m 700m 800m 1000m 1200m)
       P_POLICY="on-failure:5"; P_VPS="resi" ;;
-    depinext*)
-      P_APP="Depin/Grass ext"; P_MEM=$(_p $t 300m 350m 400m 500m 600m); P_SWAP=$(_p $t 600m 700m 800m 1000m 1200m)
+    depinext*|grass*|gradient*|nodepay*|dawn*|oasis*|blockmesh*|pipe*|toggle*|functor*|navigate*|teneo*|meshchain*|openloop*)
+      P_APP="Browser/DePIN Extension"; P_MEM=$(_p $t 280m 340m 400m 500m 600m); P_SWAP=$(_p $t 560m 680m 800m 1000m 1200m)
       P_POLICY="on-failure:5"; P_VPS="resi" ;;
     ebesucher*)
       P_APP="Ebesucher"; P_MEM=$(_p $t 320m 350m 400m 500m 600m); P_SWAP=$(_p $t 600m 700m 800m 1000m 1200m)
@@ -476,11 +511,11 @@ ii_profile() {
   fi
 }
 
-II_SUSPEND_SENSITIVE="honey pawns packetstream packetshare earnfm wipter depinext ebesucher adnade earnapp repocket"
+II_SUSPEND_SENSITIVE="honey pawns packetstream packetshare earnfm wipter depinext ebesucher adnade earnapp repocket grass gradient nodepay dawn titan"
 ii_is_suspend_sensitive() {
   local n="${1:-}"
   for a in $II_SUSPEND_SENSITIVE; do
-    case "$n" in ${a}*) return 0 ;; esac
+    case "$n" in *${a}*) return 0 ;; esac
   done
   return 1
 }
@@ -530,7 +565,6 @@ for cid in $(docker ps -aq 2>/dev/null); do
   prev_rc=${prev_rc:-0}; prev_t=${prev_t:-0}; stopped_at=${stopped_at:-0}
 
   if (( stopped_at > 0 )); then
-    # Khong tu mo lai app deo tai khoan — mo tay sau khi check proxy
     continue
   fi
 
@@ -574,7 +608,6 @@ for cid in $(docker ps -aq 2>/dev/null); do
   c_name=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null | sed 's|^/||' || true)
   ii_profile "$c_name" "$c_img" "$TIER_IDX"
   
-  # Cập nhật Policy độc lập (chắc chắn thành công 100% không lo nghẽn RAM)
   [[ -n "$P_POLICY" ]] && docker update --restart="$P_POLICY" "$cid" >/dev/null 2>&1 || true
 
   [[ -n "$P_MEM" ]] || continue
@@ -590,17 +623,21 @@ EOF_AUTOSYNC
 chmod +x /usr/local/bin/ii-autosync.sh
 ln -sf /usr/local/bin/ii-autosync.sh /usr/bin/ii-autosync 2>/dev/null || true
 
-
+#============================================================================
+# HÀM AUTO-PATCH PROPERTIES.CONF (CHUẨN 100% TEST BRANCH & IP-AUTH)
+#============================================================================
 auto_patch_engageub_repo() {
-  log "Dong bo properties TEST (SOCKS5 DNS off). KHONG ghi MAX_MEMORY, KHONG sed internetIncome.sh"
+  log "Dong bo properties TEST (SOCKS5 DNS off, DoH on). KHONG ghi MAX_MEMORY..."
   ROOTS=(/opt /root /home /srv /home/ubuntu /home/opc)
   if [[ -n "${BASE_DIR:-}" ]]; then ROOTS+=("$BASE_DIR"); fi
   while IFS= read -r f; do
     [[ -f "$f" ]] || continue
     grep -qE 'USE_SOCKS5_DNS|USE_PROXIES|USE_DNS_OVER_HTTPS' "$f" || continue
     cp -a "$f" "${f}.bak.$(date +%Y%m%d%H%M%S)" 2>/dev/null || true
-    # go MAX_MEMORY do setup Oracle cu de lai (de ii-autosync / II tu lo)
+    
+    # Gỡ MAX_MEMORY tĩnh để ii-autosync tự điều phối
     sed -i -E '/^[[:space:]]*MAX_MEMORY=/d;/^[[:space:]]*MEMORY_RESERVATION=/d;/^[[:space:]]*MEMORY_SWAP=/d;/^[[:space:]]*CPU=/d' "$f" || true
+    
     set_kv() {
       local k="$1" v="$2"
       if grep -qE "^[[:space:]]*#?[[:space:]]*${k}=" "$f"; then
@@ -615,26 +652,26 @@ auto_patch_engageub_repo() {
     set_kv USE_MULTI_IP false
     set_kv USE_SOCKS5_DNS false
     set_kv USE_DNS_OVER_HTTPS true
-    set_kv USE_DNSCRYPT true
+    set_kv USE_DNSCRYPT false
     set_kv USE_DNS_CACHE true
     set_kv USE_TUN2PROXY false
     set_kv USE_DOCKER_EMBEDDED_DNS false
     set_kv USE_CUSTOM_NETWORK false
     set_kv AUTO_UPDATE_CONTAINERS false
     set_kv ENABLE_LOGS false
-    echo "[OK] properties $(dirname "$f")"
+    log "Da patch properties.conf tai: $(dirname "$f")"
   done < <(find "${ROOTS[@]}" -maxdepth 5 -name properties.conf -type f 2>/dev/null | sort -u)
 }
 
 auto_patch_engageub_repo
 /usr/local/bin/ii-autosync.sh || true
 
+# Cấu hình Docker daemon: Bỏ key "dns" để tránh xung đột TUN DNS
 mkdir -p /etc/docker
 cat > /etc/docker/daemon.json <<EOF_DAEMON
 {
   "log-driver": "json-file",
   "log-opts": { "max-size": "2m", "max-file": "2" },
-  "dns": ["1.1.1.1", "8.8.8.8"],
   "registry-mirrors": ["https://mirror.gcr.io", "https://docker.m.daocloud.io"],
   "max-concurrent-downloads": ${CONCURRENT_DOWNLOADS},
   "live-restore": true,
@@ -648,7 +685,7 @@ EOF_DAEMON
 if has_systemd; then
   systemctl daemon-reload 2>/dev/null || true
   if systemctl is-active docker >/dev/null 2>&1; then
-    systemctl reload docker 2>/dev/null || true
+    systemctl restart docker 2>/dev/null || true
   else
     systemctl enable --now docker >/dev/null 2>&1 || true
   fi
@@ -675,11 +712,11 @@ echo "=== BAT DAU KHOI DONG TUAN TU ${TOTAL_NODES} CONTAINER ==="
 
 for cid in $(docker ps -aq 2>/dev/null); do
   cname=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null | sed 's|^/||')
-  if [[ "$cname" =~ ^tun|^dind ]]; then
+  if [[ "$cname" =~ ^tun|^hev|^socks5|^dind ]]; then
     running=$(docker inspect -f '{{.State.Running}}' "$cid" 2>/dev/null || echo "false")
     if [[ "$running" != "true" ]]; then
       docker start "$cid" >/dev/null 2>&1 || true
-      sleep 1
+      sleep 1.5
     fi
   fi
 done
@@ -695,12 +732,12 @@ for cid in $(docker ps -aq 2>/dev/null); do
 
   docker start "$cid" >/dev/null 2>&1 || true
 
-  if [[ "$cname" =~ wipter|ebesucher|adnade|depinext ]]; then
+  if [[ "$cname" =~ wipter|ebesucher|adnade|depinext|grass|gradient|nodepay|dawn|titan ]]; then
     sleep 8
   elif [[ "$cname" =~ honey|repocket|packetstream|packetshare|pawns|earnfm|earnapp ]]; then
     sleep 3.5
   else
-    sleep 0.8
+    sleep 1.0
   fi
 done
 echo "=== TAT CA ${TOTAL_NODES} NODE DA ONLINE AN TOAN ==="
@@ -1078,8 +1115,16 @@ EOF_DEEP
 chmod +x /usr/local/bin/ii-deep.sh
 ln -sf /usr/local/bin/ii-deep.sh /usr/bin/ii-deep 2>/dev/null || true
 
-cp -f /home/ubuntu/setup_oracle_cloud.sh /root/setup_oracle_cloud.sh 2>/dev/null || true
-cp -f /home/ubuntu/setup_oracle_cloud.sh /home/opc/setup_oracle_cloud.sh 2>/dev/null || true
+# Liên kết công cụ check-network-proxy nếu có
+if [[ -f "./check_network_proxy.sh" ]]; then
+  cp ./check_network_proxy.sh /usr/local/bin/check-proxy 2>/dev/null || true
+  chmod +x /usr/local/bin/check-proxy 2>/dev/null || true
+fi
+
+# Đồng bộ file cài đặt cho các user chuẩn OCI
+cp -f "$0" /root/setup_oracle_cloud.sh 2>/dev/null || true
+cp -f "$0" /home/opc/setup_oracle_cloud.sh 2>/dev/null || true
+cp -f "$0" /home/ubuntu/setup_oracle_cloud.sh 2>/dev/null || true
 
 echo "============================= SETUP XONG (100% AUTO-PILOT OCI MASTER 2026 - FULL ULTIMATE) =============================="
 /usr/local/bin/ii-status.sh || true
