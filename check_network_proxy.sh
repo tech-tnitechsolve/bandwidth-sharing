@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Script: check_network_proxy.sh (TURBO MULTI-THREAD & ZERO-EXTERNAL-PROBE EDITION)
-# Tối ưu siêu tốc: Chạy song song 10 Hubs (5 giây xong toàn bộ) - Chuẩn 100% IP-Auth
+# Script: check_network_proxy.sh (TURBO CLUSTER-AWARE & ZERO-EXTERNAL-PROBE EDITION)
+# - Tự động nhận diện Thư mục / Cluster chứa Container bị lỗi
+# - 100% PASSIVE: Không bao giờ gọi request qua Proxy IP-Authentication
 # ==============================================================================
 
 [ -f "$0" ] && chmod +x "$0" 2>/dev/null
@@ -29,7 +30,7 @@ USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
 clear
 echo -e "${CYAN}${BOLD}================================================================================${NC}"
 echo -e "${GREEN}${BOLD}   HE THONG DO LUONG DUONG TRUYEN & PROXY MASTER (GLOBAL & VN MATRIX)         ${NC}"
-echo -e "${YELLOW}   (Do 10 Hub: VN, US, CA, UK, AU, DE, NL, FR, SG - Soi Socket & Live Data)     ${NC}"
+echo -e "${YELLOW}   (Tu dong nhan dien Thu muc Cluster - Soi Socket & Live Data Thang Kernel)    ${NC}"
 echo -e "${CYAN}${BOLD}================================================================================${NC}\n"
 
 # 4. KIEM TRA VA CAI DAT CONG CU
@@ -94,9 +95,8 @@ printf "%-26s: %s (%s, %s)\n" "Nha mang / DataCenter" "$ISP_NAME" "$CITY" "$COUN
 printf "%-26s: %b\n" "IPv4 Forwarding (NAT)" "$IP_FW_STATUS"
 printf "%-26s: %s%%\n" "Ty le TCP Retransmission" "$GLOBAL_RETRANS_RATE"
 
-# 6. DO DO TRE HYBRID SONG SONG (PARALLEL MULTI-THREAD)
+# 6. DO DO TRE HYBRID (10 HUBS TOAN CAU)
 echo -e "\n${PURPLE}${BOLD}--- [2] DO DO TRE HYBRID (PING ICMP + TCP CONNECT BYPASS) ---${NC}"
-echo -e "${YELLOW}Dang do dong thoi 10 Hub toan cau trong 1-2 giay...${NC}"
 printf "${BOLD}%-26s | %-12s | %-12s | %-16s${NC}\n" "Khu vuc Hub Proxy" "Do tre (Ping)" "Giao thuc" "Trang thai"
 echo "---------------------------------------------------------------------------"
 
@@ -130,7 +130,6 @@ do_single_hybrid_ping() {
     fi
 }
 
-# Chạy song song cả 10 Hub cùng một lúc
 do_single_hybrid_ping 0 "0. VN (Noi dia - Viet Nam)" "203.162.4.191"  "http://mirror.bizflycloud.vn" &
 do_single_hybrid_ping 1 "1. Asia (Singapore)"        "139.162.23.4"   "http://speedtest.singapore.linode.com" &
 do_single_hybrid_ping 2 "2. US West (California)"   "104.223.10.2"   "http://speedtest.fremont.linode.com" &
@@ -148,9 +147,8 @@ for i in {0..9}; do
     [ -f "$TMP_DIR/ping_$i.txt" ] && cat "$TMP_DIR/ping_$i.txt"
 done
 
-# 7. DO BANG THONG THUC TE SONG SONG (PARALLEL MULTI-THREAD)
+# 7. DO BANG THONG THUC TE (DATA CENTER LOOKING GLASS)
 echo -e "\n${PURPLE}${BOLD}--- [3] DO BANG THONG THUC TE (DATA CENTER LOOKING GLASS) ---${NC}"
-echo -e "${YELLOW}Dang do dong thoi bang thong 10 Hubs (3-4 giay xong toan bo)...${NC}\n"
 printf "${BOLD}%-26s | %-16s | %-16s | %-12s${NC}\n" "Vi tri may chu Test" "Toc do Download" "Ha tang Server" "Trang thai"
 echo "----------------------------------------------------------------------------------"
 
@@ -190,7 +188,7 @@ do_single_speedtest 4 "4. CA (Canada - Toronto)" "http://speedtest.toronto1.lino
 do_single_speedtest 5 "5. UK (Anh - London)" "http://speedtest.london.linode.com/100MB-london.bin" "https://rbx.proof.ovh.net/files/100Mio.dat" "Linode London" "intl" &
 do_single_speedtest 6 "6. DE (Duc - Frankfurt)" "https://fsn1-speed.hetzner.com/100MB.bin" "http://speedtest.frankfurt.linode.com/100MB-frankfurt.bin" "Hetzner Germany" "intl" &
 do_single_speedtest 7 "7. NL (Ha Lan - Amsterdam)" "http://speedtest.ams2.digitalocean.com/100mb.test" "https://fsn1-speed.hetzner.com/100MB.bin" "DigitalOcean NL" "intl" &
-do_single_speedtest 8 "8. FR (Phap - Roubaix)" "https://rbx.proof.ovh.net/files/100Mio.dat" "https://fsn1-speed.hetzner.com/100MB.bin" "OVH France" "intl" &
+do_single_speedtest 8 "8. FR (Phap - Paris/RBX)" "https://ping.online.net/100Mo.dat" "https://rbx.proof.ovh.net/files/100Mio.dat" "Scaleway/Online" "intl" &
 do_single_speedtest 9 "9. AU (Uc - Sydney)" "https://syd.proof.ovh.net/files/100Mio.dat" "http://speedtest.syd1.linode.com/100MB-sydney.bin" "OVH Australia" "intl" &
 
 wait
@@ -199,8 +197,18 @@ for i in {0..9}; do
     [ -f "$TMP_DIR/speed_$i.txt" ] && cat "$TMP_DIR/speed_$i.txt"
 done
 
-# 8. DO LUU LUONG DOCKER (DOC TRUC TIEP TU KERNEL - SIEU TOC 0.2s)
-echo -e "\n${PURPLE}${BOLD}--- [4] DO DU LIEU CONTAINER & LUU LUONG TICH LUY (LIVE & LIFETIME) ---${NC}"
+# 8. DO LUU LUONG DOCKER & QUET MAP THU MUC CLUSTER
+echo -e "\n${PURPLE}${BOLD}--- [4] DO DU LIEU CONTAINER & THU MUC CLUSTER (LIVE & LIFETIME) ---${NC}"
+
+# Quét map tên container -> Tên Thư mục Cluster
+declare -A CTR_TO_FOLDER
+while IFS= read -r cn_file; do
+    folder_name=$(basename "$(dirname "$cn_file")")
+    while IFS= read -r cname; do
+        cname_clean=$(echo "$cname" | tr -d '[:space:]')
+        [ -n "$cname_clean" ] && CTR_TO_FOLDER["$cname_clean"]="$folder_name"
+    done < "$cn_file"
+done < <(find /root /home /opt /srv -maxdepth 4 -name containernames.txt -type f 2>/dev/null)
 
 DEAD_NODES_LIST=()
 IDLE_NODES_LIST=()
@@ -213,19 +221,24 @@ else
         echo -e "${YELLOW}[!] Hien khong co Container Docker nao dang chay.${NC}"
     else
         echo -e "${YELLOW}[*] Dang do dong loat toan bo container trong 2 giay...${NC}\n"
-        printf "${BOLD}%-20s | %-15s | %-12s | %-12s | %-12s | %-10s${NC}\n" \
-            "Container" "Image" "Live RX" "Live TX" "Tong Data" "Sockets"
-        echo "-----------------------------------------------------------------------------------------------"
+        printf "${BOLD}%-20s | %-24s | %-12s | %-12s | %-12s | %-10s${NC}\n" \
+            "Container" "Thu Muc / Cluster" "Live RX" "Live TX" "Tong Data" "Sockets"
+        echo "-------------------------------------------------------------------------------------------------------------------"
 
-        declare -A C_PIDS C_NAMES C_IMAGES C_RX1 C_TX1 C_TOTAL_FORMAT C_TOTAL_RAW_MB
+        declare -A C_PIDS C_NAMES C_IMAGES C_RX1 C_TX1 C_TOTAL_FORMAT C_TOTAL_RAW_MB C_FOLDERS
 
         T1=$(date +%s%N)
         for CID in $CONTAINERS; do
             CPID=$(docker inspect -f '{{.State.Pid}}' "$CID" 2>/dev/null)
             if [ -n "$CPID" ] && [ "$CPID" -gt 0 ] 2>/dev/null && [ -d "/proc/$CPID/net" ]; then
                 C_PIDS["$CID"]="$CPID"
-                C_NAMES["$CID"]=$(docker inspect -f '{{.Name}}' "$CID" 2>/dev/null | sed 's/^\///')
+                cname_raw=$(docker inspect -f '{{.Name}}' "$CID" 2>/dev/null | sed 's/^\///')
+                C_NAMES["$CID"]="$cname_raw"
                 C_IMAGES["$CID"]=$(docker inspect -f '{{.Config.Image}}' "$CID" 2>/dev/null | cut -d'/' -f2- | cut -c1-15)
+                
+                # Gán thư mục
+                f_name="${CTR_TO_FOLDER[$cname_raw]:-Unknown}"
+                C_FOLDERS["$CID"]="$f_name"
 
                 read -r r1 t1 < <(awk '
                     /tun0:|tap0:/ { rx += $2; tx += $10; has_tun = 1 }
@@ -278,14 +291,14 @@ else
             RX_KBS=$(awk -v v="$RX_VAL" 'BEGIN {printf "%.1f", v}')
             TX_KBS=$(awk -v v="$TX_VAL" 'BEGIN {printf "%.1f", v}')
 
-            # Đọc số lượng socket ESTABLISHED trực tiếp từ Host Kernel siêu tốc
             CONNS=$(awk 'NR>1 && $4=="01" {c++} END {print c+0}' "/proc/$CPID/net/tcp" 2>/dev/null || echo 0)
 
             TOTAL_STR="${C_TOTAL_FORMAT[$CID]}"
             TOTAL_MB="${C_TOTAL_RAW_MB[$CID]}"
+            FOLDER_STR="${C_FOLDERS[$CID]}"
 
-            printf "%-20s | %-15s | ${CYAN}%-8s KB/s${NC} | ${GREEN}%-8s KB/s${NC} | ${YELLOW}%-10s${NC} | %s conns\n" \
-                "${C_NAMES[$CID]:0:19}" "${C_IMAGES[$CID]:0:14}" "$RX_KBS" "$TX_KBS" "$TOTAL_STR" "$CONNS"
+            printf "%-20s | %-24s | ${CYAN}%-8s KB/s${NC} | ${GREEN}%-8s KB/s${NC} | ${YELLOW}%-10s${NC} | %s conns\n" \
+                "${C_NAMES[$CID]:0:19}" "${FOLDER_STR:0:23}" "$RX_KBS" "$TX_KBS" "$TOTAL_STR" "$CONNS"
 
             if (( $(echo "$RX_VAL <= 0.05" | bc -l 2>/dev/null || echo "0") )) && \
                (( $(echo "$TX_VAL <= 0.15" | bc -l 2>/dev/null || echo "0") )); then
@@ -293,28 +306,28 @@ else
                 CONTAINER_OUTBOUND_IP="Protected (IP-Auth)"
 
                 if (( $(echo "$TOTAL_MB >= 1.0" | bc -l 2>/dev/null || echo "0") )) || [ "$CONNS" -ge 1 ]; then
-                    IDLE_NODES_LIST+=("${C_NAMES[$CID]}|${C_IMAGES[$CID]}|$CONTAINER_OUTBOUND_IP|$CONNS|$TOTAL_STR")
+                    IDLE_NODES_LIST+=("${C_NAMES[$CID]}|$FOLDER_STR|${C_IMAGES[$CID]}|$CONTAINER_OUTBOUND_IP|$CONNS|$TOTAL_STR")
                 else
                     CONTAINER_OUTBOUND_IP="0 Socket / Mat ket noi"
-                    DEAD_NODES_LIST+=("${C_NAMES[$CID]}|${C_IMAGES[$CID]}|$CONTAINER_OUTBOUND_IP|$CONNS|$TOTAL_STR")
+                    DEAD_NODES_LIST+=("${C_NAMES[$CID]}|$FOLDER_STR|${C_IMAGES[$CID]}|$CONTAINER_OUTBOUND_IP|$CONNS|$TOTAL_STR")
                 fi
             fi
         done
     fi
 fi
 
-# 9. PHAN TICH DANH SACH NODE
+# 9. PHAN TICH DANH SACH NODE THEO THU MUC
 echo -e "\n${PURPLE}${BOLD}--- [5] DANH GIA TRANG THAI CHI TIET TUNG NODE (ANTI-MISTAKE AUDIT) ---${NC}"
 
 if [ ${#IDLE_NODES_LIST[@]} -gt 0 ]; then
     echo -e " 🟢 ${GREEN}${BOLD}NHOM NODE DANG CHO TASK (IDLE - DANG KIEM TIEN RAT TOT - KHONG XOA):${NC}"
-    printf "${BOLD}%-22s | %-14s | %-18s | %-14s | %-20s${NC}\n" \
-        "Container" "Platform" "IP Outbound" "Da Cay Duoc" "Khuyen Nghi"
-    echo "--------------------------------------------------------------------------------------------------"
+    printf "${BOLD}%-22s | %-24s | %-16s | %-14s | %-18s${NC}\n" \
+        "Container" "Thu Muc / Cluster" "IP Outbound" "Da Cay Duoc" "Khuyen Nghi"
+    echo "-------------------------------------------------------------------------------------------------------------------"
     for item in "${IDLE_NODES_LIST[@]}"; do
-        IFS="|" read -r i_name i_img i_ip i_conns i_total <<< "$item"
-        printf "%-22s | %-14s | ${CYAN}%-18s${NC} | ${YELLOW}%-12s${NC} | ${GREEN}%-20s${NC}\n" \
-            "${i_name:0:21}" "${i_img:0:13}" "$i_ip" "$i_total" "GIU NGUYEN (Kiem Tot)"
+        IFS="|" read -r i_name i_folder i_img i_ip i_conns i_total <<< "$item"
+        printf "%-22s | %-24s | ${CYAN}%-16s${NC} | ${YELLOW}%-12s${NC} | ${GREEN}%-18s${NC}\n" \
+            "${i_name:0:21}" "${i_folder:0:23}" "$i_ip" "$i_total" "GIU NGUYEN (Kiem Tot)"
     done
     echo ""
 fi
@@ -322,17 +335,17 @@ fi
 if [ ${#DEAD_NODES_LIST[@]} -eq 0 ]; then
     echo -e " 🟢 ${GREEN}${BOLD}HOAN HAO:${NC} Khong co bat ky node nao bi chet hay bi block tren he thong."
 else
-    echo -e " 🔴 ${RED}${BOLD}CANH BAO: CAC NODE CHET THAT SU (CAN KIEM TRA HOAC XOA):${NC}"
-    printf "${BOLD}%-22s | %-14s | %-18s | %-10s | %-20s${NC}\n" \
-        "Container Bi Loi" "Platform" "IP Outbound" "Da Cay" "Nguyen Nhan Nghi Van"
-    echo "--------------------------------------------------------------------------------------------------"
+    echo -e " 🔴 ${RED}${BOLD}CANH BAO: CAC NODE CHET THAT SU (CAN KIEM TRA PROXY TAI THU MUC):${NC}"
+    printf "${BOLD}%-22s | %-24s | %-18s | %-10s | %-20s${NC}\n" \
+        "Container Bi Loi" "Thu Muc Can Kiem Tra" "IP Outbound" "Da Cay" "Nguyen Nhan Nghi Van"
+    echo "-------------------------------------------------------------------------------------------------------------------"
     for item in "${DEAD_NODES_LIST[@]}"; do
-        IFS="|" read -r d_name d_img d_ip d_conns d_total <<< "$item"
+        IFS="|" read -r d_name d_folder d_img d_ip d_conns d_total <<< "$item"
         reason="App Block / 0 Task"
         [ "$d_ip" == "0 Socket / Mat ket noi" ] && reason="Proxy Dead / Mat Mang"
 
-        printf "%-22s | %-14s | ${YELLOW}%-18s${NC} | ${RED}%-8s${NC} | ${RED}%-20s${NC}\n" \
-            "${d_name:0:21}" "${d_img:0:13}" "$d_ip" "$d_total" "$reason"
+        printf "%-22s | ${CYAN}%-24s${NC} | ${YELLOW}%-18s${NC} | ${RED}%-8s${NC} | ${RED}%-20s${NC}\n" \
+            "${d_name:0:21}" "${d_folder:0:23}" "$d_ip" "$d_total" "$reason"
     done
 fi
 
