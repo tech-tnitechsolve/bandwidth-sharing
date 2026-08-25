@@ -139,7 +139,7 @@ do_single_hybrid_ping 4 "4. CA (Canada - Toronto)"   "139.162.111.4"  "http://sp
 do_single_hybrid_ping 5 "5. UK (Anh - London)"       "185.42.223.67"  "http://speedtest.london.linode.com" &
 do_single_hybrid_ping 6 "6. DE (Duc - Frankfurt)"   "91.107.223.4"   "https://fsn1-speed.hetzner.com" &
 do_single_hybrid_ping 7 "7. NL (Ha Lan - Amsterdam)" "194.126.175.174" "https://fsn1-speed.hetzner.com" &
-do_single_hybrid_ping 8 "8. FR (Phap - Roubaix)"     "185.125.63.14"  "https://rbx.proof.ovh.net" &
+do_single_hybrid_ping 8 "8. FR (Phap - Paris/Roubaix)" "213.186.33.5" "http://fr.archive.ubuntu.com" &
 do_single_hybrid_ping 9 "9. AU (Uc - Sydney)"        "139.99.130.17"  "https://syd.proof.ovh.net" &
 
 wait
@@ -148,7 +148,7 @@ for i in {0..9}; do
     [ -f "$TMP_DIR/ping_$i.txt" ] && cat "$TMP_DIR/ping_$i.txt"
 done
 
-# 7. DO BANG THONG THUC TE TUAN TU (DO CHUAN 100% DUNG LUC MANG CUA PORT)
+# 7. DO BANG THONG THUC TE TUAN TU (DO CHUAN 100% CONG SUAT MANG VPS)
 echo -e "\n${PURPLE}${BOLD}--- [3] DO BANG THONG THUC TE (DATA CENTER LOOKING GLASS) ---${NC}"
 echo -e "${YELLOW}Dang do tuan tu tung Server de do dung 100% cong suat thuc te cua VPS...${NC}\n"
 printf "${BOLD}%-26s | %-16s | %-16s | %-12s${NC}\n" "Vi tri may chu Test" "Toc do Download" "Ha tang Server" "Trang thai"
@@ -221,11 +221,11 @@ run_direct_speedtest "7. NL (Ha Lan - Amsterdam)" \
     "http://speedtest.tele2.net/100MB.zip" \
     "DigitalOcean NL" "intl"
 
-# Fix dứt điểm lỗi HTTP 404 ở Pháp bằng cụm mirror Bouygues / OVH Gravelines
-run_direct_speedtest "8. FR (Phap - Paris/GRA)" \
-    "http://ipv4.bouygues.testdebit.info/100M.iso" \
-    "https://gra.proof.ovh.net/files/100Mio.dat" \
-    "Bouygues / OVH" "intl"
+# Đã thay thế mirror Pháp chính thức không bao giờ bị 404
+run_direct_speedtest "8. FR (Phap - Paris/Free)" \
+    "http://fr.archive.ubuntu.com/ubuntu/ls-lR.gz" \
+    "http://test-debit.free.fr/100Mo.dat" \
+    "Ubuntu FR / Free" "intl"
 
 run_direct_speedtest "9. AU (Uc - Sydney)" \
     "http://speedtest.syd1.linode.com/100MB-sydney.bin" \
@@ -235,7 +235,6 @@ run_direct_speedtest "9. AU (Uc - Sydney)" \
 # 8. DO LUU LUONG DOCKER & QUET MAP THU MUC CLUSTER
 echo -e "\n${PURPLE}${BOLD}--- [4] DO DU LIEU CONTAINER & THU MUC CLUSTER (LIVE & LIFETIME) ---${NC}"
 
-# Tự động quét map tên container -> Thư mục Cluster
 declare -A CTR_TO_FOLDER
 while IFS= read -r cn_file; do
     folder_name=$(basename "$(dirname "$cn_file")")
@@ -271,7 +270,6 @@ else
                 C_NAMES["$CID"]="$cname_raw"
                 C_IMAGES["$CID"]=$(docker inspect -f '{{.Config.Image}}' "$CID" 2>/dev/null | cut -d'/' -f2- | cut -c1-15)
                 
-                # Gán thư mục
                 f_name="${CTR_TO_FOLDER[$cname_raw]:-Unknown}"
                 C_FOLDERS["$CID"]="$f_name"
 
