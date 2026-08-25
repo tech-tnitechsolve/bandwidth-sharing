@@ -1,19 +1,16 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Script: check_network_proxy.sh (AUTO-ELEVATE & AUTO-PERMISSION MASTER EDITION)
-# 100% Khong Dau - Tu dong cap quyen chmod +x & Tu dong nang quyen Sudo
+# Script: check_network_proxy.sh (TURBO MULTI-THREAD & ZERO-EXTERNAL-PROBE EDITION)
+# Tối ưu siêu tốc: Chạy song song 10 Hubs (5 giây xong toàn bộ) - Chuẩn 100% IP-Auth
 # ==============================================================================
 
-# 1. TU DONG CAP QUYEN THUC THI CHO CHINH FILE NAY
 [ -f "$0" ] && chmod +x "$0" 2>/dev/null
 
-# 2. TU DONG NANG QUYEN ROOT (SUDO) NEU CHAY BANG USER THUONG
 if [ "$EUID" -ne 0 ]; then
     echo -e "\033[1;33m[*] Dang tu dong chuyen sang quyen root (sudo)... \033[0m"
     exec sudo bash "$0" "$@"
 fi
 
-# 3. TU DONG TAO LENH GO NHANH 'check-proxy' TRONG HE THONG
 if [ ! -f /usr/local/bin/check-proxy ]; then
     cp "$0" /usr/local/bin/check-proxy 2>/dev/null && chmod +x /usr/local/bin/check-proxy 2>/dev/null
 fi
@@ -44,8 +41,6 @@ install_deps() {
         apt-get install -y -qq "${pkgs[@]}" >/dev/null 2>&1
     elif command -v yum &>/dev/null; then
         yum install -y -q "${pkgs[@]}" >/dev/null 2>&1
-    elif command -v dnf &>/dev/null; then
-        dnf install -y -q "${pkgs[@]}" >/dev/null 2>&1
     fi
 }
 
@@ -53,10 +48,7 @@ REQ_PKGS=()
 command -v jq &>/dev/null || REQ_PKGS+=("jq")
 command -v bc &>/dev/null || REQ_PKGS+=("bc")
 command -v curl &>/dev/null || REQ_PKGS+=("curl")
-command -v wget &>/dev/null || REQ_PKGS+=("wget")
 command -v ss &>/dev/null || REQ_PKGS+=("iproute2")
-command -v nsenter &>/dev/null || REQ_PKGS+=("util-linux")
-command -v ping &>/dev/null || REQ_PKGS+=("iputils-ping")
 
 [ ${#REQ_PKGS[@]} -gt 0 ] && install_deps "${REQ_PKGS[@]}"
 
@@ -69,23 +61,21 @@ LOCAL_SRC_IP=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{print $7; exit}')
 
 get_public_ipv4() {
     local ip=""
-    ip=$(curl -4 -s -A "$USER_AGENT" --interface "$PRIMARY_IFACE" --max-time 4 https://api.ipify.org 2>/dev/null)
-    [ -z "$ip" ] && ip=$(curl -4 -s -A "$USER_AGENT" --interface "$PRIMARY_IFACE" --max-time 4 https://icanhazip.com 2>/dev/null | tr -d '\n')
-    [ -z "$ip" ] && ip=$(curl -4 -s -A "$USER_AGENT" --interface "$PRIMARY_IFACE" --max-time 4 https://ifconfig.me 2>/dev/null)
-    [ -z "$ip" ] && ip=$(curl -4 -s -A "$USER_AGENT" --interface "$PRIMARY_IFACE" --max-time 4 https://checkip.amazonaws.com 2>/dev/null | tr -d '\n')
+    ip=$(curl -4 -s -A "$USER_AGENT" --interface "$PRIMARY_IFACE" --max-time 3 https://api.ipify.org 2>/dev/null)
+    [ -z "$ip" ] && ip=$(curl -4 -s -A "$USER_AGENT" --interface "$PRIMARY_IFACE" --max-time 3 https://icanhazip.com 2>/dev/null | tr -d '\n')
+    [ -z "$ip" ] && ip=$(curl -4 -s -A "$USER_AGENT" --interface "$PRIMARY_IFACE" --max-time 3 https://ifconfig.me 2>/dev/null)
     echo "$ip"
 }
 
 PUBLIC_IPV4=$(get_public_ipv4)
 
-IP_INFO=$(curl -4 -s -A "$USER_AGENT" --interface "$PRIMARY_IFACE" --max-time 5 "http://ip-api.com/json/${PUBLIC_IPV4}?fields=status,country,city,isp,org,countryCode" 2>/dev/null)
+IP_INFO=$(curl -4 -s -A "$USER_AGENT" --interface "$PRIMARY_IFACE" --max-time 4 "http://ip-api.com/json/${PUBLIC_IPV4}?fields=status,country,city,isp,org,countryCode" 2>/dev/null)
 ISP_NAME=$(echo "$IP_INFO" | grep -o '"org": *"[^"]*"' | head -1 | cut -d'"' -f4)
 [ -z "$ISP_NAME" ] && ISP_NAME=$(echo "$IP_INFO" | grep -o '"isp": *"[^"]*"' | head -1 | cut -d'"' -f4)
 COUNTRY=$(echo "$IP_INFO" | grep -o '"country": *"[^"]*"' | head -1 | cut -d'"' -f4)
 COUNTRY_CODE=$(echo "$IP_INFO" | grep -o '"countryCode": *"[^"]*"' | head -1 | cut -d'"' -f4)
 CITY=$(echo "$IP_INFO" | grep -o '"city": *"[^"]*"' | head -1 | cut -d'"' -f4)
 
-# Ty le TCP Retransmission
 TCP_OUT=$(awk '/Tcp:/ {print $11}' /proc/net/snmp 2>/dev/null | tail -1)
 TCP_RETRANS=$(awk '/Tcp:/ {print $13}' /proc/net/snmp 2>/dev/null | tail -1)
 GLOBAL_RETRANS_RATE="0.00"
@@ -104,136 +94,112 @@ printf "%-26s: %s (%s, %s)\n" "Nha mang / DataCenter" "$ISP_NAME" "$CITY" "$COUN
 printf "%-26s: %b\n" "IPv4 Forwarding (NAT)" "$IP_FW_STATUS"
 printf "%-26s: %s%%\n" "Ty le TCP Retransmission" "$GLOBAL_RETRANS_RATE"
 
-# 6. DO DO TRE HYBRID (10 HUBS TOAN CAU & NOI DIA)
+# 6. DO DO TRE HYBRID SONG SONG (PARALLEL MULTI-THREAD)
 echo -e "\n${PURPLE}${BOLD}--- [2] DO DO TRE HYBRID (PING ICMP + TCP CONNECT BYPASS) ---${NC}"
+echo -e "${YELLOW}Dang do dong thoi 10 Hub toan cau trong 1-2 giay...${NC}"
 printf "${BOLD}%-26s | %-12s | %-12s | %-16s${NC}\n" "Khu vuc Hub Proxy" "Do tre (Ping)" "Giao thuc" "Trang thai"
 echo "---------------------------------------------------------------------------"
 
-test_hybrid_ping() {
-    local region="$1"
-    local icmp_target="$2"
-    local http_target="$3"
+TMP_DIR="/tmp/bench_turbo_$(date +%s)"
+mkdir -p "$TMP_DIR"
+
+do_single_hybrid_ping() {
+    local idx="$1"
+    local region="$2"
+    local icmp_target="$3"
+    local http_target="$4"
 
     local ping_cmd
-    ping_cmd=$(ping -4 -I "$PRIMARY_IFACE" -c 4 -W 2 "$icmp_target" 2>/dev/null)
+    ping_cmd=$(ping -4 -I "$PRIMARY_IFACE" -c 2 -W 1 "$icmp_target" 2>/dev/null)
     local loss=$(echo "$ping_cmd" | grep -o '[0-9]*% packet loss' | cut -d'%' -f1)
 
     if [ -n "$loss" ] && [ "$loss" -lt 100 ]; then
         local raw_ping=$(echo "$ping_cmd" | tail -1 | awk -F '/' '{print $5}')
         [ -z "$raw_ping" ] && raw_ping=$(echo "$ping_cmd" | grep -o 'avg = [0-9.]*' | cut -d' ' -f3)
         local avg_ping=$(awk -v p="$raw_ping" 'BEGIN {printf "%.1f", p}' 2>/dev/null || echo "$raw_ping")
-        printf "%-26s | ${GREEN}%-9s ms${NC} | %-12s | %b\n" "$region" "$avg_ping" "ICMP Ping" "${GREEN}Mo (Sach)${NC}"
+        printf "%-26s | ${GREEN}%-9s ms${NC} | %-12s | %b\n" "$region" "$avg_ping" "ICMP Ping" "${GREEN}Mo (Sach)${NC}" > "$TMP_DIR/ping_$idx.txt"
         return
     fi
 
-    local start_s=$(curl -4 -s -A "$USER_AGENT" --interface "$PRIMARY_IFACE" -w "%{time_connect}" -o /dev/null --max-time 4 "$http_target" 2>/dev/null)
+    local start_s=$(curl -4 -s -A "$USER_AGENT" --interface "$PRIMARY_IFACE" -w "%{time_connect}" -o /dev/null --max-time 2 "$http_target" 2>/dev/null)
     if [ -n "$start_s" ] && (( $(echo "$start_s > 0" | bc -l 2>/dev/null || echo "0") )); then
         local formatted_ping=$(awk -v s="$start_s" 'BEGIN {printf "%.1f", s * 1000}' 2>/dev/null)
-        printf "%-26s | ${CYAN}%-9s ms${NC} | %-12s | %b\n" "$region" "$formatted_ping" "TCP/HTTP" "${YELLOW}Vuot chan ICMP${NC}"
+        printf "%-26s | ${CYAN}%-9s ms${NC} | %-12s | %b\n" "$region" "$formatted_ping" "TCP/HTTP" "${YELLOW}Vuot chan ICMP${NC}" > "$TMP_DIR/ping_$idx.txt"
     else
-        printf "%-26s | ${RED}%-9s ms${NC} | %-12s | %b\n" "$region" "Timeout" "Failed" "${RED}Mat ket noi${NC}"
+        printf "%-26s | ${RED}%-9s ms${NC} | %-12s | %b\n" "$region" "Timeout" "Failed" "${RED}Mat ket noi${NC}" > "$TMP_DIR/ping_$idx.txt"
     fi
 }
 
-test_hybrid_ping "0. VN (Noi dia - Viet Nam)" "203.162.4.191"  "http://mirror.bizflycloud.vn"
-test_hybrid_ping "1. Asia (Singapore)"        "139.162.23.4"   "http://speedtest.singapore.linode.com"
-test_hybrid_ping "2. US West (California)"   "104.223.10.2"   "http://speedtest.fremont.linode.com"
-test_hybrid_ping "3. US East (New Jersey)"   "208.77.17.2"    "http://speedtest.newark.linode.com"
-test_hybrid_ping "4. CA (Canada - Toronto)"   "139.162.111.4"  "http://speedtest.toronto1.linode.com"
-test_hybrid_ping "5. UK (Anh - London)"       "185.42.223.67"  "http://speedtest.london.linode.com"
-test_hybrid_ping "6. DE (Duc - Frankfurt)"   "91.107.223.4"   "https://fsn1-speed.hetzner.com"
-test_hybrid_ping "7. NL (Ha Lan - Amsterdam)" "194.126.175.174" "https://fsn1-speed.hetzner.com"
-test_hybrid_ping "8. FR (Phap - Roubaix)"     "185.125.63.14"  "https://rbx.proof.ovh.net"
-test_hybrid_ping "9. AU (Uc - Sydney)"        "139.99.130.17"  "https://syd.proof.ovh.net"
+# Chạy song song cả 10 Hub cùng một lúc
+do_single_hybrid_ping 0 "0. VN (Noi dia - Viet Nam)" "203.162.4.191"  "http://mirror.bizflycloud.vn" &
+do_single_hybrid_ping 1 "1. Asia (Singapore)"        "139.162.23.4"   "http://speedtest.singapore.linode.com" &
+do_single_hybrid_ping 2 "2. US West (California)"   "104.223.10.2"   "http://speedtest.fremont.linode.com" &
+do_single_hybrid_ping 3 "3. US East (New Jersey)"   "208.77.17.2"    "http://speedtest.newark.linode.com" &
+do_single_hybrid_ping 4 "4. CA (Canada - Toronto)"   "139.162.111.4"  "http://speedtest.toronto1.linode.com" &
+do_single_hybrid_ping 5 "5. UK (Anh - London)"       "185.42.223.67"  "http://speedtest.london.linode.com" &
+do_single_hybrid_ping 6 "6. DE (Duc - Frankfurt)"   "91.107.223.4"   "https://fsn1-speed.hetzner.com" &
+do_single_hybrid_ping 7 "7. NL (Ha Lan - Amsterdam)" "194.126.175.174" "https://fsn1-speed.hetzner.com" &
+do_single_hybrid_ping 8 "8. FR (Phap - Roubaix)"     "185.125.63.14"  "https://rbx.proof.ovh.net" &
+do_single_hybrid_ping 9 "9. AU (Uc - Sydney)"        "139.99.130.17"  "https://syd.proof.ovh.net" &
 
-# 7. DO BANG THONG THUC TE QUA DATA CENTER LOOKING GLASS (10 HUBS)
+wait
+
+for i in {0..9}; do
+    [ -f "$TMP_DIR/ping_$i.txt" ] && cat "$TMP_DIR/ping_$i.txt"
+done
+
+# 7. DO BANG THONG THUC TE SONG SONG (PARALLEL MULTI-THREAD)
 echo -e "\n${PURPLE}${BOLD}--- [3] DO BANG THONG THUC TE (DATA CENTER LOOKING GLASS) ---${NC}"
-echo -e "${YELLOW}Do thuc te qua port mang goc (Tu dong Follow 301/302 va chuyen link neu loi)...${NC}\n"
+echo -e "${YELLOW}Dang do dong thoi bang thong 10 Hubs (3-4 giay xong toan bo)...${NC}\n"
 printf "${BOLD}%-26s | %-16s | %-16s | %-12s${NC}\n" "Vi tri may chu Test" "Toc do Download" "Ha tang Server" "Trang thai"
 echo "----------------------------------------------------------------------------------"
 
-TMP_DIR="/tmp/bench_master_$(date +%s)"
-mkdir -p "$TMP_DIR"
-
-run_direct_speedtest() {
-    local target_name="$1"
-    local primary_url="$2"
-    local backup_url="$3"
-    local dc_name="$4"
-    local tag="$5"
+do_single_speedtest() {
+    local idx="$1"
+    local target_name="$2"
+    local primary_url="$3"
+    local backup_url="$4"
+    local dc_name="$5"
+    local tag="$6"
 
     local speed_raw
-    speed_raw=$(curl -4 -sL -A "$USER_AGENT" --interface "$PRIMARY_IFACE" -w "%{speed_download} %{http_code}" -o /dev/null --max-time 6 "$primary_url" 2>/dev/null)
+    speed_raw=$(curl -4 -sL -A "$USER_AGENT" --interface "$PRIMARY_IFACE" -w "%{speed_download} %{http_code}" -o /dev/null --max-time 4 "$primary_url" 2>/dev/null)
     local speed_bytes=$(echo "$speed_raw" | awk '{print $1}')
     local http_code=$(echo "$speed_raw" | awk '{print $2}')
 
     if [ "$http_code" != "200" ] || [ -z "$speed_bytes" ] || (( $(echo "$speed_bytes == 0" | bc -l 2>/dev/null || echo "1") )); then
-        speed_raw=$(curl -4 -sL -A "$USER_AGENT" --interface "$PRIMARY_IFACE" -w "%{speed_download} %{http_code}" -o /dev/null --max-time 6 "$backup_url" 2>/dev/null)
+        speed_raw=$(curl -4 -sL -A "$USER_AGENT" --interface "$PRIMARY_IFACE" -w "%{speed_download} %{http_code}" -o /dev/null --max-time 4 "$backup_url" 2>/dev/null)
         speed_bytes=$(echo "$speed_raw" | awk '{print $1}')
         http_code=$(echo "$speed_raw" | awk '{print $2}')
     fi
 
     if [ "$http_code" == "200" ] && [ -n "$speed_bytes" ] && (( $(echo "$speed_bytes > 0" | bc -l 2>/dev/null || echo "0") )); then
         local dl_mbps=$(awk -v b="$speed_bytes" 'BEGIN {printf "%.2f", (b * 8) / 1000000}')
-        printf "%-26s | ${GREEN}%-11s Mbps${NC} | %-16s | ${GREEN}%s${NC}\n" "$target_name" "$dl_mbps" "$dc_name" "OK (200)"
-        [ "$tag" == "intl" ] && echo "$dl_mbps" >> "$TMP_DIR/dl_intl.txt"
-        [ "$tag" == "vn" ] && echo "$dl_mbps" >> "$TMP_DIR/dl_vn.txt"
+        printf "%-26s | ${GREEN}%-11s Mbps${NC} | %-16s | ${GREEN}%s${NC}\n" "$target_name" "$dl_mbps" "$dc_name" "OK (200)" > "$TMP_DIR/speed_$idx.txt"
+        [ "$tag" == "vn" ] && echo "$dl_mbps" > "$TMP_DIR/dl_vn.txt"
     else
-        printf "%-26s | ${RED}%-11s Mbps${NC} | %-16s | ${RED}%s${NC}\n" "$target_name" "0.00" "$dc_name" "Loi HTTP $http_code"
+        printf "%-26s | ${RED}%-11s Mbps${NC} | %-16s | ${RED}%s${NC}\n" "$target_name" "0.00" "$dc_name" "Loi HTTP $http_code" > "$TMP_DIR/speed_$idx.txt"
     fi
 }
 
-run_direct_speedtest "0. VN (Noi dia - Viet Nam)" \
-    "http://mirror.bizflycloud.vn/ubuntu/ls-lR.gz" \
-    "http://mirrors.viettelidc.com.vn/ubuntu/ls-lR.gz" \
-    "BizFly / Viettel" "vn"
+do_single_speedtest 0 "0. VN (Noi dia - Viet Nam)" "http://mirror.bizflycloud.vn/ubuntu/ls-lR.gz" "http://mirrors.viettelidc.com.vn/ubuntu/ls-lR.gz" "BizFly / Viettel" "vn" &
+do_single_speedtest 1 "1. Asia (Singapore)" "http://speedtest.singapore.linode.com/100MB-singapore.bin" "https://sin-speed.hetzner.com/100MB.bin" "Linode SG" "intl" &
+do_single_speedtest 2 "2. US West (California)" "http://speedtest.fremont.linode.com/100MB-fremont.bin" "http://speedtest.sfo12.us.leaseweb.net/100mb.bin" "Linode USA" "intl" &
+do_single_speedtest 3 "3. US East (New Jersey)" "http://speedtest.newark.linode.com/100MB-newark.bin" "https://ash-speed.hetzner.com/100MB.bin" "Linode USA" "intl" &
+do_single_speedtest 4 "4. CA (Canada - Toronto)" "http://speedtest.toronto1.linode.com/100MB-toronto.bin" "https://bhs.proof.ovh.net/files/100Mio.dat" "Linode CA / OVH" "intl" &
+do_single_speedtest 5 "5. UK (Anh - London)" "http://speedtest.london.linode.com/100MB-london.bin" "https://rbx.proof.ovh.net/files/100Mio.dat" "Linode London" "intl" &
+do_single_speedtest 6 "6. DE (Duc - Frankfurt)" "https://fsn1-speed.hetzner.com/100MB.bin" "http://speedtest.frankfurt.linode.com/100MB-frankfurt.bin" "Hetzner Germany" "intl" &
+do_single_speedtest 7 "7. NL (Ha Lan - Amsterdam)" "http://speedtest.ams2.digitalocean.com/100mb.test" "https://fsn1-speed.hetzner.com/100MB.bin" "DigitalOcean NL" "intl" &
+do_single_speedtest 8 "8. FR (Phap - Roubaix)" "https://rbx.proof.ovh.net/files/100Mio.dat" "https://fsn1-speed.hetzner.com/100MB.bin" "OVH France" "intl" &
+do_single_speedtest 9 "9. AU (Uc - Sydney)" "https://syd.proof.ovh.net/files/100Mio.dat" "http://speedtest.syd1.linode.com/100MB-sydney.bin" "OVH Australia" "intl" &
 
-run_direct_speedtest "1. Asia (Singapore)" \
-    "http://speedtest.singapore.linode.com/100MB-singapore.bin" \
-    "https://sin-speed.hetzner.com/100MB.bin" \
-    "Linode SG" "intl"
+wait
 
-run_direct_speedtest "2. US West (California)" \
-    "http://speedtest.fremont.linode.com/100MB-fremont.bin" \
-    "http://speedtest.sfo12.us.leaseweb.net/100mb.bin" \
-    "Linode USA" "intl"
+for i in {0..9}; do
+    [ -f "$TMP_DIR/speed_$i.txt" ] && cat "$TMP_DIR/speed_$i.txt"
+done
 
-run_direct_speedtest "3. US East (New Jersey)" \
-    "http://speedtest.newark.linode.com/100MB-newark.bin" \
-    "https://ash-speed.hetzner.com/100MB.bin" \
-    "Linode USA" "intl"
-
-run_direct_speedtest "4. CA (Canada - Toronto)" \
-    "http://speedtest.toronto1.linode.com/100MB-toronto.bin" \
-    "https://bhs.proof.ovh.net/files/100Mio.dat" \
-    "Linode CA / OVH" "intl"
-
-run_direct_speedtest "5. UK (Anh - London)" \
-    "http://speedtest.london.linode.com/100MB-london.bin" \
-    "https://rbx.proof.ovh.net/files/100Mio.dat" \
-    "Linode London" "intl"
-
-run_direct_speedtest "6. DE (Duc - Frankfurt)" \
-    "https://fsn1-speed.hetzner.com/100MB.bin" \
-    "http://speedtest.frankfurt.linode.com/100MB-frankfurt.bin" \
-    "Hetzner Germany" "intl"
-
-run_direct_speedtest "7. NL (Ha Lan - Amsterdam)" \
-    "http://speedtest.ams2.digitalocean.com/100mb.test" \
-    "https://fsn1-speed.hetzner.com/100MB.bin" \
-    "DigitalOcean NL" "intl"
-
-run_direct_speedtest "8. FR (Phap - Roubaix)" \
-    "https://rbx.proof.ovh.net/files/100Mio.dat" \
-    "https://fsn1-speed.hetzner.com/100MB.bin" \
-    "OVH France" "intl"
-
-run_direct_speedtest "9. AU (Uc - Sydney)" \
-    "https://syd.proof.ovh.net/files/100Mio.dat" \
-    "http://speedtest.syd1.linode.com/100MB-sydney.bin" \
-    "OVH Australia" "intl"
-
-# 8. DO LUU LUONG DOCKER (DO CHINH XAC NANO-GIAY & FORMAT GB TU DONG)
+# 8. DO LUU LUONG DOCKER (DOC TRUC TIEP TU KERNEL - SIEU TOC 0.2s)
 echo -e "\n${PURPLE}${BOLD}--- [4] DO DU LIEU CONTAINER & LUU LUONG TICH LUY (LIVE & LIFETIME) ---${NC}"
 
 DEAD_NODES_LIST=()
@@ -242,7 +208,7 @@ IDLE_NODES_LIST=()
 if ! command -v docker &>/dev/null || ! systemctl is-active --quiet docker; then
     echo -e "${YELLOW}[!] Docker chua duoc cai dat hoac chua khoi chay tren Host.${NC}"
 else
-    CONTAINERS=$(docker ps -q)
+    CONTAINERS=$(docker ps -q 2>/dev/null || true)
     if [ -z "$CONTAINERS" ]; then
         echo -e "${YELLOW}[!] Hien khong co Container Docker nao dang chay.${NC}"
     else
@@ -256,16 +222,24 @@ else
         T1=$(date +%s%N)
         for CID in $CONTAINERS; do
             CPID=$(docker inspect -f '{{.State.Pid}}' "$CID" 2>/dev/null)
-            if [ -n "$CPID" ] && [ "$CPID" -gt 0 ] 2>/dev/null; then
+            if [ -n "$CPID" ] && [ "$CPID" -gt 0 ] 2>/dev/null && [ -d "/proc/$CPID/net" ]; then
                 C_PIDS["$CID"]="$CPID"
-                C_NAMES["$CID"]=$(docker inspect -f '{{.Name}}' "$CID" | sed 's/^\///')
-                C_IMAGES["$CID"]=$(docker inspect -f '{{.Config.Image}}' "$CID" | cut -d'/' -f2- | cut -c1-15)
+                C_NAMES["$CID"]=$(docker inspect -f '{{.Name}}' "$CID" 2>/dev/null | sed 's/^\///')
+                C_IMAGES["$CID"]=$(docker inspect -f '{{.Config.Image}}' "$CID" 2>/dev/null | cut -d'/' -f2- | cut -c1-15)
 
-                STAT1=$(timeout 1 nsenter -t "$CPID" -n awk 'NR>2 && $1 !~ /lo:/ {rx+=$2; tx+=$10} END {print rx+0, tx+0}' /proc/net/dev 2>/dev/null || echo "0 0")
-                C_RX1["$CID"]=$(echo "$STAT1" | awk '{print $1}')
-                C_TX1["$CID"]=$(echo "$STAT1" | awk '{print $2}')
+                read -r r1 t1 < <(awk '
+                    /tun0:|tap0:/ { rx += $2; tx += $10; has_tun = 1 }
+                    /eth0:/       { eth_rx += $2; eth_tx += $10 }
+                    END {
+                        if (has_tun == 1) { print rx+0, tx+0 }
+                        else { print eth_rx+0, eth_tx+0 }
+                    }
+                ' "/proc/$CPID/net/dev" 2>/dev/null || echo "0 0")
+                
+                C_RX1["$CID"]=$r1
+                C_TX1["$CID"]=$t1
 
-                TOT_BYTES=$(( ${C_RX1["$CID"]} + ${C_TX1["$CID"]} ))
+                TOT_BYTES=$(( r1 + t1 ))
                 C_TOTAL_RAW_MB["$CID"]=$(awk -v b="$TOT_BYTES" 'BEGIN {printf "%.2f", b / 1048576}')
 
                 if (( $(echo "$TOT_BYTES >= 1048576000" | bc -l 2>/dev/null || echo "0") )); then
@@ -283,12 +257,18 @@ else
 
         for CID in "${!C_PIDS[@]}"; do
             CPID="${C_PIDS[$CID]}"
-            STAT2=$(timeout 1 nsenter -t "$CPID" -n awk 'NR>2 && $1 !~ /lo:/ {rx+=$2; tx+=$10} END {print rx+0, tx+0}' /proc/net/dev 2>/dev/null || echo "0 0")
-            RX2=$(echo "$STAT2" | awk '{print $1}')
-            TX2=$(echo "$STAT2" | awk '{print $2}')
+            
+            read -r r2 t2 < <(awk '
+                /tun0:|tap0:/ { rx += $2; tx += $10; has_tun = 1 }
+                /eth0:/       { eth_rx += $2; eth_tx += $10 }
+                END {
+                    if (has_tun == 1) { print rx+0, tx+0 }
+                    else { print eth_rx+0, eth_tx+0 }
+                }
+            ' "/proc/$CPID/net/dev" 2>/dev/null || echo "0 0")
 
-            DIFF_RX=$(( RX2 - C_RX1["$CID"] ))
-            DIFF_TX=$(( TX2 - C_TX1["$CID"] ))
+            DIFF_RX=$(( r2 - C_RX1["$CID"] ))
+            DIFF_TX=$(( t2 - C_TX1["$CID"] ))
             [ "$DIFF_RX" -lt 0 ] && DIFF_RX=0
             [ "$DIFF_TX" -lt 0 ] && DIFF_TX=0
 
@@ -298,9 +278,8 @@ else
             RX_KBS=$(awk -v v="$RX_VAL" 'BEGIN {printf "%.1f", v}')
             TX_KBS=$(awk -v v="$TX_VAL" 'BEGIN {printf "%.1f", v}')
 
-            CONNS=$(timeout 1 nsenter -t "$CPID" -n ss -t state established 2>/dev/null | wc -l)
-            CONNS=$(( CONNS - 1 ))
-            [ "$CONNS" -lt 0 ] && CONNS=0
+            # Đọc số lượng socket ESTABLISHED trực tiếp từ Host Kernel siêu tốc
+            CONNS=$(awk 'NR>1 && $4=="01" {c++} END {print c+0}' "/proc/$CPID/net/tcp" 2>/dev/null || echo 0)
 
             TOTAL_STR="${C_TOTAL_FORMAT[$CID]}"
             TOTAL_MB="${C_TOTAL_RAW_MB[$CID]}"
@@ -311,7 +290,6 @@ else
             if (( $(echo "$RX_VAL <= 0.05" | bc -l 2>/dev/null || echo "0") )) && \
                (( $(echo "$TX_VAL <= 0.15" | bc -l 2>/dev/null || echo "0") )); then
                 
-                # PASSIVE CHECK 100%: Tuyệt đối không gọi curl ra ngoài qua Proxy để bảo vệ IP-Auth
                 CONTAINER_OUTBOUND_IP="Protected (IP-Auth)"
 
                 if (( $(echo "$TOTAL_MB >= 1.0" | bc -l 2>/dev/null || echo "0") )) || [ "$CONNS" -ge 1 ]; then
@@ -325,7 +303,7 @@ else
     fi
 fi
 
-# 9. PHAN TICH DANH SACH NODE (BAO VE NODE IDLE & CHI RO NODE CHET)
+# 9. PHAN TICH DANH SACH NODE
 echo -e "\n${PURPLE}${BOLD}--- [5] DANH GIA TRANG THAI CHI TIET TUNG NODE (ANTI-MISTAKE AUDIT) ---${NC}"
 
 if [ ${#IDLE_NODES_LIST[@]} -gt 0 ]; then
@@ -358,7 +336,7 @@ else
     done
 fi
 
-# 10. PHAN QUYET KET QUA TONG THE (THUAT TOAN NHAN DIEN VI TRI)
+# 10. PHAN QUYET KET QUA TONG THE
 echo -e "\n${CYAN}${BOLD}================================================================================${NC}"
 echo -e "${GREEN}${BOLD}                         KET LUAN & PHAN TICH TINH TRANG                        ${NC}"
 echo -e "${CYAN}${BOLD}================================================================================${NC}"
