@@ -1,13 +1,8 @@
-1. Lỗi nhân honegain: 
-
-curl -fsSL -o libgcc.apk https://dl-cdn.alpinelinux.org/alpine/v3.18/main/x86_64/libgcc-12.2.1_git20220924-r10.apk 2>/dev/null || true; curl -fsSL -o gcompat.apk https://dl-cdn.alpinelinux.org/alpine/v3.18/main/x86_64/gcompat-1.0.0-r4.apk 2>/dev/null || true; sed -i 's/\r$//' *.sh *.conf *.txt 2>/dev/null || true; chmod +x *.sh 2>/dev/null || true; echo -e "\n==================== [KIEM TOAN THU MUC TRUOC KHI KHOI DONG] ===================="; for f in internetIncome.sh properties.conf proxies.txt generateDeviceIds.sh restart.sh updateProxies.sh libgcc.apk gcompat.apk; do if [[ -f "$f" ]]; then echo -e "  \033[1;32m[OK CO SAN]\033[0m $f ($(stat -c%s "$f" 2>/dev/null || stat -f%z "$f") bytes)"; else echo -e "  \033[1;31m[XX THIEU]\033[0m  $f"; fi; done; echo "=================================================================================="
-
-`````````````````````````````````````````````````````````````````````
-2. Sửa trên Source Gốc Nhánh Test Internetincome:
+1. Sửa trên Source Gốc Nhánh Test Internetincome:
 curl -fLo libgcc.apk https://dl-cdn.alpinelinux.org/alpine/v3.20/main/x86_64/libgcc-13.2.1_git20240309-r1.apk && curl -fLo gcompat.apk https://dl-cdn.alpinelinux.org/alpine/v3.20/main/x86_64/gcompat-1.1.0-r4.apk && dir libgcc.apk gcompat.apk
 
 `````````````````````````````````````````````````````````````````````
-3. Fix properties.conf (tránh xung đột setup)
+2. Fix properties.conf (tránh xung đột setup)
 
 ######################### InternetIncome TEST — KHỚP 4 SETUP HOST #########################
 # Giữ nguyên token/email của bạn. Toàn bộ thông số Mạng/DNS/Hiệu năng đã được chuẩn hóa.
