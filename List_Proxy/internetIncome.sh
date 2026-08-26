@@ -863,14 +863,14 @@ start_containers() {
             create_dnscrypt_config
           fi
         else
-          if [[ ! -f $hickory_dns_apk_file && "$proxy" == socks5://* ]]; then
+          if [[ ! -f $libgcc_apk_file || ! -f $hickory_dns_apk_file ]]; then
             download_hickory_dns
           fi
           if [ ! -f $hickory_dns_config_file ]; then
             create_hickory_dns_config
           fi
         fi
-        if [[ ! -f $iptables_apk_file && "$proxy" == socks5://* ]]; then
+        if [[ ! -f $iptables_apk_file || ! -f $libmnl_apk_file || ! -f $libnftnl_apk_file ]]; then
           download_iptables
         fi
         if [[ "$proxy" == socks5://* ]]; then
