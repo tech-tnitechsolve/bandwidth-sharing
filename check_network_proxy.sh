@@ -3,7 +3,9 @@
 # Script: check_network_proxy.sh (SEQUENTIAL ACCURATE BENCHMARK & CLUSTER AWARE)
 # - Đo tuần tự 10 Hub Looking Glass để đo chuẩn xác 100% công suất thực tế
 # - Tự động nhận diện Thư mục / Cluster chứa Container
-# - 100% PASSIVE: Tuyệt đối không gọi request qua Proxy IP-Authentication
+# - 100% PASSIVE: Tuyệt đối không gọi request ra ngoài qua Proxy (IP-Auth Safe)
+# - Hiển thị FULL 100% chuỗi Proxy gốc (User:Pass@Host:Port) không bị cắt ngắn
+# - Chẩn đoán chi tiết nguyên nhân lỗi (NCC chặn / Port đóng / Auth sai / App idle)
 # ==============================================================================
 
 [ -f "$0" ] && chmod +x "$0" 2>/dev/null
@@ -29,10 +31,10 @@ NC='\033[0m'
 USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
 
 clear
-echo -e "${CYAN}${BOLD}================================================================================${NC}"
-echo -e "${GREEN}${BOLD}   HE THONG DO LUONG DUONG TRUYEN & PROXY MASTER (GLOBAL & VN MATRIX)         ${NC}"
-echo -e "${YELLOW}   (Do Thuc Te 10 Hub - Nhan Dien Thu Muc Cluster - Soi Live Data Kernel)      ${NC}"
-echo -e "${CYAN}${BOLD}================================================================================${NC}\n"
+echo -e "${CYAN}${BOLD}======================================================================================================================================${NC}"
+echo -e "${GREEN}${BOLD}                             HE THONG DO LUONG DUONG TRUYEN & PROXY MASTER (GLOBAL & VN MATRIX)                                      ${NC}"
+echo -e "${YELLOW}                             (Do Thuc Te 10 Hub - Nhan Dien Thu Muc Cluster - Soi Live Data Kernel)                                  ${NC}"
+echo -e "${CYAN}${BOLD}======================================================================================================================================${NC}\n"
 
 # 4. KIEM TRA VA CAI DAT CONG CU
 echo -e "${BLUE}[*] Dang kiem tra cong cu he thong...${NC}"
@@ -221,7 +223,6 @@ run_direct_speedtest "7. NL (Ha Lan - Amsterdam)" \
     "http://speedtest.tele2.net/100MB.zip" \
     "DigitalOcean NL" "intl"
 
-# Đã thay thế mirror Pháp chính thức không bao giờ bị 404
 run_direct_speedtest "8. FR (Phap - Paris/Free)" \
     "http://fr.archive.ubuntu.com/ubuntu/ls-lR.gz" \
     "http://test-debit.free.fr/100Mo.dat" \
@@ -235,14 +236,172 @@ run_direct_speedtest "9. AU (Uc - Sydney)" \
 # 8. DO LUU LUONG DOCKER & QUET MAP THU MUC CLUSTER
 echo -e "\n${PURPLE}${BOLD}--- [4] DO DU LIEU CONTAINER & THU MUC CLUSTER (LIVE & LIFETIME) ---${NC}"
 
-declare -A CTR_TO_FOLDER
+declare -A CTR_TO_FOLDER CTR_TO_DIR CTR_TO_LINE_IDX
 while IFS= read -r cn_file; do
-    folder_name=$(basename "$(dirname "$cn_file")")
+    folder_dir="$(dirname "$cn_file")"
+    folder_name=$(basename "$folder_dir")
+    c_idx=0
     while IFS= read -r cname; do
         cname_clean=$(echo "$cname" | tr -d '[:space:]')
-        [ -n "$cname_clean" ] && CTR_TO_FOLDER["$cname_clean"]="$folder_name"
+        if [ -n "$cname_clean" ]; then
+            CTR_TO_FOLDER["$cname_clean"]="$folder_name"
+            CTR_TO_DIR["$cname_clean"]="$folder_dir"
+            CTR_TO_LINE_IDX["$cname_clean"]="$c_idx"
+            ((c_idx++))
+        fi
     done < "$cn_file"
 done < <(find /root /home /opt /srv -maxdepth 4 -name containernames.txt -type f 2>/dev/null)
+
+# HAM 1: TRICH XUAT DONG PROXY PASSIVE (KHONG GOI EXTERNAL REQUEST - LAY FULL CHUOI GOC)
+get_container_proxy_line() {
+    local cid="$1"
+    local cname="$2"
+    local fdir="$3"
+    local cpid="$4"
+    local proxy_res=""
+
+    # 1. Kiem tra Network Mode (VD: container:tunXXXX)
+    local net_mode
+    net_mode=$(docker inspect -f '{{.HostConfig.NetworkMode}}' "$cid" 2>/dev/null)
+    local target_cid="$cid"
+    local target_pid="$cpid"
+    local target_name="$cname"
+
+    if [[ "$net_mode" == container:* ]]; then
+        local parent_ref="${net_mode#container:}"
+        local parent_cid
+        parent_cid=$(docker inspect -f '{{.Id}}' "$parent_ref" 2>/dev/null)
+        if [ -n "$parent_cid" ]; then
+            target_cid="$parent_cid"
+            target_name=$(docker inspect -f '{{.Name}}' "$target_cid" 2>/dev/null | sed 's/^\///')
+            target_pid=$(docker inspect -f '{{.State.Pid}}' "$target_cid" 2>/dev/null)
+        fi
+    fi
+
+    # 2. Doc tham so tu /proc/$target_pid/cmdline
+    if [ -n "$target_pid" ] && [ -f "/proc/$target_pid/cmdline" ]; then
+        local raw_cmd
+        raw_cmd=$(tr '\0' ' ' < "/proc/$target_pid/cmdline" 2>/dev/null)
+        proxy_res=$(echo "$raw_cmd" | grep -oE '(socks5|socks4|http|https)://[^ "]+' | head -1)
+        [ -z "$proxy_res" ] && proxy_res=$(echo "$raw_cmd" | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}:[0-9]{2,5}' | head -1)
+    fi
+
+    # 3. Kiem tra bien moi truong Docker Config
+    if [ -z "$proxy_res" ]; then
+        local envs
+        envs=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$target_cid" 2>/dev/null)
+        proxy_res=$(echo "$envs" | grep -iE '^(PROXY|HTTP_PROXY|HTTPS_PROXY|ALL_PROXY|SOCKS5_PROXY|SOCKS_PROXY|PROXY_URL|EXTRA_COMMANDS)=' | head -1 | cut -d'=' -f2-)
+        [ -z "$proxy_res" ] && proxy_res=$(docker inspect -f '{{range .Config.Cmd}}{{println .}}{{end}}' "$target_cid" 2>/dev/null | grep -oE '(socks5|socks4|http|https)://[^ "]+' | head -1)
+        [ -z "$proxy_res" ] && proxy_res=$(docker inspect -f '{{range .Config.Cmd}}{{println .}}{{end}}' "$target_cid" 2>/dev/null | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}:[0-9]{2,5}' | head -1)
+    fi
+
+    # 4. Map chinh xac tu file proxies.txt trong thu muc Cluster (LAY NGUYEN VAN FULL CHUOI DA ADD)
+    if [ -n "$fdir" ] && [ -d "$fdir" ]; then
+        for pfile in "$fdir/proxies.txt" "$fdir/proxy.txt" "$fdir/socks5.txt" "$fdir/http.txt" "$fdir/vpns.txt"; do
+            if [ -f "$pfile" ]; then
+                # Neu da co proxy_res tu cmdline/docker, tim dong tuong ung trong proxies.txt de lay nguyen ban full
+                if [ -n "$proxy_res" ]; then
+                    local p_sub
+                    p_sub=$(echo "$proxy_res" | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -1)
+                    if [ -n "$p_sub" ]; then
+                        local matched_line
+                        matched_line=$(grep "$p_sub" "$pfile" 2>/dev/null | head -1 | tr -d '\r\n')
+                        if [ -n "$matched_line" ]; then
+                            proxy_res="$matched_line"
+                            break
+                        fi
+                    fi
+                fi
+
+                # Neu van chua co, map theo index dong
+                if [ -z "$proxy_res" ]; then
+                    local idx=""
+                    idx=$(echo "$target_name" | grep -oE '[0-9]+$' | tail -1)
+                    if [ -n "$idx" ] && [ "$idx" -gt 100 ]; then
+                        idx="${target_name: -1}"
+                    fi
+                    [ -z "$idx" ] && idx="${CTR_TO_LINE_IDX[$cname]}"
+
+                    if [ -n "$idx" ]; then
+                        local line_num=$(( idx + 1 ))
+                        local line_content
+                        line_content=$(sed -n "${line_num}p" "$pfile" 2>/dev/null | tr -d '\r\n')
+                        if [ -n "$line_content" ]; then
+                            proxy_res="$line_content"
+                            break
+                        fi
+                    fi
+
+                    local total_lines
+                    total_lines=$(grep -cve '^\s*$' "$pfile" 2>/dev/null || echo 0)
+                    if [ "$total_lines" -eq 1 ]; then
+                        proxy_res=$(grep -ve '^\s*$' "$pfile" 2>/dev/null | head -1 | tr -d '\r\n')
+                        break
+                    fi
+                fi
+            fi
+        done
+    fi
+
+    [ -z "$proxy_res" ] && proxy_res="Direct (Host Network)"
+    echo "$proxy_res"
+}
+
+# HAM 2: CHAN DOAN NGUYEN NHAN LOI PASSIVE 100% (TU HOST VPS)
+diagnose_proxy_issue() {
+    local proxy_raw="$1"
+    local conns="$2"
+    local total_mb="$3"
+
+    if [ "$proxy_raw" == "Direct (Host Network)" ]; then
+        if [ "$conns" -eq 0 ]; then
+            echo "Host Net (Chua ket noi)"
+        else
+            echo "Direct Host (Dang cho task)"
+        fi
+        return
+    fi
+
+    # Parse Host & Port tu chuoi proxy
+    local clean_str
+    clean_str=$(echo "$proxy_raw" | sed -E 's|^[a-zA-Z0-9]+://||' | sed -E 's|^[^@]+@||')
+    local p_host
+    p_host=$(echo "$clean_str" | cut -d: -f1 | tr -d '[:space:]')
+    local p_port
+    p_port=$(echo "$clean_str" | cut -d: -f2 | cut -d/ -f1 | tr -d '[:space:]')
+
+    if [ -z "$p_host" ] || [ -z "$p_port" ] || ! [[ "$p_port" =~ ^[0-9]+$ ]]; then
+        echo "Loi Dinh Dang Proxy"
+        return
+    fi
+
+    # Kiem tra TCP Port mo tu VPS den Proxy (PASSIVE 100% - KHONG gui data qua proxy)
+    local port_open=0
+    if timeout 1.5 bash -c "cat < /dev/null > /dev/tcp/$p_host/$p_port" 2>/dev/null; then
+        port_open=1
+    elif curl -4 -s --interface "$PRIMARY_IFACE" --connect-timeout 2 "telnet://$p_host:$p_port" </dev/null &>/dev/null; then
+        port_open=1
+    fi
+
+    if [ "$port_open" -eq 1 ]; then
+        if [ "$conns" -eq 0 ]; then
+            if (( $(echo "$total_mb < 0.1" | bc -l 2>/dev/null || echo "1") )); then
+                echo "Loi Tun2socks / Auth Sai"
+            else
+                echo "Tunnel Mat Ket Noi"
+            fi
+        else
+            echo "App Block / 0 Task (Proxy OK)"
+        fi
+    else
+        # Kiem tra xem Server Proxy co phan hoi Ping khong de phan biet Dead Server hay Port Closed
+        if ping -4 -I "$PRIMARY_IFACE" -c 1 -W 1 "$p_host" &>/dev/null; then
+            echo "Port Proxy Dong / Refused"
+        else
+            echo "Proxy Dead / NCC Block VPS"
+        fi
+    fi
+}
 
 DEAD_NODES_LIST=()
 IDLE_NODES_LIST=()
@@ -259,7 +418,7 @@ else
             "Container" "Thu Muc / Cluster" "Live RX" "Live TX" "Tong Data" "Sockets"
         echo "-------------------------------------------------------------------------------------------------------------------"
 
-        declare -A C_PIDS C_NAMES C_IMAGES C_RX1 C_TX1 C_TOTAL_FORMAT C_TOTAL_RAW_MB C_FOLDERS
+        declare -A C_PIDS C_NAMES C_IMAGES C_RX1 C_TX1 C_TOTAL_FORMAT C_TOTAL_RAW_MB C_FOLDERS C_PROXIES
 
         T1=$(date +%s%N)
         for CID in $CONTAINERS; do
@@ -271,7 +430,12 @@ else
                 C_IMAGES["$CID"]=$(docker inspect -f '{{.Config.Image}}' "$CID" 2>/dev/null | cut -d'/' -f2- | cut -c1-15)
                 
                 f_name="${CTR_TO_FOLDER[$cname_raw]:-Unknown}"
+                f_dir="${CTR_TO_DIR[$cname_raw]:-}"
                 C_FOLDERS["$CID"]="$f_name"
+
+                # Trich xuat dong proxy da duoc add (FULL chuoi)
+                CTR_PROXY=$(get_container_proxy_line "$CID" "$cname_raw" "$f_dir" "$CPID")
+                C_PROXIES["$CID"]="$CTR_PROXY"
 
                 read -r r1 t1 < <(awk '
                     /tun0:|tap0:/ { rx += $2; tx += $10; has_tun = 1 }
@@ -336,31 +500,30 @@ else
             if (( $(echo "$RX_VAL <= 0.05" | bc -l 2>/dev/null || echo "0") )) && \
                (( $(echo "$TX_VAL <= 0.15" | bc -l 2>/dev/null || echo "0") )); then
                 
-                CONTAINER_OUTBOUND_IP="Protected (IP-Auth)"
+                PROXY_LINE="${C_PROXIES[$CID]}"
 
                 if (( $(echo "$TOTAL_MB >= 1.0" | bc -l 2>/dev/null || echo "0") )) || [ "$CONNS" -ge 1 ]; then
-                    IDLE_NODES_LIST+=("${C_NAMES[$CID]}|$FOLDER_STR|${C_IMAGES[$CID]}|$CONTAINER_OUTBOUND_IP|$CONNS|$TOTAL_STR")
+                    IDLE_NODES_LIST+=("${C_NAMES[$CID]}|$FOLDER_STR|${C_IMAGES[$CID]}|$PROXY_LINE|$CONNS|$TOTAL_STR|$TOTAL_MB")
                 else
-                    CONTAINER_OUTBOUND_IP="0 Socket / Mat ket noi"
-                    DEAD_NODES_LIST+=("${C_NAMES[$CID]}|$FOLDER_STR|${C_IMAGES[$CID]}|$CONTAINER_OUTBOUND_IP|$CONNS|$TOTAL_STR")
+                    DEAD_NODES_LIST+=("${C_NAMES[$CID]}|$FOLDER_STR|${C_IMAGES[$CID]}|$PROXY_LINE|$CONNS|$TOTAL_STR|$TOTAL_MB")
                 fi
             fi
         done
     fi
 fi
 
-# 9. PHAN TICH DANH SACH NODE THEO THU MUC
+# 9. PHAN TICH DANH SACH NODE THEO THU MUC & DONG PROXY CU THE (HIEN FULL HOST:IP)
 echo -e "\n${PURPLE}${BOLD}--- [5] DANH GIA TRANG THAI CHI TIET TUNG NODE (ANTI-MISTAKE AUDIT) ---${NC}"
 
 if [ ${#IDLE_NODES_LIST[@]} -gt 0 ]; then
     echo -e " 🟢 ${GREEN}${BOLD}NHOM NODE DANG CHO TASK (IDLE - DANG KIEM TIEN RAT TOT - KHONG XOA):${NC}"
-    printf "${BOLD}%-22s | %-24s | %-16s | %-14s | %-18s${NC}\n" \
-        "Container" "Thu Muc / Cluster" "IP Outbound" "Da Cay Duoc" "Khuyen Nghi"
-    echo "-------------------------------------------------------------------------------------------------------------------"
+    printf "${BOLD}%-18s | %-16s | %-54s | %-10s | %-22s${NC}\n" \
+        "Container" "Thu Muc / Cluster" "Dong Proxy Gan Vao (Full Host:IP)" "Da Cay" "Khuyen Nghi"
+    echo "-----------------------------------------------------------------------------------------------------------------------------------------------------------------------"
     for item in "${IDLE_NODES_LIST[@]}"; do
-        IFS="|" read -r i_name i_folder i_img i_ip i_conns i_total <<< "$item"
-        printf "%-22s | %-24s | ${CYAN}%-16s${NC} | ${YELLOW}%-12s${NC} | ${GREEN}%-18s${NC}\n" \
-            "${i_name:0:21}" "${i_folder:0:23}" "$i_ip" "$i_total" "GIU NGUYEN (Kiem Tot)"
+        IFS="|" read -r i_name i_folder i_img i_proxy i_conns i_total i_total_mb <<< "$item"
+        printf "%-18s | %-16s | ${CYAN}%-54s${NC} | ${YELLOW}%-10s${NC} | ${GREEN}%-22s${NC}\n" \
+            "${i_name:0:17}" "${i_folder:0:15}" "$i_proxy" "$i_total" "GIU NGUYEN (Kiem Tot)"
     done
     echo ""
 fi
@@ -369,23 +532,22 @@ if [ ${#DEAD_NODES_LIST[@]} -eq 0 ]; then
     echo -e " 🟢 ${GREEN}${BOLD}HOAN HAO:${NC} Khong co bat ky node nao bi chet hay bi block tren he thong."
 else
     echo -e " 🔴 ${RED}${BOLD}CANH BAO: CAC NODE CHET THAT SU (CAN KIEM TRA PROXY TAI THU MUC):${NC}"
-    printf "${BOLD}%-22s | %-24s | %-18s | %-10s | %-20s${NC}\n" \
-        "Container Bi Loi" "Thu Muc Can Kiem Tra" "IP Outbound" "Da Cay" "Nguyen Nhan Nghi Van"
-    echo "-------------------------------------------------------------------------------------------------------------------"
+    printf "${BOLD}%-18s | %-16s | %-54s | %-8s | %-26s${NC}\n" \
+        "Container Bi Loi" "Thu Muc Cluster" "Dong Proxy Can Check (Full Host:IP)" "Da Cay" "Nguyen Nhan Chinh Xac"
+    echo "-----------------------------------------------------------------------------------------------------------------------------------------------------------------------"
     for item in "${DEAD_NODES_LIST[@]}"; do
-        IFS="|" read -r d_name d_folder d_img d_ip d_conns d_total <<< "$item"
-        reason="App Block / 0 Task"
-        [ "$d_ip" == "0 Socket / Mat ket noi" ] && reason="Proxy Dead / Mat Mang"
+        IFS="|" read -r d_name d_folder d_img d_proxy d_conns d_total d_total_mb <<< "$item"
+        diag_reason=$(diagnose_proxy_issue "$d_proxy" "$d_conns" "$d_total_mb")
 
-        printf "%-22s | ${CYAN}%-24s${NC} | ${YELLOW}%-18s${NC} | ${RED}%-8s${NC} | ${RED}%-20s${NC}\n" \
-            "${d_name:0:21}" "${d_folder:0:23}" "$d_ip" "$d_total" "$reason"
+        printf "%-18s | ${CYAN}%-16s${NC} | ${YELLOW}%-54s${NC} | ${RED}%-8s${NC} | ${RED}%-26s${NC}\n" \
+            "${d_name:0:17}" "${d_folder:0:15}" "$d_proxy" "$d_total" "$diag_reason"
     done
 fi
 
 # 10. PHAN QUYET KET QUA TONG THE
-echo -e "\n${CYAN}${BOLD}================================================================================${NC}"
-echo -e "${GREEN}${BOLD}                         KET LUAN & PHAN TICH TINH TRANG                        ${NC}"
-echo -e "${CYAN}${BOLD}================================================================================${NC}"
+echo -e "\n${CYAN}${BOLD}======================================================================================================================================${NC}"
+echo -e "${GREEN}${BOLD}                                                   KET LUAN & PHAN TICH TINH TRANG                                                    ${NC}"
+echo -e "${CYAN}${BOLD}======================================================================================================================================${NC}"
 
 echo -e "${BOLD}1. Phan tich Dinh tuyen & Kha nang gan Proxy:${NC}"
 
@@ -406,4 +568,4 @@ if [ "$IP_FW" -ne 1 ] 2>/dev/null; then
 fi
 
 rm -rf "$TMP_DIR"
-echo -e "\n${CYAN}================================================================================${NC}\n"
+echo -e "\n${CYAN}======================================================================================================================================${NC}\n"
