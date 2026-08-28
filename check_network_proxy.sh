@@ -4,8 +4,8 @@
 # - Đo tuần tự 10 Hub Looking Glass để đo chuẩn xác 100% công suất thực tế
 # - Tự động nhận diện Thư mục / Cluster chứa Container
 # - 100% PASSIVE: Tuyệt đối không gọi request ra ngoài qua Proxy (IP-Auth Safe)
-# - Hiển thị FULL 100% chuỗi Proxy gốc (User:Pass@Host:Port) không bị cắt ngắn
-# - Lọc sạch DNS nội bộ (127.0.0.1:53) - Ưu tiên Map chính xác File proxies.txt
+# - Khử trùng lặp thông minh (Gộp cặp tun + app) - Khớp chuẩn từng Host:Port
+# - Tối ưu tốc độ cao, có bộ nhớ đệm Cache chống rớt kết nối SSH
 # ==============================================================================
 
 [ -f "$0" ] && chmod +x "$0" 2>/dev/null
@@ -250,7 +250,7 @@ while IFS= read -r cn_file; do
     done < "$cn_file"
 done < <(find /root /home /opt /srv -maxdepth 4 -name containernames.txt -type f 2>/dev/null)
 
-# HAM TRICH XUAT DONG PROXY PASSIVE (LOC SACH DNS 127.0.0.1 - MAP CHUAN PROXIES.TXT)
+# HAM TRICH XUAT DONG PROXY PASSIVE (KHOP CA HOST + PORT + USER:PASS)
 get_container_proxy_line() {
     local cid="$1"
     local cname="$2"
@@ -258,7 +258,6 @@ get_container_proxy_line() {
     local cpid="$4"
     local proxy_res=""
 
-    # 1. Kiem tra Network Mode (VD: container:tunXXXX) de lay Container cha
     local net_mode
     net_mode=$(docker inspect -f '{{.HostConfig.NetworkMode}}' "$cid" 2>/dev/null)
     local target_cid="$cid"
@@ -276,7 +275,7 @@ get_container_proxy_line() {
         fi
     fi
 
-    # 2. Uu tien 1: Tim file proxies.txt trong thu muc Cluster va map doi chieu chinh xac
+    # Uu tien 1: Tim file proxies.txt trong thu muc Cluster va doi chieu day du ca Host:Port
     if [ -n "$fdir" ] && [ -d "$fdir" ]; then
         local pfile=""
         for f in "$fdir/proxies.txt" "$fdir/proxy.txt" "$fdir/socks5.txt" "$fdir/http.txt" "$fdir/vpns.txt"; do
@@ -293,30 +292,40 @@ get_container_proxy_line() {
             if [ "$total_p" -eq 1 ]; then
                 proxy_res="${ALL_PROXIES[0]}"
             elif [ "$total_p" -gt 1 ]; then
-                # A. Doi chieu IP/Host/User trong Inspect/Cmdline cua container voi cac dong trong proxies.txt
                 local cmd_str=""
                 [ -n "$target_pid" ] && [ -f "/proc/$target_pid/cmdline" ] && cmd_str=$(tr '\0' ' ' < "/proc/$target_pid/cmdline" 2>/dev/null)
                 local env_str=""
                 env_str=$(docker inspect -f '{{json .Config.Env}}' "$target_cid" 2>/dev/null)
                 local full_inspect="$cmd_str $env_str"
 
+                # 1.1 Khop chinh xac ca Host:Port (Tranh trung lap khi nhieu proxy cung IP)
                 for p_line in "${ALL_PROXIES[@]}"; do
                     local p_clean
                     p_clean=$(echo "$p_line" | sed -E 's|^[a-zA-Z0-9]+://||')
                     local p_host_port
                     p_host_port=$(echo "$p_clean" | sed -E 's|^[^@]+@||' | cut -d/ -f1 | tr -d '[:space:]')
-                    local p_host
-                    p_host=$(echo "$p_host_port" | cut -d: -f1)
 
-                    if [ -n "$p_host" ] && [ "$p_host" != "127.0.0.1" ] && [ "$p_host" != "localhost" ]; then
-                        if [[ "$full_inspect" == *"$p_host"* ]]; then
+                    if [ -n "$p_host_port" ] && [[ "$p_host_port" != *"127.0.0.1"* ]] && [[ "$p_host_port" != *"localhost"* ]]; then
+                        if [[ "$full_inspect" == *"$p_host_port"* ]]; then
                             proxy_res="$p_line"
                             break
                         fi
                     fi
                 done
 
-                # B. Neu chua match theo IP, match theo Suffix Index cua ten container
+                # 1.2 Khop theo User/Password hoac Auth
+                if [ -z "$proxy_res" ]; then
+                    for p_line in "${ALL_PROXIES[@]}"; do
+                        local p_auth
+                        p_auth=$(echo "$p_line" | grep -oE '://[^@]+@' | tr -d ':/@')
+                        if [ -n "$p_auth" ] && [[ "$full_inspect" == *"$p_auth"* ]]; then
+                            proxy_res="$p_line"
+                            break
+                        fi
+                    done
+                fi
+
+                # 1.3 Khop theo Suffix Index cua ten container
                 if [ -z "$proxy_res" ]; then
                     for (( i=0; i<total_p; i++ )); do
                         if [[ "$target_name" =~ [^0-9]$i$ ]] || [[ "$cname" =~ [^0-9]$i$ ]] || [[ "$target_name" =~ _$i$ ]] || [[ "$cname" =~ _$i$ ]]; then
@@ -325,47 +334,31 @@ get_container_proxy_line() {
                         fi
                     done
                 fi
-
-                # C. Neu van chua co, thu lay so cuoi cua ten container
-                if [ -z "$proxy_res" ]; then
-                    local last_digit
-                    last_digit=$(echo "$target_name" | grep -oE '[0-9]+$' | tail -1)
-                    if [ -n "$last_digit" ]; then
-                        local try_idx=$(( last_digit % total_p ))
-                        proxy_res="${ALL_PROXIES[$try_idx]}"
-                    fi
-                fi
             fi
         fi
     fi
 
-    # 3. Uu tien 2: Doc tu /proc/$target_pid/cmdline (Loc sach 127.0.0.1, 0.0.0.0, port 53 DNS)
+    # Uu tien 2: Doc truc tiep tu /proc/$PID/cmdline (Loc sach 127.0.0.1)
     if [ -z "$proxy_res" ] && [ -n "$target_pid" ] && [ -f "/proc/$target_pid/cmdline" ]; then
         local raw_cmd
         raw_cmd=$(tr '\0' ' ' < "/proc/$target_pid/cmdline" 2>/dev/null)
         proxy_res=$(echo "$raw_cmd" | grep -oE '(socks5|socks4|http|https)://[^ "]+' | grep -v '127.0.0.1' | head -1)
-        if [ -z "$proxy_res" ]; then
-            local candidate_ip
-            candidate_ip=$(echo "$raw_cmd" | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}:[0-9]{2,5}' | grep -vE '^(127\.|0\.0\.|10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.)|:53$' | head -1)
-            [ -n "$candidate_ip" ] && proxy_res="$candidate_ip"
-        fi
     fi
 
-    # 4. Uu tien 3: Docker Inspect Env / Cmd
+    # Uu tien 3: Docker Inspect Env / Cmd
     if [ -z "$proxy_res" ]; then
         local envs
         envs=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$target_cid" 2>/dev/null)
         proxy_res=$(echo "$envs" | grep -iE '^(PROXY|HTTP_PROXY|HTTPS_PROXY|ALL_PROXY|SOCKS5_PROXY|SOCKS_PROXY|PROXY_URL|EXTRA_COMMANDS)=' | grep -v '127.0.0.1' | head -1 | cut -d'=' -f2-)
-        if [ -z "$proxy_res" ]; then
-            proxy_res=$(docker inspect -f '{{range .Config.Cmd}}{{println .}}{{end}}' "$target_cid" 2>/dev/null | grep -oE '(socks5|socks4|http|https)://[^ "]+' | grep -v '127.0.0.1' | head -1)
-        fi
     fi
 
     [ -z "$proxy_res" ] && proxy_res="Direct (Host Network)"
     echo "$proxy_res"
 }
 
-# HAM CHAN DOAN NGUYEN NHAN LOI PASSIVE 100% (TU HOST VPS)
+# BO NHO DEM CHUAN DOAN (CACHE TRIASE CHONG TREO SSH)
+declare -A DIAG_CACHE
+
 diagnose_proxy_issue() {
     local proxy_raw="$1"
     local conns="$2"
@@ -380,7 +373,24 @@ diagnose_proxy_issue() {
         return
     fi
 
-    # Parse Host & Port tu chuoi proxy
+    if [ -n "${DIAG_CACHE["$proxy_raw"]}" ]; then
+        local base_status="${DIAG_CACHE["$proxy_raw"]}"
+        if [ "$base_status" == "PORT_OPEN" ]; then
+            if [ "$conns" -eq 0 ]; then
+                if (( $(echo "$total_mb < 0.1" | bc -l 2>/dev/null || echo "1") )); then
+                    echo "Loi Tun2socks / Auth Sai"
+                else
+                    echo "Tunnel Mat Ket Noi"
+                fi
+            else
+                echo "App Block / 0 Task (Proxy OK)"
+            fi
+        else
+            echo "$base_status"
+        fi
+        return
+    fi
+
     local clean_str
     clean_str=$(echo "$proxy_raw" | sed -E 's|^[a-zA-Z0-9]+://||' | sed -E 's|^[^@]+@||')
     local p_host
@@ -393,15 +403,15 @@ diagnose_proxy_issue() {
         return
     fi
 
-    # Kiem tra TCP Port mo tu VPS den Proxy (PASSIVE 100% - KHONG gui data qua proxy)
     local port_open=0
-    if timeout 1.5 bash -c "cat < /dev/null > /dev/tcp/$p_host/$p_port" 2>/dev/null; then
+    if timeout 1.0 bash -c "cat < /dev/null > /dev/tcp/$p_host/$p_port" 2>/dev/null; then
         port_open=1
-    elif curl -4 -s --interface "$PRIMARY_IFACE" --connect-timeout 2 "telnet://$p_host:$p_port" </dev/null &>/dev/null; then
+    elif curl -4 -s --interface "$PRIMARY_IFACE" --connect-timeout 1 "telnet://$p_host:$p_port" </dev/null &>/dev/null; then
         port_open=1
     fi
 
     if [ "$port_open" -eq 1 ]; then
+        DIAG_CACHE["$proxy_raw"]="PORT_OPEN"
         if [ "$conns" -eq 0 ]; then
             if (( $(echo "$total_mb < 0.1" | bc -l 2>/dev/null || echo "1") )); then
                 echo "Loi Tun2socks / Auth Sai"
@@ -412,10 +422,11 @@ diagnose_proxy_issue() {
             echo "App Block / 0 Task (Proxy OK)"
         fi
     else
-        # Kiem tra xem Server Proxy co phan hoi Ping khong de phan biet Dead Server hay Port Closed
         if ping -4 -I "$PRIMARY_IFACE" -c 1 -W 1 "$p_host" &>/dev/null; then
+            DIAG_CACHE["$proxy_raw"]="Port Proxy Dong / Refused"
             echo "Port Proxy Dong / Refused"
         else
+            DIAG_CACHE["$proxy_raw"]="Proxy Dead / NCC Block VPS"
             echo "Proxy Dead / NCC Block VPS"
         fi
     fi
@@ -436,7 +447,20 @@ else
             "Container" "Thu Muc / Cluster" "Live RX" "Live TX" "Tong Data" "Sockets"
         echo "---------------------------------------------------------------------------------------------------------------------"
 
-        declare -A C_PIDS C_NAMES C_IMAGES C_RX1 C_TX1 C_TOTAL_FORMAT C_TOTAL_RAW_MB C_FOLDERS C_PROXIES
+        declare -A C_PIDS C_NAMES C_IMAGES C_RX1 C_TX1 C_TOTAL_FORMAT C_TOTAL_RAW_MB C_FOLDERS C_PROXIES C_HAS_CHILD C_IS_CHILD
+
+        # 1. Quet lien ket cha - con (tun container vs app container) de khu trung lap
+        for CID in $CONTAINERS; do
+            net_mode=$(docker inspect -f '{{.HostConfig.NetworkMode}}' "$CID" 2>/dev/null)
+            if [[ "$net_mode" == container:* ]]; then
+                parent_ref="${net_mode#container:}"
+                parent_id=$(docker inspect -f '{{.Id}}' "$parent_ref" 2>/dev/null)
+                if [ -n "$parent_id" ]; then
+                    C_HAS_CHILD["$parent_id"]=1
+                    C_IS_CHILD["$CID"]=1
+                fi
+            fi
+        done
 
         T1=$(date +%s%N)
         for CID in $CONTAINERS; do
@@ -451,7 +475,6 @@ else
                 f_dir="${CTR_TO_DIR[$cname_raw]:-}"
                 C_FOLDERS["$CID"]="$f_name"
 
-                # Trich xuat dong proxy da duoc add (FULL chuoi)
                 CTR_PROXY=$(get_container_proxy_line "$CID" "$cname_raw" "$f_dir" "$CPID")
                 C_PROXIES["$CID"]="$CTR_PROXY"
 
@@ -484,6 +507,11 @@ else
         ELAPSED_SEC=$(awk -v t1="$T1" -v t2="$T2" 'BEGIN {val=(t2 - t1)/1000000000; if(val<=0) val=2.0; printf "%.3f", val}')
 
         for CID in "${!C_PIDS[@]}"; do
+            # Neu day la container tun trung gian va da co app con dai dien -> Bo qua khong in duplicate
+            if [ -n "${C_HAS_CHILD[$CID]}" ]; then
+                continue
+            fi
+
             CPID="${C_PIDS[$CID]}"
             
             read -r r2 t2 < <(awk '
@@ -530,7 +558,7 @@ else
     fi
 fi
 
-# 9. PHAN TICH DANH SACH NODE THEO THU MUC & DONG PROXY CU THE (HIEN FULL HOST:IP)
+# 9. PHAN TICH DANH SACH NODE THEO THU MUC & DONG PROXY CU THE (HIEN FULL HOST:IP - KHU TRUNG LAP)
 echo -e "\n${PURPLE}${BOLD}--- [5] DANH GIA TRANG THAI CHI TIET TUNG NODE (ANTI-MISTAKE AUDIT) ---${NC}"
 
 if [ ${#IDLE_NODES_LIST[@]} -gt 0 ]; then
