@@ -5,7 +5,7 @@
 # - Tự động nhận diện Thư mục / Cluster chứa Container
 # - 100% PASSIVE: Tuyệt đối không gọi request ra ngoài qua Proxy (IP-Auth Safe)
 # - Pure Bash Arithmetic: CPU load < 2%, siêu mát máy, xử lý 1000+ container trong 2.1s
-# - Đã fix triệt để lỗi Octal 09xxx và lọc sạch 100% DNS nội bộ 127.0.0.1
+# - Đã fix triệt để lỗi Octal 09xxx và lỗi biến local ngoài hàm
 # ==============================================================================
 
 [ -f "$0" ] && chmod +x "$0" 2>/dev/null
@@ -265,7 +265,64 @@ while IFS= read -r cn_file; do
     done
 done < <(find /root /home /opt /srv -maxdepth 4 -name containernames.txt -type f 2>/dev/null)
 
-# HAM LAY PROXY SIÊU TỐC (EP BASE-10 TOAN HOC, PURE BASH, ZERO OCTAL ERROR)
+# HAM DONG GOI ZERO-LOAD PURE BASH (KHONG TAO SUBSHELL / KHONG LOI LOCAL)
+read_proc_net_dev() {
+    local pid="$1"
+    RET_RX=0
+    RET_TX=0
+    local has_tun=0 eth_rx=0 eth_tx=0
+    [ -z "$pid" ] || [ ! -f "/proc/$pid/net/dev" ] && return
+    
+    while IFS=": " read -r ifname rest; do
+        if [[ "$ifname" =~ ^(tun0|tap0)$ ]]; then
+            read -r r_b _ _ _ _ _ _ _ t_b _ <<< "$rest"
+            RET_RX=$(( RET_RX + r_b ))
+            RET_TX=$(( RET_TX + t_b ))
+            has_tun=1
+        elif [ "$ifname" == "eth0" ]; then
+            read -r r_b _ _ _ _ _ _ _ t_b _ <<< "$rest"
+            eth_rx=$r_b
+            eth_tx=$t_b
+        fi
+    done < "/proc/$pid/net/dev" 2>/dev/null
+
+    if [ "$has_tun" -eq 0 ]; then
+        RET_RX=$eth_rx
+        RET_TX=$eth_tx
+    fi
+}
+
+count_proc_tcp_conns() {
+    local pid="$1"
+    RET_CONNS=0
+    [ -z "$pid" ] || [ ! -f "/proc/$pid/net/tcp" ] && return
+    while read -r _ _ _ st _; do
+        [ "$st" == "01" ] && ((RET_CONNS++))
+    done < "/proc/$pid/net/tcp" 2>/dev/null
+}
+
+format_bytes() {
+    local sum_b="$1"
+    local mb_int=$(( sum_b / 1048576 ))
+    local mb_dec=$(( (sum_b % 1048576) * 10 / 1048576 ))
+    RET_RAW_MB="${mb_int}.${mb_dec}"
+
+    if [ "$sum_b" -ge 1073741824 ]; then
+        local gb_int=$(( sum_b / 1073741824 ))
+        local gb_dec=$(( (sum_b % 1073741824) * 10 / 1073741824 ))
+        RET_FORMAT_STR="${gb_int}.${gb_dec} GB"
+    else
+        RET_FORMAT_STR="${mb_int}.${mb_dec} MB"
+    fi
+}
+
+format_speed_kbs() {
+    local diff_b="$1"
+    local k_int=$(( (diff_b / 2) / 1024 ))
+    local k_dec=$(( ((diff_b / 2) % 1024) * 10 / 1024 ))
+    RET_SPEED_STR="${k_int}.${k_dec}"
+}
+
 get_fast_proxy() {
     local cname="$1"
     local fname="$2"
@@ -332,7 +389,6 @@ get_fast_proxy() {
     echo "$p_res"
 }
 
-# BO NHO DEM CHUAN DOAN (CACHE TRIASE)
 declare -A DIAG_CACHE
 
 diagnose_proxy_fast() {
@@ -439,40 +495,13 @@ else
                     C_IS_TUN_GATEWAY["$parent_ref"]=1
                 fi
 
-                # Pure Bash /proc/net/dev reader (0 Subshells / Zero CPU load)
-                local tot_rx=0 tot_tx=0 has_tun=0 eth_rx=0 eth_tx=0
-                while IFS=": " read -r ifname rest; do
-                    if [[ "$ifname" =~ ^(tun0|tap0)$ ]]; then
-                        read -r rx _ _ _ _ _ _ _ tx _ <<< "$rest"
-                        tot_rx=$(( tot_rx + rx ))
-                        tot_tx=$(( tot_tx + tx ))
-                        has_tun=1
-                    elif [ "$ifname" == "eth0" ]; then
-                        read -r eth_rx _ _ _ _ _ _ _ eth_tx _ <<< "$rest"
-                    fi
-                done < "/proc/$c_pid/net/dev" 2>/dev/null
+                read_proc_net_dev "$c_pid"
+                C_RX1["$c_id"]=$RET_RX
+                C_TX1["$c_id"]=$RET_TX
 
-                if [ "$has_tun" -eq 1 ]; then
-                    C_RX1["$c_id"]=$tot_rx
-                    C_TX1["$c_id"]=$tot_tx
-                else
-                    C_RX1["$c_id"]=$eth_rx
-                    C_TX1["$c_id"]=$eth_tx
-                fi
-
-                # Pure Bash Integer Math for Total Memory (Zero awk / Zero bc)
-                local sum_b=$(( C_RX1["$c_id"] + C_TX1["$c_id"] ))
-                local mb_int=$(( sum_b / 1048576 ))
-                local mb_dec=$(( (sum_b % 1048576) * 10 / 1048576 ))
-                C_TOTAL_RAW_MB["$c_id"]="${mb_int}.${mb_dec}"
-
-                if [ "$sum_b" -ge 1073741824 ]; then
-                    local gb_int=$(( sum_b / 1073741824 ))
-                    local gb_dec=$(( (sum_b % 1073741824) * 10 / 1073741824 ))
-                    C_TOTAL_FORMAT["$c_id"]="${gb_int}.${gb_dec} GB"
-                else
-                    C_TOTAL_FORMAT["$c_id"]="${mb_int}.${mb_dec} MB"
-                fi
+                format_bytes $(( RET_RX + RET_TX ))
+                C_TOTAL_RAW_MB["$c_id"]="$RET_RAW_MB"
+                C_TOTAL_FORMAT["$c_id"]="$RET_FORMAT_STR"
             fi
         done < <(docker inspect --format '{{.Id}}|{{.State.Pid}}|{{.Name}}|{{.HostConfig.NetworkMode}}' $CONTAINERS 2>/dev/null)
 
@@ -487,68 +516,41 @@ else
             fi
 
             CPID="${C_PIDS[$CID]}"
-            
-            # Pure Bash /proc/net/dev reader T2 (0.0001s / Zero CPU load)
-            local tot_rx2=0 tot_tx2=0 has_tun2=0 eth_rx2=0 eth_tx2=0
-            while IFS=": " read -r ifname rest; do
-                if [[ "$ifname" =~ ^(tun0|tap0)$ ]]; then
-                    read -r rx _ _ _ _ _ _ _ tx _ <<< "$rest"
-                    tot_rx2=$(( tot_rx2 + rx ))
-                    tot_tx2=$(( tot_tx2 + tx ))
-                    has_tun2=1
-                elif [ "$ifname" == "eth0" ]; then
-                    read -r eth_rx2 _ _ _ _ _ _ _ eth_tx2 _ <<< "$rest"
-                fi
-            done < "/proc/$CPID/net/dev" 2>/dev/null
+            read_proc_net_dev "$CPID"
 
-            local r2=0 t2=0
-            if [ "$has_tun2" -eq 1 ]; then
-                r2=$tot_rx2; t2=$tot_tx2
-            else
-                r2=$eth_rx2; t2=$eth_tx2
-            fi
-
-            DIFF_RX=$(( r2 - C_RX1["$CID"] ))
-            DIFF_TX=$(( t2 - C_TX1["$CID"] ))
+            DIFF_RX=$(( RET_RX - C_RX1["$CID"] ))
+            DIFF_TX=$(( RET_TX - C_TX1["$CID"] ))
             [ "$DIFF_RX" -lt 0 ] && DIFF_RX=0
             [ "$DIFF_TX" -lt 0 ] && DIFF_TX=0
 
-            # Pure Bash Delta KB/s Math (Zero CPU Overhead)
-            local rx_int=$(( (DIFF_RX / 2) / 1024 ))
-            local rx_dec=$(( ((DIFF_RX / 2) % 1024) * 10 / 1024 ))
-            RX_KBS="${rx_int}.${rx_dec}"
+            format_speed_kbs "$DIFF_RX"
+            RX_KBS="$RET_SPEED_STR"
 
-            local tx_int=$(( (DIFF_TX / 2) / 1024 ))
-            local tx_dec=$(( ((DIFF_TX / 2) % 1024) * 10 / 1024 ))
-            TX_KBS="${tx_int}.${tx_dec}"
+            format_speed_kbs "$DIFF_TX"
+            TX_KBS="$RET_SPEED_STR"
 
-            # Pure Bash Socket Reader (Zero awk)
-            local conns=0
-            if [ -f "/proc/$CPID/net/tcp" ]; then
-                while read -r _ _ _ st _; do
-                    [ "$st" == "01" ] && ((conns++))
-                done < "/proc/$CPID/net/tcp" 2>/dev/null
-            fi
+            count_proc_tcp_conns "$CPID"
+            CONNS=$RET_CONNS
 
             TOTAL_STR="${C_TOTAL_FORMAT[$CID]}"
             TOTAL_MB="${C_TOTAL_RAW_MB[$CID]}"
             FOLDER_STR="${C_FOLDERS[$CID]}"
 
             printf "%-22s | %-24s | ${CYAN}%-8s KB/s${NC} | ${GREEN}%-8s KB/s${NC} | ${YELLOW}%-10s${NC} | %s conns\n" \
-                "${cname:0:21}" "${FOLDER_STR:0:23}" "$RX_KBS" "$TX_KBS" "$TOTAL_STR" "$conns"
+                "${cname:0:21}" "${FOLDER_STR:0:23}" "$RX_KBS" "$TX_KBS" "$TOTAL_STR" "$CONNS"
 
-            # Pure Bash Idle Check (RX <= 0.05 KB/s & TX <= 0.15 KB/s)
-            if [ "$rx_int" -eq 0 ] && [ "$rx_dec" -le 0 ] && [ "$tx_int" -eq 0 ] && [ "$tx_dec" -le 1 ]; then
+            # Kiem tra Idle node (DIFF_RX <= 204 bytes & DIFF_TX <= 614 bytes tuong duong 0.05 KB/s & 0.15 KB/s)
+            if [ "$DIFF_RX" -le 204 ] && [ "$DIFF_TX" -le 614 ]; then
                 
                 CTR_PROXY=$(get_fast_proxy "$cname" "$FOLDER_STR" "$CPID" "")
 
-                local mb_val=${TOTAL_MB%%.*}
+                mb_val=${TOTAL_MB%%.*}
                 [ -z "$mb_val" ] && mb_val=0
 
-                if [ "$mb_val" -ge 1 ] || [ "$conns" -ge 1 ]; then
-                    IDLE_NODES_LIST+=("$cname|$FOLDER_STR|$CTR_PROXY|$conns|$TOTAL_STR|$TOTAL_MB")
+                if [ "$mb_val" -ge 1 ] || [ "$CONNS" -ge 1 ]; then
+                    IDLE_NODES_LIST+=("$cname|$FOLDER_STR|$CTR_PROXY|$CONNS|$TOTAL_STR|$TOTAL_MB")
                 else
-                    DEAD_NODES_LIST+=("$cname|$FOLDER_STR|$CTR_PROXY|$conns|$TOTAL_STR|$TOTAL_MB")
+                    DEAD_NODES_LIST+=("$cname|$FOLDER_STR|$CTR_PROXY|$CONNS|$TOTAL_STR|$TOTAL_MB")
                 fi
             fi
         done
