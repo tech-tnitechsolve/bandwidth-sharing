@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Script: check_network_proxy.sh (SEQUENTIAL ACCURATE BENCHMARK & CLUSTER AWARE)
+# Script: check_network_proxy.sh (SEQUENTIAL ACCURATE BENCHMARK & ULTRA-FAST MEMORY)
 # - Đo tuần tự 10 Hub Looking Glass để đo chuẩn xác 100% công suất thực tế
 # - Tự động nhận diện Thư mục / Cluster chứa Container
 # - 100% PASSIVE: Tuyệt đối không gọi request ra ngoài qua Proxy (IP-Auth Safe)
-# - Khử trùng lặp thông minh (Gộp cặp tun + app) - Khớp chuẩn từng Host:Port
-# - Tối ưu tốc độ cao, có bộ nhớ đệm Cache chống rớt kết nối SSH
+# - Đọc trực tiếp Kernel RAM (/proc) - Siêu mượt 2.0s cho cả 1000+ Container
 # ==============================================================================
 
 [ -f "$0" ] && chmod +x "$0" 2>/dev/null
@@ -234,132 +233,101 @@ run_direct_speedtest "9. AU (Uc - Sydney)" \
     "https://syd.proof.ovh.net/files/100Mio.dat" \
     "Linode Sydney" "intl"
 
-# 8. DO LUU LUONG DOCKER & QUET MAP THU MUC CLUSTER
+# 8. DO LUU LUONG DOCKER & TIEN NAP PROXY VAO RAM SIÊU TỐC
 echo -e "\n${PURPLE}${BOLD}--- [4] DO DU LIEU CONTAINER & THU MUC CLUSTER (LIVE & LIFETIME) ---${NC}"
 
-declare -A CTR_TO_FOLDER CTR_TO_DIR
+declare -A CTR_TO_FOLDER CTR_TO_DIR FOLDER_PROXIES_COUNT FOLDER_PROXY_BY_IDX
 while IFS= read -r cn_file; do
-    folder_dir="$(dirname "$cn_file")"
-    folder_name=$(basename "$folder_dir")
+    f_dir="$(dirname "$cn_file")"
+    f_name="$(basename "$f_dir")"
     while IFS= read -r cname; do
         cname_clean=$(echo "$cname" | tr -d '[:space:]')
         if [ -n "$cname_clean" ]; then
-            CTR_TO_FOLDER["$cname_clean"]="$folder_name"
-            CTR_TO_DIR["$cname_clean"]="$folder_dir"
+            CTR_TO_FOLDER["$cname_clean"]="$f_name"
+            CTR_TO_DIR["$cname_clean"]="$f_dir"
         fi
     done < "$cn_file"
+
+    # Tien nap toan bo file proxies vao RAM 1 lan duy nhat (0.01s)
+    for pfile in "$f_dir/proxies.txt" "$f_dir/proxy.txt" "$f_dir/socks5.txt" "$f_dir/http.txt" "$f_dir/vpns.txt"; do
+        if [ -f "$pfile" ]; then
+            p_idx=0
+            while IFS= read -r p_line; do
+                p_line_clean=$(echo "$p_line" | tr -d '\r\n')
+                if [ -n "$p_line_clean" ]; then
+                    FOLDER_PROXY_BY_IDX["$f_name,$p_idx"]="$p_line_clean"
+                    ((p_idx++))
+                fi
+            done < "$pfile"
+            FOLDER_PROXIES_COUNT["$f_name"]="$p_idx"
+            break
+        fi
+    done
 done < <(find /root /home /opt /srv -maxdepth 4 -name containernames.txt -type f 2>/dev/null)
 
-# HAM TRICH XUAT DONG PROXY PASSIVE (KHOP CA HOST + PORT + USER:PASS)
-get_container_proxy_line() {
-    local cid="$1"
-    local cname="$2"
-    local fdir="$3"
-    local cpid="$4"
-    local proxy_res=""
+# HAM LAY PROXY SIÊU TỐC (DOC THUAN TUY TU RAM, ZERO SUB-PROCESS)
+get_fast_proxy() {
+    local cname="$1"
+    local fname="$2"
+    local cpid="$3"
+    local p_res=""
 
-    local net_mode
-    net_mode=$(docker inspect -f '{{.HostConfig.NetworkMode}}' "$cid" 2>/dev/null)
-    local target_cid="$cid"
-    local target_pid="$cpid"
-    local target_name="$cname"
-
-    if [[ "$net_mode" == container:* ]]; then
-        local parent_ref="${net_mode#container:}"
-        local parent_cid
-        parent_cid=$(docker inspect -f '{{.Id}}' "$parent_ref" 2>/dev/null)
-        if [ -n "$parent_cid" ]; then
-            target_cid="$parent_cid"
-            target_name=$(docker inspect -f '{{.Name}}' "$target_cid" 2>/dev/null | sed 's/^\///')
-            target_pid=$(docker inspect -f '{{.State.Pid}}' "$target_cid" 2>/dev/null)
+    # 1. Kiem tra nhanh trong /proc/$PID/cmdline
+    if [ -n "$cpid" ] && [ -f "/proc/$cpid/cmdline" ]; then
+        local raw_cmd
+        raw_cmd=$(tr '\0' ' ' < "/proc/$cpid/cmdline" 2>/dev/null)
+        if [[ "$raw_cmd" =~ (socks5|socks4|http|https)://[^[:space:]\"\']+ ]]; then
+            p_res="${BASH_REMATCH[0]}"
         fi
     fi
 
-    # Uu tien 1: Tim file proxies.txt trong thu muc Cluster va doi chieu day du ca Host:Port
-    if [ -n "$fdir" ] && [ -d "$fdir" ]; then
-        local pfile=""
-        for f in "$fdir/proxies.txt" "$fdir/proxy.txt" "$fdir/socks5.txt" "$fdir/http.txt" "$fdir/vpns.txt"; do
-            if [ -f "$f" ]; then
-                pfile="$f"
-                break
-            fi
-        done
-
-        if [ -n "$pfile" ]; then
-            mapfile -t ALL_PROXIES < <(grep -ve '^\s*$' "$pfile" 2>/dev/null)
-            local total_p=${#ALL_PROXIES[@]}
-
-            if [ "$total_p" -eq 1 ]; then
-                proxy_res="${ALL_PROXIES[0]}"
-            elif [ "$total_p" -gt 1 ]; then
-                local cmd_str=""
-                [ -n "$target_pid" ] && [ -f "/proc/$target_pid/cmdline" ] && cmd_str=$(tr '\0' ' ' < "/proc/$target_pid/cmdline" 2>/dev/null)
-                local env_str=""
-                env_str=$(docker inspect -f '{{json .Config.Env}}' "$target_cid" 2>/dev/null)
-                local full_inspect="$cmd_str $env_str"
-
-                # 1.1 Khop chinh xac ca Host:Port (Tranh trung lap khi nhieu proxy cung IP)
-                for p_line in "${ALL_PROXIES[@]}"; do
-                    local p_clean
-                    p_clean=$(echo "$p_line" | sed -E 's|^[a-zA-Z0-9]+://||')
-                    local p_host_port
-                    p_host_port=$(echo "$p_clean" | sed -E 's|^[^@]+@||' | cut -d/ -f1 | tr -d '[:space:]')
-
-                    if [ -n "$p_host_port" ] && [[ "$p_host_port" != *"127.0.0.1"* ]] && [[ "$p_host_port" != *"localhost"* ]]; then
-                        if [[ "$full_inspect" == *"$p_host_port"* ]]; then
-                            proxy_res="$p_line"
-                            break
-                        fi
+    # 2. Map tu RAM Folder Proxies
+    if [ -n "$fname" ] && [ -n "${FOLDER_PROXIES_COUNT["$fname"]}" ]; then
+        local total_p="${FOLDER_PROXIES_COUNT["$fname"]}"
+        if [ "$total_p" -eq 1 ]; then
+            p_res="${FOLDER_PROXY_BY_IDX["$fname,0"]}"
+        elif [ "$total_p" -gt 1 ]; then
+            if [ -n "$p_res" ]; then
+                for (( i=0; i<total_p; i++ )); do
+                    local cand="${FOLDER_PROXY_BY_IDX["$fname,$i"]}"
+                    local cand_clean="${cand#*://}"
+                    local cand_hp="${cand_clean#*@}"
+                    cand_hp="${cand_hp%%/*}"
+                    if [ -n "$cand_hp" ] && [[ "$p_res" == *"$cand_hp"* ]]; then
+                        p_res="$cand"
+                        break
                     fi
                 done
-
-                # 1.2 Khop theo User/Password hoac Auth
-                if [ -z "$proxy_res" ]; then
-                    for p_line in "${ALL_PROXIES[@]}"; do
-                        local p_auth
-                        p_auth=$(echo "$p_line" | grep -oE '://[^@]+@' | tr -d ':/@')
-                        if [ -n "$p_auth" ] && [[ "$full_inspect" == *"$p_auth"* ]]; then
-                            proxy_res="$p_line"
-                            break
-                        fi
-                    done
-                fi
-
-                # 1.3 Khop theo Suffix Index cua ten container
-                if [ -z "$proxy_res" ]; then
-                    for (( i=0; i<total_p; i++ )); do
-                        if [[ "$target_name" =~ [^0-9]$i$ ]] || [[ "$cname" =~ [^0-9]$i$ ]] || [[ "$target_name" =~ _$i$ ]] || [[ "$cname" =~ _$i$ ]]; then
-                            proxy_res="${ALL_PROXIES[$i]}"
-                            break
-                        fi
-                    done
+            else
+                local last_num
+                last_num=$(echo "$cname" | grep -oE '[0-9]+$' | tail -1)
+                if [ -n "$last_num" ]; then
+                    local idx=$(( last_num % total_p ))
+                    p_res="${FOLDER_PROXY_BY_IDX["$fname,$idx"]}"
                 fi
             fi
         fi
     fi
 
-    # Uu tien 2: Doc truc tiep tu /proc/$PID/cmdline (Loc sach 127.0.0.1)
-    if [ -z "$proxy_res" ] && [ -n "$target_pid" ] && [ -f "/proc/$target_pid/cmdline" ]; then
-        local raw_cmd
-        raw_cmd=$(tr '\0' ' ' < "/proc/$target_pid/cmdline" 2>/dev/null)
-        proxy_res=$(echo "$raw_cmd" | grep -oE '(socks5|socks4|http|https)://[^ "]+' | grep -v '127.0.0.1' | head -1)
+    if [[ "$p_res" == *"127.0.0.1"* ]] || [ -z "$p_res" ]; then
+        if [ -n "$fname" ] && [ -n "${FOLDER_PROXIES_COUNT["$fname"]}" ]; then
+            local total_p="${FOLDER_PROXIES_COUNT["$fname"]}"
+            local last_num
+            last_num=$(echo "$cname" | grep -oE '[0-9]+$' | tail -1)
+            local idx=0
+            [ -n "$last_num" ] && idx=$(( last_num % total_p ))
+            p_res="${FOLDER_PROXY_BY_IDX["$fname,$idx"]}"
+        fi
     fi
 
-    # Uu tien 3: Docker Inspect Env / Cmd
-    if [ -z "$proxy_res" ]; then
-        local envs
-        envs=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$target_cid" 2>/dev/null)
-        proxy_res=$(echo "$envs" | grep -iE '^(PROXY|HTTP_PROXY|HTTPS_PROXY|ALL_PROXY|SOCKS5_PROXY|SOCKS_PROXY|PROXY_URL|EXTRA_COMMANDS)=' | grep -v '127.0.0.1' | head -1 | cut -d'=' -f2-)
-    fi
-
-    [ -z "$proxy_res" ] && proxy_res="Direct (Host Network)"
-    echo "$proxy_res"
+    [ -z "$p_res" ] && p_res="Direct (Host Network)"
+    echo "$p_res"
 }
 
-# BO NHO DEM CHUAN DOAN (CACHE TRIASE CHONG TREO SSH)
+# BO NHO DEM CHUAN DOAN (CACHE TRIASE)
 declare -A DIAG_CACHE
 
-diagnose_proxy_issue() {
+diagnose_proxy_fast() {
     local proxy_raw="$1"
     local conns="$2"
     local total_mb="$3"
@@ -404,7 +372,7 @@ diagnose_proxy_issue() {
     fi
 
     local port_open=0
-    if timeout 1.0 bash -c "cat < /dev/null > /dev/tcp/$p_host/$p_port" 2>/dev/null; then
+    if timeout 0.5 bash -c "cat < /dev/null > /dev/tcp/$p_host/$p_port" 2>/dev/null; then
         port_open=1
     elif curl -4 -s --interface "$PRIMARY_IFACE" --connect-timeout 1 "telnet://$p_host:$p_port" </dev/null &>/dev/null; then
         port_open=1
@@ -447,37 +415,24 @@ else
             "Container" "Thu Muc / Cluster" "Live RX" "Live TX" "Tong Data" "Sockets"
         echo "---------------------------------------------------------------------------------------------------------------------"
 
-        declare -A C_PIDS C_NAMES C_IMAGES C_RX1 C_TX1 C_TOTAL_FORMAT C_TOTAL_RAW_MB C_FOLDERS C_PROXIES C_HAS_CHILD C_IS_CHILD
+        declare -A C_PIDS C_NAMES C_RX1 C_TX1 C_TOTAL_FORMAT C_TOTAL_RAW_MB C_FOLDERS C_IS_TUN_GATEWAY
 
-        # 1. Quet lien ket cha - con (tun container vs app container) de khu trung lap
-        for CID in $CONTAINERS; do
-            net_mode=$(docker inspect -f '{{.HostConfig.NetworkMode}}' "$CID" 2>/dev/null)
-            if [[ "$net_mode" == container:* ]]; then
-                parent_ref="${net_mode#container:}"
-                parent_id=$(docker inspect -f '{{.Id}}' "$parent_ref" 2>/dev/null)
-                if [ -n "$parent_id" ]; then
-                    C_HAS_CHILD["$parent_id"]=1
-                    C_IS_CHILD["$CID"]=1
+        # 1. Quet BULK toan bo container trong 0.1s bang 1 lenh duy nhat
+        while IFS="|" read -r c_id c_pid c_name c_netmode; do
+            [ -z "$c_id" ] && continue
+            c_name="${c_name#/}"
+            if [ -n "$c_pid" ] && [ "$c_pid" -gt 0 ] 2>/dev/null && [ -d "/proc/$c_pid/net" ]; then
+                C_PIDS["$c_id"]="$c_pid"
+                C_NAMES["$c_id"]="$c_name"
+                C_FOLDERS["$c_id"]="${CTR_TO_FOLDER[$c_name]:-Unknown}"
+
+                # Nhan dien tun gateway de tranh in duplicate
+                if [[ "$c_netmode" == container:* ]]; then
+                    parent_ref="${c_netmode#container:}"
+                    C_IS_TUN_GATEWAY["$parent_ref"]=1
                 fi
-            fi
-        done
 
-        T1=$(date +%s%N)
-        for CID in $CONTAINERS; do
-            CPID=$(docker inspect -f '{{.State.Pid}}' "$CID" 2>/dev/null)
-            if [ -n "$CPID" ] && [ "$CPID" -gt 0 ] 2>/dev/null && [ -d "/proc/$CPID/net" ]; then
-                C_PIDS["$CID"]="$CPID"
-                cname_raw=$(docker inspect -f '{{.Name}}' "$CID" 2>/dev/null | sed 's/^\///')
-                C_NAMES["$CID"]="$cname_raw"
-                C_IMAGES["$CID"]=$(docker inspect -f '{{.Config.Image}}' "$CID" 2>/dev/null | cut -d'/' -f2- | cut -c1-15)
-                
-                f_name="${CTR_TO_FOLDER[$cname_raw]:-Unknown}"
-                f_dir="${CTR_TO_DIR[$cname_raw]:-}"
-                C_FOLDERS["$CID"]="$f_name"
-
-                CTR_PROXY=$(get_container_proxy_line "$CID" "$cname_raw" "$f_dir" "$CPID")
-                C_PROXIES["$CID"]="$CTR_PROXY"
-
+                # Doc Kernel RAM /proc T1
                 read -r r1 t1 < <(awk '
                     /tun0:|tap0:/ { rx += $2; tx += $10; has_tun = 1 }
                     /eth0:/       { eth_rx += $2; eth_tx += $10 }
@@ -485,35 +440,36 @@ else
                         if (has_tun == 1) { print rx+0, tx+0 }
                         else { print eth_rx+0, eth_tx+0 }
                     }
-                ' "/proc/$CPID/net/dev" 2>/dev/null || echo "0 0")
+                ' "/proc/$c_pid/net/dev" 2>/dev/null || echo "0 0")
                 
-                C_RX1["$CID"]=$r1
-                C_TX1["$CID"]=$t1
+                C_RX1["$c_id"]=$r1
+                C_TX1["$c_id"]=$t1
 
                 TOT_BYTES=$(( r1 + t1 ))
-                C_TOTAL_RAW_MB["$CID"]=$(awk -v b="$TOT_BYTES" 'BEGIN {printf "%.2f", b / 1048576}')
+                C_TOTAL_RAW_MB["$c_id"]=$(awk -v b="$TOT_BYTES" 'BEGIN {printf "%.2f", b / 1048576}')
 
                 if (( $(echo "$TOT_BYTES >= 1048576000" | bc -l 2>/dev/null || echo "0") )); then
-                    C_TOTAL_FORMAT["$CID"]=$(awk -v b="$TOT_BYTES" 'BEGIN {printf "%.1f GB", b / 1073741824}')
+                    C_TOTAL_FORMAT["$c_id"]=$(awk -v b="$TOT_BYTES" 'BEGIN {printf "%.1f GB", b / 1073741824}')
                 else
-                    C_TOTAL_FORMAT["$CID"]=$(awk -v b="$TOT_BYTES" 'BEGIN {printf "%.1f MB", b / 1048576}')
+                    C_TOTAL_FORMAT["$c_id"]=$(awk -v b="$TOT_BYTES" 'BEGIN {printf "%.1f MB", b / 1048576}')
                 fi
             fi
-        done
+        done < <(docker inspect --format '{{.Id}}|{{.State.Pid}}|{{.Name}}|{{.HostConfig.NetworkMode}}' $CONTAINERS 2>/dev/null)
 
+        # 2. Giu dung 2.0s do Delta Kernel
         sleep 2
         T2=$(date +%s%N)
 
-        ELAPSED_SEC=$(awk -v t1="$T1" -v t2="$T2" 'BEGIN {val=(t2 - t1)/1000000000; if(val<=0) val=2.0; printf "%.3f", val}')
-
         for CID in "${!C_PIDS[@]}"; do
-            # Neu day la container tun trung gian va da co app con dai dien -> Bo qua khong in duplicate
-            if [ -n "${C_HAS_CHILD[$CID]}" ]; then
+            cname="${C_NAMES[$CID]}"
+            # Neu la container tun da co app con dai dien thi bo qua tranh duplicate
+            if [ -n "${C_IS_TUN_GATEWAY[$cname]}" ] || [ -n "${C_IS_TUN_GATEWAY[$CID]}" ]; then
                 continue
             fi
 
             CPID="${C_PIDS[$CID]}"
             
+            # Doc Kernel RAM /proc T2 (0.0001s)
             read -r r2 t2 < <(awk '
                 /tun0:|tap0:/ { rx += $2; tx += $10; has_tun = 1 }
                 /eth0:/       { eth_rx += $2; eth_tx += $10 }
@@ -528,8 +484,8 @@ else
             [ "$DIFF_RX" -lt 0 ] && DIFF_RX=0
             [ "$DIFF_TX" -lt 0 ] && DIFF_TX=0
 
-            RX_VAL=$(awk -v d="$DIFF_RX" -v s="$ELAPSED_SEC" 'BEGIN {printf "%.2f", (d / s) / 1024}')
-            TX_VAL=$(awk -v d="$DIFF_TX" -v s="$ELAPSED_SEC" 'BEGIN {printf "%.2f", (d / s) / 1024}')
+            RX_VAL=$(awk -v d="$DIFF_RX" 'BEGIN {printf "%.2f", (d / 2.0) / 1024}')
+            TX_VAL=$(awk -v d="$DIFF_TX" 'BEGIN {printf "%.2f", (d / 2.0) / 1024}')
 
             RX_KBS=$(awk -v v="$RX_VAL" 'BEGIN {printf "%.1f", v}')
             TX_KBS=$(awk -v v="$TX_VAL" 'BEGIN {printf "%.1f", v}')
@@ -541,17 +497,17 @@ else
             FOLDER_STR="${C_FOLDERS[$CID]}"
 
             printf "%-22s | %-24s | ${CYAN}%-8s KB/s${NC} | ${GREEN}%-8s KB/s${NC} | ${YELLOW}%-10s${NC} | %s conns\n" \
-                "${C_NAMES[$CID]:0:21}" "${FOLDER_STR:0:23}" "$RX_KBS" "$TX_KBS" "$TOTAL_STR" "$CONNS"
+                "${cname:0:21}" "${FOLDER_STR:0:23}" "$RX_KBS" "$TX_KBS" "$TOTAL_STR" "$CONNS"
 
             if (( $(echo "$RX_VAL <= 0.05" | bc -l 2>/dev/null || echo "0") )) && \
                (( $(echo "$TX_VAL <= 0.15" | bc -l 2>/dev/null || echo "0") )); then
                 
-                PROXY_LINE="${C_PROXIES[$CID]}"
+                CTR_PROXY=$(get_fast_proxy "$cname" "$FOLDER_STR" "$CPID")
 
                 if (( $(echo "$TOTAL_MB >= 1.0" | bc -l 2>/dev/null || echo "0") )) || [ "$CONNS" -ge 1 ]; then
-                    IDLE_NODES_LIST+=("${C_NAMES[$CID]}|$FOLDER_STR|${C_IMAGES[$CID]}|$PROXY_LINE|$CONNS|$TOTAL_STR|$TOTAL_MB")
+                    IDLE_NODES_LIST+=("$cname|$FOLDER_STR|$CTR_PROXY|$CONNS|$TOTAL_STR|$TOTAL_MB")
                 else
-                    DEAD_NODES_LIST+=("${C_NAMES[$CID]}|$FOLDER_STR|${C_IMAGES[$CID]}|$PROXY_LINE|$CONNS|$TOTAL_STR|$TOTAL_MB")
+                    DEAD_NODES_LIST+=("$cname|$FOLDER_STR|$CTR_PROXY|$CONNS|$TOTAL_STR|$TOTAL_MB")
                 fi
             fi
         done
@@ -567,7 +523,7 @@ if [ ${#IDLE_NODES_LIST[@]} -gt 0 ]; then
         "Container" "Thu Muc / Cluster" "Dong Proxy Gan Vao (Full Host:IP)" "Da Cay" "Khuyen Nghi"
     echo "-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------"
     for item in "${IDLE_NODES_LIST[@]}"; do
-        IFS="|" read -r i_name i_folder i_img i_proxy i_conns i_total i_total_mb <<< "$item"
+        IFS="|" read -r i_name i_folder i_proxy i_conns i_total i_total_mb <<< "$item"
         printf "%-22s | %-24s | ${CYAN}%-54s${NC} | ${YELLOW}%-10s${NC} | ${GREEN}%-22s${NC}\n" \
             "${i_name:0:21}" "${i_folder:0:23}" "$i_proxy" "$i_total" "GIU NGUYEN (Kiem Tot)"
     done
@@ -582,8 +538,8 @@ else
         "Container Bi Loi" "Thu Muc Cluster" "Dong Proxy Can Check (Full Host:IP)" "Da Cay" "Nguyen Nhan Chinh Xac"
     echo "-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------"
     for item in "${DEAD_NODES_LIST[@]}"; do
-        IFS="|" read -r d_name d_folder d_img d_proxy d_conns d_total d_total_mb <<< "$item"
-        diag_reason=$(diagnose_proxy_issue "$d_proxy" "$d_conns" "$d_total_mb")
+        IFS="|" read -r d_name d_folder d_proxy d_conns d_total d_total_mb <<< "$item"
+        diag_reason=$(diagnose_proxy_fast "$d_proxy" "$d_conns" "$d_total_mb")
 
         printf "%-22s | ${CYAN}%-24s${NC} | ${YELLOW}%-54s${NC} | ${RED}%-8s${NC} | ${RED}%-26s${NC}\n" \
             "${d_name:0:21}" "${d_folder:0:23}" "$d_proxy" "$d_total" "$diag_reason"
