@@ -1,0 +1,14 @@
+# Runtime artifacts (không commit danh tính/login/installer lên git)
+instances/
+win-state.tsv
+win-containers.txt
+
+# Installer Windows (bản quyền, dung lượng lớn) + manifest SHA
+installers/*.exe
+installers/.sha256
+
+# Ảnh chụp màn hình login (chứa thông tin tài khoản — tuyệt đối không commit)
+*.png
+
+# Bản sao lưu danh tính
+*.tar.gz
