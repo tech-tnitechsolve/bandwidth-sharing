@@ -1,0 +1,10 @@
+{
+  "apiKey": "psx_REPLACE_WITH_YOUR_API_KEY",
+  "agentName": "my-windows-rig",
+  "walletAddress": "",
+  "country": "US",
+  "carrier": "unknown",
+  "wsConnections": 4,
+  "connectionMethod": "windows",
+  "verbose": false
+}
