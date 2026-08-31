@@ -1,0 +1,13 @@
+# Không đưa vào build context (vừa nhanh vừa tránh lộ credential vào image)
+instances/
+installers/
+*.exe
+*.png
+*.tar.gz
+proxies.txt
+win-state.tsv
+win-containers.txt
+.git/
+.gitignore
+README.md
+tier-b/

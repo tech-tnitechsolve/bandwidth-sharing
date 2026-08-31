@@ -1,0 +1,76 @@
+#=============================================================================
+#  Win_Proxy — Windows-box image (Wine + Xvfb) dùng cho app Windows-only
+#-----------------------------------------------------------------------------
+#  Build:
+#     cd Win_Proxy && docker build -f Dockerfile.wine -t winproxy/windows-box:1.0 .
+#
+#  Tối ưu nhẹ (RAM/disk):
+#   - wine64 KHÔNG kéo wine32/i386 (chỉ 64-bit). App 32-bit cần ARG WINE32=1.
+#   - mono/gecko bị disable (WINEDLLOVERRIDES) -> không download lúc first-run
+#     -> không tốn proxy, không lộ traffic ngoài TUN.
+#   - Bake sẵn wine prefix template -> first-boot KHÔNG cần wineboot (nhanh + ổn định).
+#   - Không cài winbind (giảm image).
+#=============================================================================
+FROM debian:bookworm-slim
+
+ARG WINE32=0
+ARG MSFONTS=0
+ENV DEBIAN_FRONTEND=noninteractive \
+    LANG=C.UTF-8 \
+    WINEARCH=win64 \
+    WINEDEBUG=-all \
+    WINEDLLOVERRIDES="mscoree=d;mshtml=d" \
+    DISPLAY=:99 \
+    WIN_DISPLAY=99 \
+    WIN_SCREEN=1280x720x16 \
+    WIN_HOME=/winehome \
+    WIN_PREFIX_DIR=/prefix \
+    WIN_IDENTITY_DIR=/identity \
+    TMP=/winehome/tmp \
+    TEMP=/winehome/tmp
+
+# wine64 + desktop ảo + công cụ login/install (KHÔNG winbind, KHÔNG wine32)
+# xdotool = tự đăng nhập · scrot = chụp ảnh xác minh (đều rất nhẹ)
+# hostname = đặt hostname máy (identity); util-linux (setpriv/runuser) có sẵn trong base.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      wine64 wine xvfb x11vnc x11-utils xauth \
+      xdotool scrot hostname \
+      cabextract unzip curl ca-certificates procps \
+      fonts-liberation fonts-dejavu-core tini \
+    && rm -rf /var/lib/apt/lists/*
+
+# (tùy chọn) font MS thật (Arial/Times New Roman...) -> canvas fingerprint sát hơn.
+# Bật MSFONTS=1 khi build nếu cần độ sâu cao (thêm ~50-60MB image, cần mạng lúc build).
+RUN if [ "$MSFONTS" = "1" ]; then \
+      apt-get update && echo "ttf-mscorefonts-installer msttcorefonts/accepted-mscorefonts-eula select true" | debconf-set-selections \
+      && apt-get install -y --no-install-recommends ttf-mscorefonts-installer \
+      && rm -rf /var/lib/apt/lists/*; \
+    fi
+
+# (tùy chọn) hỗ trợ app 32-bit — chỉ bật khi thực sự cần (image nặng thêm ~600MB)
+RUN if [ "$WINE32" = "1" ]; then \
+      dpkg --add-architecture i386 && apt-get update \
+      && apt-get install -y --no-install-recommends wine32:i386 \
+      && rm -rf /var/lib/apt/lists/*; \
+    fi
+
+COPY image/identity.sh   /usr/local/bin/identity.sh
+COPY image/win-init.sh   /usr/local/bin/win-init.sh
+COPY image/login.sh      /usr/local/bin/login.sh
+RUN chmod +x /usr/local/bin/identity.sh /usr/local/bin/win-init.sh /usr/local/bin/login.sh \
+    && mkdir -p /winehome/tmp /prefix /identity /installers \
+    && groupadd -g 10001 wineuser 2>/dev/null || true \
+    && useradd -m -u 10001 -g 10001 -s /bin/bash wineuser 2>/dev/null || true \
+    && chown -R wineuser:wineuser /winehome
+
+# Bake sẵn wine prefix template -> first-boot tức thì (không phải chờ wineboot)
+USER wineuser
+RUN WINEPREFIX=/opt/winprefix-template WINEDEBUG=-all wineboot -u >/dev/null 2>&1 || true \
+    && rm -rf /opt/winprefix-template/drive_c/users/wineuser/Temp/* 2>/dev/null || true
+
+# Entrypoint chạy với quyền ROOT: win-init.sh tự pin DNS (chống lộ DNS VPS) + đặt
+# hostname rồi TỰ HẠ quyền xuống wineuser (setpriv/runuser) trước khi chạy wine.
+# (Không thể dùng --hostname vì app container dùng --network=container:tun — Docker
+#  từ chối tổ hợp đó; hostname được đặt trong entrypoint thay thế.)
+USER root
+ENTRYPOINT ["/usr/bin/tini","--","/usr/local/bin/win-init.sh"]
