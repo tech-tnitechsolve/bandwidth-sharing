@@ -10,6 +10,7 @@
 #   - Ma trận 24+ App Profiles, FlapGuard 12h Cooldown & Staggered Boot Service.
 #   - Tích hợp công cụ chẩn đoán toàn diện: ii-status.sh & check-proxy.
 #   - Hỗ trợ hẹn giờ tắt máy an toàn (--auto-off HH:MM) bảo vệ SQLite Database.
+#   - Clean Architecture: Đã bóc tách Wipter để chạy độc lập tại thư mục riêng.
 # ==============================================================================
 
 set -euo pipefail
@@ -438,8 +439,6 @@ ii_profile() {
             P_APP="tun2socks"; P_BASE_MIN="20m"; P_POLICY="unless-stopped" ;;
         traffmon*)
             P_APP="traffmonetizer"; P_BASE_MIN="25m"; P_POLICY="unless-stopped" ;;
-        wipter*)
-            P_APP="wipter"; P_BASE_MIN="250m"; P_POLICY="on-failure:5" ;;
         packetstream*)
             P_APP="packetstream"; P_BASE_MIN="60m"; P_POLICY="on-failure:3" ;;
         pawns*|iproyal*)
@@ -471,7 +470,7 @@ ii_classify_app() {
             echo "heavy_node" ;;
         *honeygain*|*earnapp*|*pawns*|*iproyal*|*packetstream*|*repocket*)
             echo "medium_node" ;;
-        *traffmonetizer*|*traff*|*packetshare*|*proxylite*|*bitping*|*earn_fm*|*proxyrack*|*proxybase*|*wipter*|*uprock*|*antgain*|*wizard_gain*)
+        *traffmonetizer*|*traff*|*packetshare*|*proxylite*|*bitping*|*earn_fm*|*proxyrack*|*proxybase*|*uprock*|*antgain*|*wizard_gain*)
             echo "light_node" ;;
         *tunnel*|*hev*|*tun2proxy*|*socks5*|*dind*|*ur_network*|*tun*)
             echo "infra_tunnel" ;;
@@ -496,7 +495,7 @@ ii_is_suspend_sensitive() {
     local n="${1:-}"
     n=$(echo "$n" | tr '[:upper:]' '[:lower:]')
     case "$n" in
-        *honey*|*pawns*|*packetstream*|*packetshare*|*earnfm*|*wipter*|*depinext*|*ebesucher*|*adnade*|*repocket*|*grass*|*gradient*|*nodepay*|*dawn*|*titan*)
+        *honey*|*pawns*|*packetstream*|*packetshare*|*earnfm*|*depinext*|*ebesucher*|*adnade*|*repocket*|*grass*|*gradient*|*nodepay*|*dawn*|*titan*)
             return 0 ;;
         *)
             return 1 ;;
