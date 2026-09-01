@@ -3,6 +3,7 @@
 #  setup_vps.sh (2026 ULTIMATE MASTER - 100% FULL PLATFORM COVERAGE)
 #  Optimized for: InternetIncome (Test Branch), SpideNetwork & 400+ High-Density IPs
 #  Hardening: Passive IP-Auth Audit, Dynamic KSM, ZRAM ZSTD, Smart Repocket Healing
+#  Clean Architecture: Decoupled Heavy Wipter Engine for Dedicated Standalone Runner
 #============================================================================
 set -Eeuo pipefail
 
@@ -487,8 +488,6 @@ ii_profile() {
     earnapp*)
       P_APP="EarnApp";         P_BASE_MIN="60m";  P_POLICY="always" ;;
 
-    wipter*)
-      P_APP="Wipter";          P_BASE_MIN="250m"; P_POLICY="on-failure:5" ;;
     depinext*|grass*|gradient*|nodepay*|dawn*|oasis*|blockmesh*|pipe*|toggle*|functor*|navigate*|teneo*|meshchain*|openloop*|uprock*|customchrome*|customfirefox*)
       P_APP="Depin/Browser ext"; P_BASE_MIN="250m"; P_POLICY="on-failure:5" ;;
     ebesucher*)
@@ -520,7 +519,6 @@ ii_profile() {
       *titan-edge*)            ii_profile "titan" "" ;;
       *antgain*)               ii_profile "antgain" "" ;;
       *wizardgain*)            ii_profile "wizardgain" "" ;;
-      *wipter*)                ii_profile "wipter" "" ;;
       *packetsdk*)             ii_profile "packetsdk" "" ;;
       *castarsdk*)             ii_profile "castarsdk" "" ;;
       *uprock*)                ii_profile "uprock" "" ;;
@@ -530,7 +528,7 @@ ii_profile() {
   fi
 }
 
-II_SUSPEND_SENSITIVE="honey pawns packetstream packetshare earnfm wipter depinext ebesucher adnade grass gradient nodepay dawn titan uprock customchrome customfirefox"
+II_SUSPEND_SENSITIVE="honey pawns packetstream packetshare earnfm depinext ebesucher adnade grass gradient nodepay dawn titan uprock customchrome customfirefox"
 ii_is_suspend_sensitive() {
   local n="${1:-}"
   for a in $II_SUSPEND_SENSITIVE; do case "$n" in *${a}*) return 0 ;; esac; done
@@ -918,7 +916,7 @@ while IFS=$'\t' read -r cid cname mem_usage; do
   LIVE_ACTUAL_MB["$cid"]=$used_mb
   TOTAL_ACTUAL_USED_MB=$(( TOTAL_ACTUAL_USED_MB + used_mb ))
 
-  if [[ "$cname_clean" =~ wipter|depinext|ebesucher|adnade|dind|myst|grass|gradient|nodepay|dawn|titan|uprock|customchrome|customfirefox ]]; then
+  if [[ "$cname_clean" =~ depinext|ebesucher|adnade|dind|myst|grass|gradient|nodepay|dawn|titan|uprock|customchrome|customfirefox ]]; then
     HEAVY_COUNT=$((HEAVY_COUNT + 1))
   else
     LIGHT_COUNT=$((LIGHT_COUNT + 1))
@@ -947,7 +945,7 @@ for cid in "${!LIVE_ACTUAL_MB[@]}"; do
   base_min=${P_BASE_MIN%m}
   (( soft_floor < base_min )) && soft_floor=$base_min
 
-  if [[ "$cname" =~ wipter|depinext|ebesucher|adnade|dind|myst|grass|gradient|nodepay|dawn|titan|uprock|customchrome|customfirefox ]]; then
+  if [[ "$cname" =~ depinext|ebesucher|adnade|dind|myst|grass|gradient|nodepay|dawn|titan|uprock|customchrome|customfirefox ]]; then
     target_burst=$(( actual_mb + HEAVY_BURST_EXTRA ))
     (( target_burst < 500 )) && target_burst=500
     (( target_burst > 2048 )) && target_burst=2048
@@ -1008,7 +1006,7 @@ for cid in $(docker ps -aq 2>/dev/null); do
 
   docker start "$cid" >/dev/null 2>&1 || true
 
-  if [[ "$cname" =~ wipter|ebesucher|adnade|depinext|grass|gradient|nodepay|dawn|titan|uprock|customchrome|customfirefox ]]; then
+  if [[ "$cname" =~ ebesucher|adnade|depinext|grass|gradient|nodepay|dawn|titan|uprock|customchrome|customfirefox ]]; then
     sleep 8
   elif [[ "$cname" =~ honey|repocket|packetstream|packetshare|pawns|earnfm|earnapp ]]; then
     sleep 3.5
@@ -1077,9 +1075,9 @@ else
   echo "     -> TRẠNG THÁI: [AN TOÀN] Có thể nhồi thêm tối đa ~${REMAIN_LIGHT} node nhẹ nữa."
 fi
 echo ""
-echo "  2. SỨC CHỨA CHO ỨNG DỤNG NẶNG (Wipter / Browser Nodes):"
-echo "     -> Ngưỡng an toàn tối đa: ${SAFE_MAX_HEAVY} Node Wipter (khi không chạy node khác)."
-echo "     -> KHUYẾN NGHỊ: Trên máy hiện tại nên chạy tối đa 10 - 15 Node Wipter."
+echo "  2. SỨC CHỨA CHO ỨNG DỤNG NẶNG (Browser Nodes / Heavy Extensions / DePIN):"
+echo "     -> Ngưỡng an toàn tối đa: ${SAFE_MAX_HEAVY} Heavy Nodes (khi không chạy node khác)."
+echo "     -> KHUYẾN NGHỊ: Trên máy hiện tại nên chạy tối đa 10 - 15 Heavy Nodes."
 echo "========================================================================"
 EOF_CAPACITY
 chmod +x /usr/local/bin/ii-capacity.sh
@@ -1164,7 +1162,7 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 */15 * * * * root /usr/local/bin/ii-flapguard.sh >/dev/null 2>&1
 */2 * * * * root /usr/local/bin/ii-repocket-watchdog.sh >/dev/null 2>&1
 0 2 * * 0 root /usr/local/bin/ii-clean-logs.sh >/dev/null 2>&1
-*/15 * * * * root for c in $(docker ps -aq -f status=exited 2>/dev/null); do n=$(docker inspect -f '{{.Name}}{{.Config.Image}}' "$c" 2>/dev/null); case "$n" in *honey*|*pawns*|*packetstream*|*packetshare*|*earnfm*|*wipter*|*depinext*|*ebesucher*|*adnade*|*earnapp*|*repocket*|*grass*|*gradient*|*nodepay*|*dawn*|*titan*|*uprock*|*customchrome*|*customfirefox*) ;; *) docker start "$c" >/dev/null 2>&1 ;; esac; done
+*/15 * * * * root for c in $(docker ps -aq -f status=exited 2>/dev/null); do n=$(docker inspect -f '{{.Name}}{{.Config.Image}}' "$c" 2>/dev/null); case "$n" in *honey*|*pawns*|*packetstream*|*packetshare*|*earnfm*|*depinext*|*ebesucher*|*adnade*|*earnapp*|*repocket*|*grass*|*gradient*|*nodepay*|*dawn*|*titan*|*uprock*|*customchrome*|*customfirefox*) ;; *) docker start "$c" >/dev/null 2>&1 ;; esac; done
 0 3 * * 0 root /usr/bin/docker network prune -f >/dev/null 2>&1
 15 3 * * 0 root /usr/bin/docker volume prune -f >/dev/null 2>&1
 30 5 * * 0 root /usr/bin/docker image prune -f >/dev/null 2>&1
