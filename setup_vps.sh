@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #============================================================================
-#  setup_vps.sh (2026 ULTIMATE MASTER - ZERO-THROTTLE & ANTI-SUSPEND EDITION)
+#  setup_vps.sh (2026 ULTIMATE MASTER - 100% FULL PLATFORM COVERAGE)
 #  Optimized for: InternetIncome (Test Branch), SpideNetwork & 400+ High-Density IPs
-#  Hardening: Passive IP-Auth Audit, Dynamic KSM, ZRAM ZSTD & Bulk Telemetry
+#  Hardening: Passive IP-Auth Audit, Dynamic KSM, ZRAM ZSTD, Smart Repocket Healing
 #============================================================================
 set -Eeuo pipefail
 
@@ -59,7 +59,6 @@ CPU=$(nproc 2>/dev/null || echo 1)
 DISK_TOTAL_MB=$(df -m / | awk 'NR==2 {print $2}')
 DISK_FREE_MB=$(df -m / | awk 'NR==2 {print $4}')
 
-# Xác định Card mạng chính & Bắt Public IP Host qua card gốc (Bảo vệ IP-Auth)
 PRIMARY_IFACE=$(ip -4 route show default 2>/dev/null | awk '{print $5}' | head -n1)
 if [[ -z "$PRIMARY_IFACE" ]]; then
   PRIMARY_IFACE=$(ip link show up 2>/dev/null | grep -E '^[0-9]+: (eth|ens|enp|eno|vtnet)' | awk -F': ' '{print $2}' | head -n1)
@@ -116,10 +115,8 @@ apt-get install -y -qq --no-install-recommends \
   curl wget git unzip jq bc ca-certificates uuid-runtime cron logrotate net-tools inotify-tools \
   iptables-persistent netfilter-persistent systemd-timesyncd vnstat nload dnsutils util-linux e2fsprogs || true
 
-# Nạp module Kernel bổ sung cho ZRAM (Tương thích tuyệt đối Ubuntu 24.04/Contabo)
 apt-get install -y -qq linux-modules-extra-"$(uname -r)" 2>/dev/null || true
 
-# --- CẤU HÌNH ƯU TIÊN IPV4 CHO PROXY IP-AUTH (/etc/gai.conf) ---
 log "Cau hinh uu tien IPv4 (/etc/gai.conf) cho Proxy IP-Auth..."
 cat << 'EOF_GAI' > /etc/gai.conf
 precedence ::ffff:0:0/96  100
@@ -129,7 +126,6 @@ precedence ::/96          20
 precedence ::1/128        50
 EOF_GAI
 
-# --- ĐỒNG BỘ THỜI GIAN NTP CHUẨN XÁC ---
 if has_systemd; then
   systemctl unmask systemd-timesyncd 2>/dev/null || true
   systemctl enable --now systemd-timesyncd 2>/dev/null || true
@@ -138,9 +134,6 @@ fi
 timedatectl set-ntp true 2>/dev/null || true
 timedatectl set-timezone Asia/Ho_Chi_Minh 2>/dev/null || true
 
-#============================================================================
-# [TỐI ƯU DNS THÔNG MINH - CHỐNG LỆCH GEOIP, DIRECT UPSTREAM & KHÓA BẤT BIẾN]
-#============================================================================
 log "Cau hinh DNS Direct-Upstream & Khoa bat bien chattr +i..."
 UPSTREAM_DNS=""
 if [[ -f /run/systemd/resolve/resolv.conf ]]; then
@@ -167,7 +160,6 @@ rm -f /etc/resolv.conf
 chmod 644 /etc/resolv.conf
 chattr +i /etc/resolv.conf 2>/dev/null || true
 
-# --- PERSISTENCE CHO KERNEL MODULES ---
 mkdir -p /etc/modules-load.d
 cat > /etc/modules-load.d/internetincome.conf <<'EOF_MODULES'
 zram
@@ -189,9 +181,6 @@ if [[ ! -c /dev/net/tun ]]; then
   chmod 600 /dev/net/tun 2>/dev/null || true
 fi
 
-#============================================================================
-# SYSTEMD SERVICE TỰ ĐỘNG DUY TRÌ ZRAM ZSTD KHI REBOOT (PRIORITY 10)
-#============================================================================
 cat > /usr/local/bin/ii-init-zram.sh <<'EOF_ZRAM_INIT'
 #!/usr/bin/env bash
 MEM_MB=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
@@ -238,7 +227,6 @@ EOF_ZRAM_SVC
 fi
 /usr/local/bin/ii-init-zram.sh
 
-# --- DOCKER SETUP (SAFE RELOAD - ZERO DOWNTIME CHO CONTAINER ĐANG CHẠY) ---
 if ! command -v docker >/dev/null 2>&1; then
   log "VPS MOI: Dang tu dong cai dat Docker official..."
   curl -fsSL https://get.docker.com | sh || apt-get install -y -qq docker.io
@@ -276,33 +264,25 @@ EOF_DOCKER_SVC
   fi
 fi
 
-#============================================================================
-# [SMART ADAPTIVE KSM & CPU SCHEDULER ENGINE]
-#============================================================================
 if [[ -f /sys/kernel/mm/ksm/run ]]; then
   if (( MEM_MB <= 2500 )); then
-    # Tier 1: RAM <= 2.5GB -> Bật KSM để cứu RAM chống OOM
     echo 1 > /sys/kernel/mm/ksm/run 2>/dev/null || true
     echo 500 > /sys/kernel/mm/ksm/sleep_millisecs 2>/dev/null || true
     echo 1000 > /sys/kernel/mm/ksm/pages_to_scan 2>/dev/null || true
   elif (( MEM_MB <= 5000 )); then
-    # Tier 2: RAM <= 5GB -> KSM thư giãn (Relaxed), tiết kiệm CPU
     echo 1 > /sys/kernel/mm/ksm/run 2>/dev/null || true
     echo 2000 > /sys/kernel/mm/ksm/sleep_millisecs 2>/dev/null || true
     echo 300 > /sys/kernel/mm/ksm/pages_to_scan 2>/dev/null || true
   else
-    # Tier 3 & Tier 4 (RAM >= 8GB): TẮT KSM để giải phóng 15% CPU cho 400+ IPs
     echo 0 > /sys/kernel/mm/ksm/run 2>/dev/null || true
   fi
 fi
 
-# Multi-Core Receive Packet Steering (RPS) Bitmask
 RPS_MASK=$(printf "%x" $(( (1 << CPU) - 1 )) 2>/dev/null || echo "f")
 for f in /sys/class/net/*/queues/rx-*/rps_cpus; do
   echo "$RPS_MASK" > "$f" 2>/dev/null || true
 done
 
-# CPU Governor Performance
 for g in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
   echo performance > "$g" 2>/dev/null || true
 done
@@ -335,7 +315,6 @@ echo "  ZRAM COMPRESSION    : ZSTD (PERSISTENT SYSTEMD PRIORITY 10)"
 echo "  DNS ARCHITECTURE    : DIRECT NON-LOOPBACK (ANTI-UDP-DROP READY)"
 echo "=============================================================="
 
-# --- SWAPFILE TRÊN SSD (PRIORITY 0) ---
 CURR_DISK_SWAP_MB=$(swapon --show=NAME,SIZE --bytes 2>/dev/null | awk '/swapfile/{print int($2/1024/1024)}' || echo 0)
 if (( IS_CONTAINER != 1 )); then
   if (( CURR_DISK_SWAP_MB != TARGET_SWAP_MB )); then
@@ -356,7 +335,6 @@ fi
 apt-get clean 2>/dev/null || true
 journalctl --vacuum-size=10M 2>/dev/null || true
 
-# Diet bloatware & Vô hiệu hóa các dịch vụ ngầm vô dụng trên Cloud VPS
 if has_systemd; then
   systemctl stop snapd multipathd udisks2 accountsservice earlyoom ModemManager packagekit 2>/dev/null || true
   systemctl disable snapd multipathd udisks2 accountsservice earlyoom ModemManager packagekit 2>/dev/null || true
@@ -397,7 +375,6 @@ sysctl -w net.ipv6.conf.all.disable_ipv6=0 >/dev/null 2>&1 || true
 sysctl -w net.ipv6.conf.default.disable_ipv6=0 >/dev/null 2>&1 || true
 sysctl -w net.ipv6.conf.lo.disable_ipv6=0 >/dev/null 2>&1 || true
 
-# --- TỐI ƯU KERNEL CHUYÊN SÂU (NETWORK BATCHING & SCHEDULER FLATTENING) ---
 SYSCTL_FILE=/etc/sysctl.d/99-internetincome.conf
 cat > "$SYSCTL_FILE" <<EOF_SYSCTL
 net.core.default_qdisc = fq
@@ -434,8 +411,8 @@ fs.epoll.max_user_watches = 2097152
 net.ipv4.ip_local_port_range = 1024 65535
 net.ipv4.tcp_tw_reuse = 1
 net.ipv4.tcp_fin_timeout = 10
-net.ipv4.tcp_keepalive_time = 300
-net.ipv4.tcp_keepalive_intvl = 15
+net.ipv4.tcp_keepalive_time = 30
+net.ipv4.tcp_keepalive_intvl = 5
 net.ipv4.tcp_keepalive_probes = 3
 net.ipv4.tcp_slow_start_after_idle = 0
 net.netfilter.nf_conntrack_max = 524288
@@ -467,9 +444,6 @@ RuntimeMaxUse=5M
 EOF_JOURNAL
 if has_systemd; then systemctl restart systemd-journald 2>/dev/null || true; fi
 
-#============================================================================
-# THƯ VIỆN HỒ SƠ ỨNG DỤNG (ĐẦY ĐỦ 24+ PLATFORM CHUẨN THỰC TẾ)
-#============================================================================
 mkdir -p /usr/local/lib
 cat > /usr/local/lib/ii-app-profiles.sh <<'EOF_PROFILES'
 #!/usr/bin/env bash
@@ -483,15 +457,15 @@ ii_profile() {
   P_APP=""; P_BASE_MIN="20m"; P_POLICY="unless-stopped"
 
   case "$n" in
-    tun*|hev*|tun2proxy*)
+    tun*|hev*|tun2proxy*|gluetun*)
       P_APP="tun2socks";       P_BASE_MIN="20m";  P_POLICY="unless-stopped" ;;
-    dindurnetwork*|dindproxylite*|adnadedind*|dind*)
+    dind*)
       P_APP="docker-in-docker"; P_BASE_MIN="120m"; P_POLICY="unless-stopped" ;;
     traffmon*)
       P_APP="Traffmonetizer";  P_BASE_MIN="25m";  P_POLICY="unless-stopped" ;;
     bitping*)
       P_APP="Bitping";         P_BASE_MIN="35m";  P_POLICY="unless-stopped" ;;
-    proxylite*|proxyrack*|proxybase*|antgain*|wizardgain*|peer2profit*)
+    proxylite*|proxyrack*|proxybase*|antgain*|wizardgain*|peer2profit*|packetsdk*|castarsdk*)
       P_APP="LightweightProxy";P_BASE_MIN="25m";  P_POLICY="unless-stopped" ;;
     urnetwork*|titan*)
       P_APP="NetworkNode";     P_BASE_MIN="60m";  P_POLICY="unless-stopped" ;;
@@ -501,7 +475,7 @@ ii_profile() {
     honey*)
       P_APP="Honeygain";       P_BASE_MIN="60m";  P_POLICY="on-failure:3" ;;
     repocket*)
-      P_APP="Repocket";        P_BASE_MIN="60m";  P_POLICY="on-failure:3" ;;
+      P_APP="Repocket";        P_BASE_MIN="100m"; P_POLICY="unless-stopped" ;;
     packetstream*)
       P_APP="PacketStream";    P_BASE_MIN="60m";  P_POLICY="on-failure:3" ;;
     pawns*)
@@ -515,8 +489,8 @@ ii_profile() {
 
     wipter*)
       P_APP="Wipter";          P_BASE_MIN="250m"; P_POLICY="on-failure:5" ;;
-    depinext*|grass*|gradient*|nodepay*|dawn*|oasis*|blockmesh*|pipe*|toggle*|functor*|navigate*|teneo*|meshchain*|openloop*)
-      P_APP="Depin/Grass ext"; P_BASE_MIN="250m"; P_POLICY="on-failure:5" ;;
+    depinext*|grass*|gradient*|nodepay*|dawn*|oasis*|blockmesh*|pipe*|toggle*|functor*|navigate*|teneo*|meshchain*|openloop*|uprock*|customchrome*|customfirefox*)
+      P_APP="Depin/Browser ext"; P_BASE_MIN="250m"; P_POLICY="on-failure:5" ;;
     ebesucher*)
       P_APP="Ebesucher";       P_BASE_MIN="250m"; P_POLICY="on-failure:5" ;;
     adnade*)
@@ -547,11 +521,16 @@ ii_profile() {
       *antgain*)               ii_profile "antgain" "" ;;
       *wizardgain*)            ii_profile "wizardgain" "" ;;
       *wipter*)                ii_profile "wipter" "" ;;
+      *packetsdk*)             ii_profile "packetsdk" "" ;;
+      *castarsdk*)             ii_profile "castarsdk" "" ;;
+      *uprock*)                ii_profile "uprock" "" ;;
+      *dockweb*)               ii_profile "depinext" "" ;;
+      *nodepay*)               ii_profile "nodepay" "" ;;
     esac
   fi
 }
 
-II_SUSPEND_SENSITIVE="honey pawns packetstream packetshare earnfm wipter depinext ebesucher adnade repocket grass gradient nodepay dawn titan"
+II_SUSPEND_SENSITIVE="honey pawns packetstream packetshare earnfm wipter depinext ebesucher adnade grass gradient nodepay dawn titan uprock customchrome customfirefox"
 ii_is_suspend_sensitive() {
   local n="${1:-}"
   for a in $II_SUSPEND_SENSITIVE; do case "$n" in *${a}*) return 0 ;; esac; done
@@ -561,13 +540,15 @@ EOF_PROFILES
 chmod 644 /usr/local/lib/ii-app-profiles.sh
 . /usr/local/lib/ii-app-profiles.sh
 
-#============================================================================
-# HÀM TỰ ĐỘNG ĐỒNG BỘ PROPERTIES.CONF (CHUẨN 100% NHÁNH TEST)
-#============================================================================
 auto_patch_engageub_repo() {
-  log "Dong bo properties TEST (SOCKS5 DNS off, DoH on). KHONG ghi MAX_MEMORY..."
+  log "Dong bo properties TEST & format list proxy an toan..."
   ROOTS=(/opt /root /home /srv /home/ubuntu /home/opc)
   if [[ -n "${BASE_DIR:-}" ]]; then ROOTS+=("$BASE_DIR"); fi
+  
+  while IFS= read -r pf; do
+    [[ -f "$pf" ]] && sed -i 's/\r$//' "$pf" 2>/dev/null || true
+  done < <(find "${ROOTS[@]}" -maxdepth 5 -type f \( -name "*.txt" -o -name "*.list" \) -path "*/List_Proxy/*" 2>/dev/null | sort -u)
+
   while IFS= read -r f; do
     [[ -f "$f" ]] || continue
     grep -qE 'USE_SOCKS5_DNS|USE_PROXIES|USE_DNS_OVER_HTTPS' "$f" || continue
@@ -601,9 +582,6 @@ auto_patch_engageub_repo() {
 
 auto_patch_engageub_repo
 
-#============================================================================
-# FLAPGUARD ENGINE (CHỐNG LẶP LỖI RECONNECT LOOP)
-#============================================================================
 cat > /usr/local/bin/ii-flapguard.sh <<'EOF_FLAPGUARD'
 #!/usr/bin/env bash
 set -uo pipefail
@@ -670,10 +648,228 @@ EOF_FLAPGUARD
 chmod +x /usr/local/bin/ii-flapguard.sh
 ln -sf /usr/local/bin/ii-flapguard.sh /usr/bin/ii-flapguard 2>/dev/null || true
 
-#============================================================================
-# ENGINE PHÂN PHỐI TỰ ĐỘNG KÉP (DYNAMIC MEMORY + FAIR-SHARE CPU)
-# TUYỆT ĐỐI KHÔNG BÓP TRẦN HARD-CPUS ĐỂ BẢO TOÀN TỐC ĐỘ TẢI
-#============================================================================
+cat > /usr/local/bin/ii-repocket-watchdog.sh <<'EOF_RP_WATCHDOG'
+#!/usr/bin/env bash
+set -uo pipefail
+command -v docker >/dev/null 2>&1 || exit 0
+
+STATE_DIR="/var/lib/ii-repocket-watchdog"
+LOG_FILE="/var/log/ii-repocket.log"
+mkdir -p "$STATE_DIR" 2>/dev/null || true
+
+ts() { date '+%Y-%m-%d %H:%M:%S'; }
+log_rp() { echo "[$(ts)] [Repocket-Watchdog] $*" >> "$LOG_FILE"; }
+
+check_upstream_proxy_alive() {
+  local p_host="$1"
+  local p_port="$2"
+  [[ -z "$p_host" || -z "$p_port" ]] && return 0
+  timeout 2 bash -c "cat < /dev/null > /dev/tcp/$p_host/$p_port" 2>/dev/null
+  return $?
+}
+
+for cid in $(docker ps -aq 2>/dev/null); do
+  [[ -z "$cid" ]] && continue
+  
+  cname=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null | sed 's|^/||')
+  cimg=$(docker inspect -f '{{.Config.Image}}' "$cid" 2>/dev/null || echo "")
+  
+  if [[ ! "$cname" =~ repocket ]] && [[ ! "$cimg" =~ repocket ]]; then
+    continue
+  fi
+
+  status=$(docker inspect -f '{{.State.Status}}' "$cid" 2>/dev/null || echo "unknown")
+  running=$(docker inspect -f '{{.State.Running}}' "$cid" 2>/dev/null || echo "false")
+  net_mode=$(docker inspect -f '{{.HostConfig.NetworkMode}}' "$cid" 2>/dev/null || echo "")
+
+  state_file="$STATE_DIR/${cname}.state"
+  fail_count=0; last_attempt=0; cooldown_until=0; last_error="NONE"
+
+  if [[ -f "$state_file" ]]; then
+    read -r fail_count last_attempt cooldown_until last_error < "$state_file" 2>/dev/null || true
+    fail_count=${fail_count:-0}
+    last_attempt=${last_attempt:-0}
+    cooldown_until=${cooldown_until:-0}
+    last_error=${last_error:-"NONE"}
+  fi
+
+  now=$(date +%s)
+
+  target_tun=""
+  proxy_ip=""
+  proxy_port=""
+  if [[ "$net_mode" =~ ^container:(.+) ]]; then
+    target_tun="${BASH_REMATCH[1]}"
+    tun_envs=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$target_tun" 2>/dev/null || true)
+    proxy_ip=$(echo "$tun_envs" | grep '^SOCKS5_ADDR=' | cut -d= -f2-)
+    proxy_port=$(echo "$tun_envs" | grep '^SOCKS5_PORT=' | cut -d= -f2-)
+
+    if [[ -z "$proxy_ip" || -z "$proxy_port" ]]; then
+      raw_proxy=$(echo "$tun_envs" | grep '^PROXY=' | cut -d= -f2-)
+      if [[ -n "$raw_proxy" ]]; then
+        clean_p="${raw_proxy#*://}"
+        [[ "$clean_p" == *@* ]] && clean_p="${clean_p#*@}"
+        proxy_ip="${clean_p%%:*}"
+        proxy_port="${clean_p##*:}"
+      fi
+    fi
+  fi
+
+  if [[ "$running" == "true" && "$status" == "running" ]]; then
+    if (( fail_count > 0 && now - last_attempt > 180 )); then
+      log_rp "[$cname] Node da on dinh tro lai. Reset bo dem loi."
+      echo "0 $now 0 NONE" > "$state_file"
+    fi
+    continue
+  fi
+
+  if echo "$status" | grep -qiE "exited|dead|paused|created"; then
+    if (( now < cooldown_until )); then
+      continue
+    fi
+
+    if [[ -n "$target_tun" ]]; then
+      tun_running=$(docker inspect -f '{{.State.Running}}' "$target_tun" 2>/dev/null || echo "false")
+      if [[ "$tun_running" != "true" ]]; then
+        log_rp "[$cname] [NGUYÊN NHÂN: TUNNEL SẬP] Dang bat lai Tunnel ($target_tun) truoc..."
+        docker start "$target_tun" >/dev/null 2>&1 || true
+        sleep 2
+      fi
+    fi
+
+    proxy_alive=1
+    if [[ -n "$proxy_ip" && -n "$proxy_port" ]]; then
+      if ! check_upstream_proxy_alive "$proxy_ip" "$proxy_port"; then
+        proxy_alive=0
+      fi
+    fi
+
+    if (( proxy_alive == 0 )); then
+      cooldown_sec=480
+      cooldown_until=$(( now + cooldown_sec ))
+      echo "$fail_count $now $cooldown_until PROXY_DEAD" > "$state_file"
+      
+      log_rp "[$cname] [NGUYÊN NHÂN: PROXY DIE] Proxy ($proxy_ip:$proxy_port) khong phan hoi! Tam dung Repocket de tiet kiem CPU (Thu lai sau 8p)."
+      docker stop "$cid" >/dev/null 2>&1 || true
+      continue
+    fi
+
+    fail_count=$(( fail_count + 1 ))
+    last_attempt=$now
+
+    if (( fail_count <= 3 )); then
+      cooldown_sec=0
+      cooldown_until=0
+    elif (( fail_count <= 5 )); then
+      cooldown_sec=120
+      cooldown_until=$(( now + cooldown_sec ))
+    else
+      cooldown_sec=300
+      cooldown_until=$(( now + cooldown_sec ))
+    fi
+
+    echo "$fail_count $last_attempt $cooldown_until REPOCKET_DISCONNECT" > "$state_file"
+    log_rp "[$cname] [NGUYÊN NHÂN: LAG SOCKET] Proxy van song. Khoi dong lai Repocket (Lan #$fail_count, Cooldown ke tiep: ${cooldown_sec}s)..."
+    
+    docker update --restart=unless-stopped "$cid" >/dev/null 2>&1 || true
+    docker start "$cid" >/dev/null 2>&1 || true
+  fi
+done
+
+if [[ -f "$LOG_FILE" ]] && (( $(stat -c%s "$LOG_FILE" 2>/dev/null || echo 0) > 5242880 )); then
+  tail -n 500 "$LOG_FILE" > "${LOG_FILE}.tmp" && mv "${LOG_FILE}.tmp" "$LOG_FILE"
+fi
+EOF_RP_WATCHDOG
+chmod +x /usr/local/bin/ii-repocket-watchdog.sh
+ln -sf /usr/local/bin/ii-repocket-watchdog.sh /usr/bin/ii-repocket-watchdog 2>/dev/null || true
+
+cat > /usr/local/bin/ii-repocket-doctor <<'EOF_DOCTOR'
+#!/usr/bin/env bash
+set -uo pipefail
+
+C_G='\033[1;32m'; C_Y='\033[1;33m'; C_R='\033[1;31m'; C_C='\033[1;36m'; C_0='\033[0m'
+STATE_DIR="/var/lib/ii-repocket-watchdog"
+
+echo -e "\n${C_C}=================== [BẢNG CHẨN ĐOÁN CHI TIẾT REPOCKET & PROXY] ===================${C_0}"
+printf " %-22s %-20s %-16s %-16s %s\n" "CONTAINER" "PROXY IP:PORT" "PROXY STATUS" "REPOCKET STATUS" "KẾT LUẬN / NGUYÊN NHÂN"
+echo "-------------------------------------------------------------------------------------------------------"
+
+RP_CTRS=$(docker ps -aq 2>/dev/null)
+FOUND=0
+
+for cid in $RP_CTRS; do
+  cname=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null | sed 's|^/||')
+  cimg=$(docker inspect -f '{{.Config.Image}}' "$cid" 2>/dev/null || echo "")
+
+  if [[ ! "$cname" =~ repocket ]] && [[ ! "$cimg" =~ repocket ]]; then
+    continue
+  fi
+
+  FOUND=$((FOUND+1))
+  rp_status=$(docker inspect -f '{{.State.Status}}' "$cid" 2>/dev/null || echo "unknown")
+  net_mode=$(docker inspect -f '{{.HostConfig.NetworkMode}}' "$cid" 2>/dev/null || echo "")
+
+  proxy_str="Direct/None"
+  proxy_st_text="${C_Y}N/A${C_0}"
+  conclusion="${C_G}Bình thường (Online)${C_0}"
+
+  if [[ "$net_mode" =~ ^container:(.+) ]]; then
+    target_tun="${BASH_REMATCH[1]}"
+    tun_envs=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$target_tun" 2>/dev/null || true)
+    p_ip=$(echo "$tun_envs" | grep '^SOCKS5_ADDR=' | cut -d= -f2-)
+    p_port=$(echo "$tun_envs" | grep '^SOCKS5_PORT=' | cut -d= -f2-)
+
+    if [[ -z "$p_ip" || -z "$p_port" ]]; then
+      raw_proxy=$(echo "$tun_envs" | grep '^PROXY=' | cut -d= -f2-)
+      if [[ -n "$raw_proxy" ]]; then
+        clean_p="${raw_proxy#*://}"
+        [[ "$clean_p" == *@* ]] && clean_p="${clean_p#*@}"
+        p_ip="${clean_p%%:*}"
+        p_port="${clean_p##*:}"
+      fi
+    fi
+
+    if [[ -n "$p_ip" && -n "$p_port" ]]; then
+      proxy_str="${p_ip}:${p_port}"
+      if timeout 2 bash -c "cat < /dev/null > /dev/tcp/$p_ip/$p_port" 2>/dev/null; then
+        proxy_st_text="${C_G}ALIVE (Mở)${C_0}"
+      else
+        proxy_st_text="${C_R}DEAD (Sập)${C_0}"
+      fi
+    fi
+  fi
+
+  state_file="$STATE_DIR/${cname}.state"
+  last_err="NONE"
+  if [[ -f "$state_file" ]]; then
+    read -r _ _ _ last_err < "$state_file" 2>/dev/null || true
+  fi
+
+  if [[ "$rp_status" == "running" ]]; then
+    rp_st_text="${C_G}RUNNING${C_0}"
+    conclusion="${C_G}Hoạt động tốt 100%${C_0}"
+  else
+    rp_st_text="${C_R}${rp_status^^}${C_0}"
+    if [[ "$proxy_st_text" =~ DEAD ]]; then
+      conclusion="${C_R}[LỖI DO PROXY SẬP] Đang ngủ đông${C_0}"
+    elif [[ "$last_err" == "REPOCKET_DISCONNECT" ]]; then
+      conclusion="${C_Y}[LỖI SOCKET APP] Đang tự hồi phục${C_0}"
+    else
+      conclusion="${C_Y}Đang chờ điều phối${C_0}"
+    fi
+  fi
+
+  printf " %-22s %-20s %-25b %-25b %b\n" "$cname" "$proxy_str" "$proxy_st_text" "$rp_st_text" "$conclusion"
+done
+
+if (( FOUND == 0 )); then
+  echo " Không tìm thấy container Repocket nào trên VPS."
+fi
+echo -e "${C_C}=======================================================================================================${C_0}\n"
+EOF_DOCTOR
+chmod +x /usr/local/bin/ii-repocket-doctor
+ln -sf /usr/local/bin/ii-repocket-doctor /usr/bin/ii-repocket-doctor 2>/dev/null || true
+
 cat > /usr/local/bin/ii-autosync.sh <<'EOF_AUTOSYNC'
 #!/usr/bin/env bash
 set -uo pipefail
@@ -722,7 +918,7 @@ while IFS=$'\t' read -r cid cname mem_usage; do
   LIVE_ACTUAL_MB["$cid"]=$used_mb
   TOTAL_ACTUAL_USED_MB=$(( TOTAL_ACTUAL_USED_MB + used_mb ))
 
-  if [[ "$cname_clean" =~ wipter|depinext|ebesucher|adnade|dind|myst|grass|gradient|nodepay|dawn|titan ]]; then
+  if [[ "$cname_clean" =~ wipter|depinext|ebesucher|adnade|dind|myst|grass|gradient|nodepay|dawn|titan|uprock|customchrome|customfirefox ]]; then
     HEAVY_COUNT=$((HEAVY_COUNT + 1))
   else
     LIGHT_COUNT=$((LIGHT_COUNT + 1))
@@ -751,7 +947,7 @@ for cid in "${!LIVE_ACTUAL_MB[@]}"; do
   base_min=${P_BASE_MIN%m}
   (( soft_floor < base_min )) && soft_floor=$base_min
 
-  if [[ "$cname" =~ wipter|depinext|ebesucher|adnade|dind|myst|grass|gradient|nodepay|dawn|titan ]]; then
+  if [[ "$cname" =~ wipter|depinext|ebesucher|adnade|dind|myst|grass|gradient|nodepay|dawn|titan|uprock|customchrome|customfirefox ]]; then
     target_burst=$(( actual_mb + HEAVY_BURST_EXTRA ))
     (( target_burst < 500 )) && target_burst=500
     (( target_burst > 2048 )) && target_burst=2048
@@ -781,9 +977,6 @@ ln -sf /usr/local/bin/ii-autosync.sh /usr/bin/ii-autosync 2>/dev/null || true
 
 /usr/local/bin/ii-autosync.sh || true
 
-#============================================================================
-# ENGINE KHỞI ĐỘNG TUẦN TỰ TUNNEL-FIRST
-#============================================================================
 cat > /usr/local/bin/ii-staggered-start.sh <<'EOF_STAGGER'
 #!/usr/bin/env bash
 set -uo pipefail
@@ -795,7 +988,7 @@ echo "=== BAT DAU KHOI DONG TUAN TU ${TOTAL_NODES} CONTAINER ==="
 
 for cid in $(docker ps -aq 2>/dev/null); do
   cname=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null | sed 's|^/||')
-  if [[ "$cname" =~ ^tun|^hev|^socks5|^dind ]]; then
+  if [[ "$cname" =~ ^tun|^hev|^socks5|^gluetun|^dind ]]; then
     running=$(docker inspect -f '{{.State.Running}}' "$cid" 2>/dev/null || echo "false")
     if [[ "$running" != "true" ]]; then
       docker start "$cid" >/dev/null 2>&1 || true
@@ -815,7 +1008,7 @@ for cid in $(docker ps -aq 2>/dev/null); do
 
   docker start "$cid" >/dev/null 2>&1 || true
 
-  if [[ "$cname" =~ wipter|ebesucher|adnade|depinext|grass|gradient|nodepay|dawn|titan ]]; then
+  if [[ "$cname" =~ wipter|ebesucher|adnade|depinext|grass|gradient|nodepay|dawn|titan|uprock|customchrome|customfirefox ]]; then
     sleep 8
   elif [[ "$cname" =~ honey|repocket|packetstream|packetshare|pawns|earnfm|earnapp ]]; then
     sleep 3.5
@@ -848,9 +1041,6 @@ fi
 
 /usr/local/bin/ii-staggered-start.sh || true
 
-#============================================================================
-# CÔNG CỤ ĐÁNH GIÁ SỨC CHỨA PHẦN CỨNG (II-CAPACITY)
-#============================================================================
 cat > /usr/local/bin/ii-capacity.sh <<'EOF_CAPACITY'
 #!/usr/bin/env bash
 MEM_TOTAL_MB=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
@@ -868,7 +1058,6 @@ SAFE_MAX_HEAVY=$(( MAX_HEAVY_BY_RAM < MAX_HEAVY_BY_CPU ? MAX_HEAVY_BY_RAM : MAX_
 RAM_FREE_MB=$(free -m | awk '/^Mem:/{print $7}')
 LOAD_15=$(cat /proc/loadavg | awk '{print $3}')
 
-# Bắt IP qua card mạng chính
 PRIMARY_IFACE=$(ip -4 route show default 2>/dev/null | awk '{print $5}' | head -n1)
 PUB_IP=$(curl -s4 -m 3 --interface "$PRIMARY_IFACE" https://api.ipify.org 2>/dev/null || \
         curl -s4 -m 3 --interface "$PRIMARY_IFACE" https://icanhazip.com 2>/dev/null || \
@@ -896,9 +1085,6 @@ EOF_CAPACITY
 chmod +x /usr/local/bin/ii-capacity.sh
 ln -sf /usr/local/bin/ii-capacity.sh /usr/bin/ii-capacity 2>/dev/null || true
 
-#============================================================================
-# CÔNG CỤ DỌN DẸP LOG ĐỊNH KỲ
-#============================================================================
 cat > /usr/local/bin/ii-clean-logs.sh << 'EOF_CLEAN'
 #!/usr/bin/env bash
 find /var/lib/docker/containers/ -name "*-json.log" -size +10M -exec truncate -s 0 {} + 2>/dev/null || true
@@ -907,10 +1093,6 @@ EOF_CLEAN
 chmod +x /usr/local/bin/ii-clean-logs.sh
 ln -sf /usr/local/bin/ii-clean-logs.sh /usr/bin/ii-clean-logs 2>/dev/null || true
 
-#============================================================================
-# [CƠ CHẾ PASSIVE IP-AUTH & ANTI-SUSPEND PROXY INSPECTOR]
-# TUYỆT ĐỐI KHÔNG GỌI REQUEST RA NGOÀI TỪ CONTAINER TRÁNH BỊ KHÓA PROXY
-#============================================================================
 cat > /usr/local/bin/ii-test-proxy.sh << 'EOF_TEST_PROXY'
 #!/usr/bin/env bash
 CNAME="${1:-}"
@@ -937,7 +1119,6 @@ echo "  VPS IP-Auth Target: $PUB_HOST (IP Whitelist duy nhat hop le tren Dashboa
 if (( PID > 0 )); then
   CONNS=$(nsenter -t "$PID" -n ss -tan state established 2>/dev/null | grep -vc 'Recv-Q' || echo 0)
   
-  # Đọc lưu lượng thụ động qua /proc/$PID/net/dev (ưu tiên tun0, sau đó đến eth0)
   RX_BYTES=0
   TX_BYTES=0
   if [[ -f "/proc/$PID/net/dev" ]]; then
@@ -967,9 +1148,6 @@ EOF_TEST_PROXY
 chmod +x /usr/local/bin/ii-test-proxy.sh
 ln -sf /usr/local/bin/ii-test-proxy.sh /usr/bin/ii-test-proxy 2>/dev/null || true
 
-#============================================================================
-# CRON ENGINE & BẢO TRÌ ĐỊNH KỲ (ZERO-DISK-LOG MODE)
-#============================================================================
 install_cron_stack() {
   cat > /usr/local/bin/ii-restart-all.sh <<'EOF_RESTART'
 #!/usr/bin/env bash
@@ -984,8 +1162,9 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 */30 * * * * root /usr/local/bin/ii-autosync.sh >/dev/null 2>&1
 15 4 * * 0 root /usr/local/bin/ii-restart-all.sh >/dev/null 2>&1
 */15 * * * * root /usr/local/bin/ii-flapguard.sh >/dev/null 2>&1
+*/2 * * * * root /usr/local/bin/ii-repocket-watchdog.sh >/dev/null 2>&1
 0 2 * * 0 root /usr/local/bin/ii-clean-logs.sh >/dev/null 2>&1
-*/15 * * * * root for c in $(docker ps -aq -f status=exited 2>/dev/null); do n=$(docker inspect -f '{{.Name}}{{.Config.Image}}' "$c" 2>/dev/null); case "$n" in *honey*|*pawns*|*packetstream*|*packetshare*|*earnfm*|*wipter*|*depinext*|*ebesucher*|*adnade*|*earnapp*|*repocket*) ;; *) docker start "$c" >/dev/null 2>&1 ;; esac; done
+*/15 * * * * root for c in $(docker ps -aq -f status=exited 2>/dev/null); do n=$(docker inspect -f '{{.Name}}{{.Config.Image}}' "$c" 2>/dev/null); case "$n" in *honey*|*pawns*|*packetstream*|*packetshare*|*earnfm*|*wipter*|*depinext*|*ebesucher*|*adnade*|*earnapp*|*repocket*|*grass*|*gradient*|*nodepay*|*dawn*|*titan*|*uprock*|*customchrome*|*customfirefox*) ;; *) docker start "$c" >/dev/null 2>&1 ;; esac; done
 0 3 * * 0 root /usr/bin/docker network prune -f >/dev/null 2>&1
 15 3 * * 0 root /usr/bin/docker volume prune -f >/dev/null 2>&1
 30 5 * * 0 root /usr/bin/docker image prune -f >/dev/null 2>&1
@@ -997,10 +1176,6 @@ EOF_CRON
 
 if (( DO_CRON == 1 )); then install_cron_stack; fi
 
-#============================================================================
-# TELEMETRY DIAGNOSTIC SIÊU TỐC (0.2s - BULK QUERY ĐỘC QUYỀN)
-# BẢO TOÀN ĐẦY ĐỦ 100% 5 MỤC BÁO CÁO GỐC - KHÔNG GÂY TẢI CPU
-#============================================================================
 cat > /usr/local/bin/ii-status.sh <<'EOF_STATUS'
 #!/usr/bin/env bash
 set +u
@@ -1044,7 +1219,6 @@ fi
 ISSUES_COUNT=0
 WARNINGS_COUNT=0
 
-# --- [MỤC 1: DOCKER DIRECTORIES & PLATFORM SUMMARY] ---
 echo -e "\n${C_C}--- [1. CONTAINER CLUSTERS & ACTIVE SUMMARY] ---${C_0}"
 ROOTS=("$@")
 if (( ${#ROOTS[@]} == 0 )); then ROOTS=(/opt /root /home /srv /home/ubuntu /home/opc); fi
@@ -1062,9 +1236,8 @@ done < <(find "${ROOTS[@]}" -maxdepth 4 -name containernames.txt -type f 2>/dev/
 
 echo -e "  TOTAL SUMMARY: ${C_G}${RUNNING_CTRS} running${C_0} / ${TOTAL_CTRS} total (Exited: ${EXITED_CTRS})"
 
-# --- [MỤC 2: BẢNG PHÂN PHỔI BỘ NHỚ THỰC TẾ (RAM SÀN / TRẦN)] ---
 echo -e "\n${C_C}--- [2. PLATFORMS DYNAMIC MEMORY AUDIT] ---${C_0}"
-TUN_COUNT=$(docker ps -q --filter "name=^tun" --filter "name=^hev" --filter "name=^socks5" 2>/dev/null | sort -u | wc -l)
+TUN_COUNT=$(docker ps -q --filter "name=^tun" --filter "name=^hev" --filter "name=^socks5" --filter "name=^gluetun" 2>/dev/null | sort -u | wc -l)
 APP_COUNT=$(( RUNNING_CTRS - TUN_COUNT ))
 (( APP_COUNT < 0 )) && APP_COUNT=0
 
@@ -1076,7 +1249,6 @@ if (( APP_COUNT > 0 )); then
   printf "  ${C_G}%-18s %-7s %-12s %-12s %-16s %s${C_0}\n" "Income Workers" "$APP_COUNT" "30MB" "128MB" "unless-stopped" "[100% HEALTHY]"
 fi
 
-# --- [MỤC 3: SYSTEM RAM, ZRAM & CONCURRENCY] ---
 echo -e "\n${C_C}--- [3. SYSTEM RAM, ZRAM & CONCURRENCY] ---${C_0}"
 RAM_TOTAL=$(free -m | awk '/^Mem:/{print $2}')
 RAM_USED=$(free -m | awk '/^Mem:/{print $3}')
@@ -1098,7 +1270,6 @@ CONN_COUNT=$(cat /proc/sys/net/netfilter/nf_conntrack_count 2>/dev/null || echo 
 CONN_MAX=$(cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null || echo 524288)
 echo -e "  Conntrack Streams       : ${C_G}${CONN_COUNT} / ${CONN_MAX} (0% used)${C_0}"
 
-# --- [MỤC 4: CPU LOAD & DISK / FILESYSTEM HEALTH] ---
 echo -e "\n${C_C}--- [4. CPU LOAD & DISK / FILESYSTEM HEALTH] ---${C_0}"
 LOAD_AVG=$(cat /proc/loadavg 2>/dev/null | awk '{print $1, $2, $3}')
 echo "  CPU Cores: ${CPU_CORES} | Load Avg (1m, 5m, 15m): ${LOAD_AVG}"
@@ -1115,7 +1286,6 @@ DISK_USAGE=$(df -h / | awk 'NR==2 {print $5}')
 INODE_USAGE=$(df -i / | awk 'NR==2 {print $5}')
 echo "  Disk Storage Usage     : ${DISK_USAGE} used | Inode Usage: ${INODE_USAGE} used"
 
-# --- [MỤC 5: TỔNG KẾT CHẨN ĐOÁN PHẦN CỨNG & STABILITY] ---
 echo -e "\n${C_B}---------------- [24/7 INCOME QUALITY DIAGNOSTIC SUMMARY] ----------------${C_0}"
 SCORE=100
 SCORE=$(( SCORE - (ISSUES_COUNT * 20) - (WARNINGS_COUNT * 5) ))
@@ -1136,13 +1306,11 @@ EOF_STATUS
 chmod +x /usr/local/bin/ii-status.sh
 ln -sf /usr/local/bin/ii-status.sh /usr/bin/ii-status 2>/dev/null || true
 
-# Tự động nhận diện và liên kết check_network_proxy nếu có
 if [[ -f "./check_network_proxy.sh" ]]; then
   cp ./check_network_proxy.sh /usr/local/bin/check-proxy 2>/dev/null || true
   chmod +x /usr/local/bin/check-proxy 2>/dev/null || true
 fi
 
-# Đồng bộ file cài đặt cho các user
 cp -f "$0" /root/setup_vps.sh 2>/dev/null || true
 cp -f "$0" /home/ubuntu/setup_vps.sh 2>/dev/null || true
 
