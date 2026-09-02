@@ -6,7 +6,7 @@ set -e
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$DIR"
-BUILD_ID="2026-09-02-collect-v2"
+BUILD_ID="2026-09-02-no-terminal-retry"
 
 # 1. Tự cấp quyền & tạo phím tắt toàn hệ thống
 chmod +x "$0" 2>/dev/null || true
@@ -65,6 +65,7 @@ case "${1:-start}" in
     echo " • Diagnostic local                : 127.0.0.1:${DIAG_PORT}"
     echo " • Chặn target private/internal    : ${BLOCK_PRIVATE}"
     echo " • App version                     : ${WIPTER_APP_VERSION:-1.4.2}"
+    echo " • Retry terminal registration     : ${WIPTER_RETRY_TERMINAL_REGISTRATION:-false}"
     echo " • Tài khoản Wipter                : $WIPTER_EMAIL"
 
     # Tự động tìm proxies.txt nếu chưa có
@@ -120,6 +121,7 @@ case "${1:-start}" in
       -e WIPTER_MAX_CONN_PER_NODE="$MAX_CONN_PER_NODE" \
       -e WIPTER_IDLE_TIMEOUT_SEC="$IDLE_TIMEOUT" \
       -e WIPTER_BLOCK_PRIVATE_TARGETS="$BLOCK_PRIVATE" \
+      -e WIPTER_RETRY_TERMINAL_REGISTRATION="${WIPTER_RETRY_TERMINAL_REGISTRATION:-false}" \
       wipter-engine:latest >/dev/null
 
     echo "=================================================================="

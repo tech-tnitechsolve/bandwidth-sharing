@@ -191,8 +191,9 @@ var (
 	maxConnPerNode     = 32
 	maxConnGlobal      = 2000
 	bridgeIdleTimeout  = 120 * time.Second
-	blockPrivateTarget = true
-	globalConnSem      = make(chan struct{}, 2000)
+	blockPrivateTarget        = true
+	retryTerminalRegistration = false
+	globalConnSem            = make(chan struct{}, 2000)
 )
 
 func getEnvBool(key string, fallback bool) bool {
@@ -1151,7 +1152,12 @@ func (n *NodeSession) Run(ctx context.Context, auth *MasterAuth) {
 				} else if isRegistrationError(errStr) {
 					globalRegistry.Update(n.ID, host, n.Profile.Hostname, "REG_REJECTED", fmt.Sprintf("[REGISTRATION_4500] %s", errStr), 0)
 					// Registration rejection is a control-plane/schema/account/IP policy issue, not a dead proxy.
-					// Avoid quarantining it as PROXY_DEAD; retry slowly to keep 24/7 process stable.
+					// Default is fail-closed/no-spam: hold the node until process restart or config change.
+					if !retryTerminalRegistration {
+						globalRegistry.Update(n.ID, host, n.Profile.Hostname, "REG_REJECTED", "[NO_AUTO_RETRY] terminal registration rejection; set WIPTER_RETRY_TERMINAL_REGISTRATION=true to retry periodically", 0)
+						<-ctx.Done()
+						return
+					}
 					sleepSec = 10 * time.Minute
 				} else if fc >= 3 {
 					atomic.AddInt32(&isolatedDeadNode, 1)
@@ -1481,6 +1487,7 @@ func startDiagnosticServer() {
 			"max_conn_global": maxConnGlobal,
 			"max_conn_per_node": maxConnPerNode,
 			"block_private_targets": blockPrivateTarget,
+			"retry_terminal_registration": retryTerminalRegistration,
 			"host_total_mb": atomic.LoadInt64(&totalHostRAM_MB),
 			"host_avail_mb": atomic.LoadInt64(&availHostRAM_MB),
 			"pressure_zone": zoneName,
@@ -1510,6 +1517,7 @@ func main() {
 	maxConnGlobal = getEnvInt("WIPTER_MAX_CONN_GLOBAL", maxConnGlobal)
 	bridgeIdleTimeout = time.Duration(getEnvInt("WIPTER_IDLE_TIMEOUT_SEC", int(bridgeIdleTimeout/time.Second))) * time.Second
 	blockPrivateTarget = getEnvBool("WIPTER_BLOCK_PRIVATE_TARGETS", blockPrivateTarget)
+	retryTerminalRegistration = getEnvBool("WIPTER_RETRY_TERMINAL_REGISTRATION", retryTerminalRegistration)
 	globalConnSem = make(chan struct{}, maxConnGlobal)
 
 	ctx, cancel := context.WithCancel(context.Background())
