@@ -271,10 +271,41 @@ func nowStamp() string {
 }
 
 func extractErrorCode(msg string) string {
+	upper := strings.ToUpper(msg)
+	switch {
+	case strings.Contains(upper, "CLOSE 4500") || strings.Contains(upper, "REGISTRATION REJ") || strings.Contains(upper, "REGISTRATION TIMEOUT"):
+		return "REGISTRATION_4500"
+	case strings.Contains(upper, "TOO_MANY_CONNECTIONS_FROM_IP"):
+		return "TOO_MANY_CONNECTIONS_FROM_IP"
+	case strings.Contains(upper, "IP_IS_BLACKLISTED"):
+		return "IP_IS_BLACKLISTED"
+	case strings.Contains(upper, "NON_RESIDENTIAL_IP"):
+		return "NON_RESIDENTIAL_IP"
+	case strings.Contains(upper, "SOCKS") || strings.Contains(upper, "PROXY") || strings.Contains(upper, "TIMEOUT"):
+		return "PROXY_OR_TIMEOUT"
+	case strings.Contains(upper, "401") || strings.Contains(upper, "UNAUTHORIZED") || strings.Contains(upper, "TOKEN"):
+		return "AUTH_TOKEN"
+	case strings.Contains(upper, "TUNNEL_EXIT"):
+		return "TUNNEL_EXIT"
+	case strings.Contains(upper, "BACKPRESSURE"):
+		return "BACKPRESSURE"
+	case strings.Contains(upper, "BLOCKED_TARGET"):
+		return "BLOCKED_TARGET"
+	}
 	if m := errorCodePattern.FindStringSubmatch(msg); len(m) == 2 {
 		return m[1]
 	}
 	return ""
+}
+
+func isRegistrationError(errStr string) bool {
+	upper := strings.ToUpper(errStr)
+	return strings.Contains(upper, "CLOSE 4500") || strings.Contains(upper, "REGISTRATION REJ") || strings.Contains(upper, "REGISTRATION TIMEOUT")
+}
+
+func isAuthError(errStr string) bool {
+	upper := strings.ToUpper(errStr)
+	return strings.Contains(upper, "401") || strings.Contains(upper, "UNAUTHORIZED") || strings.Contains(upper, "TOKEN")
 }
 
 func (r *NodeRegistry) Update(id int, host, device, status, lastErr string, addBytes uint64) {
@@ -1061,16 +1092,21 @@ func (n *NodeSession) Run(ctx context.Context, auth *MasterAuth) {
 				var sleepSec time.Duration
 				errStr := err.Error()
 
-				if strings.Contains(errStr, "401") || strings.Contains(errStr, "unauthorized") {
+				if isAuthError(errStr) {
 					go auth.Authenticate()
-					globalRegistry.Update(n.ID, host, n.Profile.Hostname, "AUTH_RETRY", "Token hết hạn, đang làm mới...", 0)
+					globalRegistry.Update(n.ID, host, n.Profile.Hostname, "AUTH_RETRY", "[AUTH_TOKEN] Token hết hạn hoặc bị từ chối, đang làm mới...", 0)
 					sleepSec = 10 * time.Second
+				} else if isRegistrationError(errStr) {
+					globalRegistry.Update(n.ID, host, n.Profile.Hostname, "REG_REJECTED", fmt.Sprintf("[REGISTRATION_4500] %s", errStr), 0)
+					// Registration rejection is a control-plane/schema/account/IP policy issue, not a dead proxy.
+					// Avoid quarantining it as PROXY_DEAD; retry slowly to keep 24/7 process stable.
+					sleepSec = 10 * time.Minute
 				} else if fc >= 3 {
 					atomic.AddInt32(&isolatedDeadNode, 1)
 					globalRegistry.Update(n.ID, host, n.Profile.Hostname, "DEAD_QUARANTINE", fmt.Sprintf("[PROXY_DEAD] %s", errStr), 0)
 					sleepSec = 5 * time.Minute
 				} else {
-					globalRegistry.Update(n.ID, host, n.Profile.Hostname, "RETRYING", fmt.Sprintf("[LỖI #%d] %s", fc, errStr), 0)
+					globalRegistry.Update(n.ID, host, n.Profile.Hostname, "RETRYING", fmt.Sprintf("[%s] %s", extractErrorCode(errStr), errStr), 0)
 					sleepSec = time.Duration(8+mathRand.Intn(12)) * time.Second
 				}
 
