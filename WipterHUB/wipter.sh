@@ -225,9 +225,9 @@ case "${1:-start}" in
     ;;
 
   restart)
-    $0 stop
+    bash "$DIR/wipter.sh" stop
     sleep 2
-    $0 start
+    bash "$DIR/wipter.sh" start
     ;;
 
   logs)
