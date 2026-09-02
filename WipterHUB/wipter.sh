@@ -39,8 +39,29 @@ case "${1:-start}" in
       exit 1
     fi
 
-    HOST_IP=$(curl -s4 -m 3 https://api.ipify.org || curl -s4 -m 3 https://icanhazip.com || echo "Unknown")
-    echo " • Public IPv4 (IP-Auth Whitelist) : $HOST_IP"
+    if ! command -v docker >/dev/null 2>&1; then
+      echo "[LỖI] Chưa cài Docker hoặc Docker không có trong PATH. Cài Docker trước khi chạy wipter start."
+      exit 1
+    fi
+    if ! docker info >/dev/null 2>&1; then
+      echo "[LỖI] Docker daemon chưa chạy hoặc user hiện tại không có quyền dùng Docker."
+      exit 1
+    fi
+
+    DIAG_PORT="${WIPTER_DIAGNOSTIC_HOST_PORT:-28999}"
+    MAX_CONN_GLOBAL="${WIPTER_MAX_CONN_GLOBAL:-2000}"
+    MAX_CONN_PER_NODE="${WIPTER_MAX_CONN_PER_NODE:-32}"
+    IDLE_TIMEOUT="${WIPTER_IDLE_TIMEOUT_SEC:-120}"
+    BLOCK_PRIVATE="${WIPTER_BLOCK_PRIVATE_TARGETS:-true}"
+    MEM_ARGS=()
+    if [ -n "${WIPTER_MEMORY_LIMIT:-}" ]; then
+      MEM_ARGS=(--memory "$WIPTER_MEMORY_LIMIT" --memory-swap "$WIPTER_MEMORY_LIMIT")
+    fi
+
+    echo " • Chế độ IP-Auth                  : Không probe/check IP ra dịch vụ bên ngoài"
+    echo " • Network Docker                  : bridge + outbound SNAT qua IPv4 VPS"
+    echo " • Diagnostic local                : 127.0.0.1:${DIAG_PORT}"
+    echo " • Chặn target private/internal    : ${BLOCK_PRIVATE}"
     echo " • Tài khoản Wipter                : $WIPTER_EMAIL"
 
     # Tự động tìm proxies.txt nếu chưa có
@@ -63,7 +84,7 @@ case "${1:-start}" in
     echo " • Số lượng Proxies nạp vào       : ${TOTAL_PROXIES} IPs"
 
     touch "$DIR/devices_state.json"
-    chmod 666 "$DIR/devices_state.json" 2>/dev/null || true
+    chmod 600 "$DIR/devices_state.json" 2>/dev/null || true
     ulimit -n 65535 2>/dev/null || true
 
     echo " • Đang kiểm tra & Build Docker Image..."
@@ -74,8 +95,14 @@ case "${1:-start}" in
     echo " • Đang khởi chạy Wipter Hub..."
     docker run -d \
       --name wipter-standalone-hub \
-      --net=host \
+      --network bridge \
+      -p "127.0.0.1:${DIAG_PORT}:28999" \
       --restart always \
+      --cap-drop=ALL \
+      --security-opt no-new-privileges:true \
+      --pids-limit 4096 \
+      --tmpfs /tmp:rw,nosuid,nodev,size=64m \
+      "${MEM_ARGS[@]}" \
       --log-driver json-file \
       --log-opt max-size=5m \
       --log-opt max-file=2 \
@@ -84,6 +111,11 @@ case "${1:-start}" in
       -v "$DIR/devices_state.json:/app/devices_state.json:rw" \
       -e WIPTER_EMAIL="$WIPTER_EMAIL" \
       -e WIPTER_PASSWORD="$WIPTER_PASSWORD" \
+      -e WIPTER_DIAGNOSTIC_ADDR="0.0.0.0:28999" \
+      -e WIPTER_MAX_CONN_GLOBAL="$MAX_CONN_GLOBAL" \
+      -e WIPTER_MAX_CONN_PER_NODE="$MAX_CONN_PER_NODE" \
+      -e WIPTER_IDLE_TIMEOUT_SEC="$IDLE_TIMEOUT" \
+      -e WIPTER_BLOCK_PRIVATE_TARGETS="$BLOCK_PRIVATE" \
       wipter-engine:latest >/dev/null
 
     echo "=================================================================="
@@ -96,7 +128,17 @@ case "${1:-start}" in
     ;;
 
   doctor|check)
-    RAW_JSON=$(curl -s -m 2 http://127.0.0.1:28999/status 2>/dev/null || echo "")
+    DIAG_PORT="${WIPTER_DIAGNOSTIC_HOST_PORT:-28999}"
+    if ! command -v curl >/dev/null 2>&1; then
+      echo "[LỖI] Thiếu curl để gọi diagnostic API. Cài bằng: apt-get update && apt-get install -y curl"
+      exit 1
+    fi
+    if ! command -v jq >/dev/null 2>&1; then
+      echo "[LỖI] Thiếu jq để hiển thị bảng doctor. Cài bằng: apt-get update && apt-get install -y jq"
+      exit 1
+    fi
+
+    RAW_JSON=$(curl -s -m 2 "http://127.0.0.1:${DIAG_PORT}/status" 2>/dev/null || echo "")
     if [ -z "$RAW_JSON" ]; then
       echo "[LỖI] Không thể kết nối tới Wipter Engine. Hãy chắc chắn container đang chạy (wipter start)."
       exit 1
@@ -112,40 +154,66 @@ case "${1:-start}" in
     HOST_TOTAL=$(echo "$RAW_JSON" | jq -r '.host_total_mb // 0')
     HOST_AVAIL=$(echo "$RAW_JSON" | jq -r '.host_avail_mb // 0')
     ZONE=$(echo "$RAW_JSON" | jq -r '.pressure_zone // "UNKNOWN"')
+    ACTIVE_CONN=$(echo "$RAW_JSON" | jq -r '.active_connections // 0')
+    MAX_CONN=$(echo "$RAW_JSON" | jq -r '.max_conn_global // 0')
+    BLOCK_PRIVATE=$(echo "$RAW_JSON" | jq -r '.block_private_targets // true')
 
     echo -e "\n${C_C}========================= [BẢNG CHẨN ĐOÁN CHI TIẾT TỪNG NODE WIPTER] =========================${C_0}"
-    echo -e " [TÌNH TRẠNG RAM VPS] : ${C_G}Trống ${HOST_AVAIL}MB / Tổng ${HOST_TOTAL}MB${C_0} | [VÙNG CO GIÃN]: ${C_Y}${ZONE}${C_0}"
-    echo "---------------------------------------------------------------------------------------------------------------"
-    printf " %-9s %-22s %-16s %-18s %-12s %s\n" "NODE ID" "PROXY IP:PORT" "HOSTNAME" "STATUS" "RELAY DATA" "GHI CHÚ / NGUYÊN NHÂN LỖI"
-    echo "---------------------------------------------------------------------------------------------------------------"
+    echo -e " [TÌNH TRẠNG RAM VPS] : ${C_G}Trống ${HOST_AVAIL}MB / Tổng ${HOST_TOTAL}MB${C_0} | [VÙNG CO GIÃN]: ${C_Y}${ZONE}${C_0} | Conn: ${ACTIVE_CONN}/${MAX_CONN} | BlockPrivate: ${BLOCK_PRIVATE}"
+    echo "------------------------------------------------------------------------------------------------------------------------------------------------------"
+    printf " %-9s %-22s %-14s %-18s %-10s %-7s %-5s %-5s %-15s %s\n" "NODE ID" "PROXY IP:PORT" "HOSTNAME" "STATUS" "RELAY" "CONN" "FAIL" "TUN" "ERR_CODE" "GHI CHÚ"
+    echo "------------------------------------------------------------------------------------------------------------------------------------------------------"
 
     echo "$RAW_JSON" | jq -c '.nodes[]' 2>/dev/null | while IFS= read -r node; do
       id=$(echo "$node" | jq -r '.id')
       host=$(echo "$node" | jq -r '.proxy_host')
       dev=$(echo "$node" | jq -r '.device_name')
       st=$(echo "$node" | jq -r '.status')
-      bytes=$(echo "$node" | jq -r '.relay_bytes')
-      mb=$(awk "BEGIN {printf \"%.2f MB\", $bytes/1048576}")
-      err=$(echo "$node" | jq -r '.last_error')
+      relay_mb=$(echo "$node" | jq -r '.relay_mb // "0.00"')
+      conn=$(echo "$node" | jq -r '.active_connections // 0')
+      fail=$(echo "$node" | jq -r '.fail_count // 0')
+      tun=$(echo "$node" | jq -r '.tunnel_restarts // 0')
+      code=$(echo "$node" | jq -r '.last_error_code // ""')
+      err=$(echo "$node" | jq -r '.last_error // ""')
 
       if [[ "$st" == "ONLINE" ]]; then
-        st_text="${C_G}ONLINE (ALIVE)${C_0}"
-      elif [[ "$st" == "DEAD_QUARANTINE" ]]; then
-        st_text="${C_R}DEAD (ISOLATED)${C_0}"
+        st_text="${C_G}ONLINE${C_0}"
+      elif [[ "$st" == "REG_REJECTED" || "$st" == "DEAD_QUARANTINE" || "$st" == "TUNNEL_CONFIG_ERROR" ]]; then
+        st_text="${C_R}${st}${C_0}"
       else
         st_text="${C_Y}${st}${C_0}"
       fi
 
-      printf " Node %03d  %-22s %-16s %-28b %-12s %s\n" "$id" "$host" "$dev" "$st_text" "$mb" "${err:0:38}"
+      printf " Node %03d  %-22s %-14s %-27b %-10s %-7s %-5s %-5s %-15s %s\n" "$id" "$host" "$dev" "$st_text" "${relay_mb}MB" "$conn" "$fail" "$tun" "${code:0:15}" "${err:0:48}"
     done
 
-    echo "---------------------------------------------------------------------------------------------------------------"
+    echo "------------------------------------------------------------------------------------------------------------------------------------------------------"
     PERCENT="0.0%"
     if (( TOTAL > 0 )); then
       PERCENT=$(awk "BEGIN {printf \"%.1f%%\", ($ONLINE/$TOTAL)*100}")
     fi
     echo -e " ${C_G}TỔNG KẾT: ${ONLINE}/${TOTAL} Nodes ONLINE (${PERCENT})${C_0} | ${C_R}${DEAD} Nodes DEAD (Đang cách ly)${C_0} | Băng thông: ${TOTAL_MB} MB"
     echo -e "${C_C}===============================================================================================================${C_0}\n"
+    ;;
+
+  json|status-json)
+    DIAG_PORT="${WIPTER_DIAGNOSTIC_HOST_PORT:-28999}"
+    if ! command -v curl >/dev/null 2>&1; then
+      echo "[LỖI] Thiếu curl để gọi diagnostic API. Cài bằng: apt-get update && apt-get install -y curl"
+      exit 1
+    fi
+    if command -v jq >/dev/null 2>&1; then
+      curl -s -m 2 "http://127.0.0.1:${DIAG_PORT}/status" | jq .
+    else
+      curl -s -m 2 "http://127.0.0.1:${DIAG_PORT}/status"
+      echo
+    fi
+    ;;
+
+  health)
+    DIAG_PORT="${WIPTER_DIAGNOSTIC_HOST_PORT:-28999}"
+    curl -s -m 2 "http://127.0.0.1:${DIAG_PORT}/healthz" || true
+    echo
     ;;
 
   stop)
@@ -174,7 +242,7 @@ case "${1:-start}" in
     ;;
 
   *)
-    echo "Cách dùng: wipter {start|stop|restart|logs|stats|doctor}"
+    echo "Cách dùng: wipter {start|stop|restart|logs|stats|doctor|json|health}"
     exit 1
     ;;
 esac

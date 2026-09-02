@@ -1,0 +1,11 @@
+# Do not send credentials/runtime data to Docker build context
+config.env
+proxies.txt
+devices_state.json
+devices_state.json.tmp
+*.log
+*.tmp
+.git
+.gitignore
+README.md
+Readme.md

@@ -23,6 +23,7 @@ import (
 	"regexp"
 	"runtime"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -42,7 +43,7 @@ const (
 	FRPC_TOKEN        = "nZ7wP25ETgQaq9eKA6b4JR"
 	FRPC_SERVER_PORT  = "10000"
 	STATE_FILE        = "devices_state.json"
-	DIAGNOSTIC_PORT   = "127.0.0.1:28999"
+	DIAGNOSTIC_ADDR_DEFAULT = "127.0.0.1:28999"
 )
 
 const (
@@ -182,16 +183,78 @@ var (
 	onlineNodesCount int32
 	isolatedDeadNode int32
 	accumulatedBytes uint64
+	activeConnections int32
 )
 
+var (
+	maxConnPerNode     = 32
+	maxConnGlobal      = 2000
+	bridgeIdleTimeout  = 120 * time.Second
+	blockPrivateTarget = true
+	globalConnSem      = make(chan struct{}, 2000)
+)
+
+func getEnvBool(key string, fallback bool) bool {
+	v := strings.TrimSpace(strings.ToLower(os.Getenv(key)))
+	if v == "" {
+		return fallback
+	}
+	switch v {
+	case "1", "true", "yes", "y", "on":
+		return true
+	case "0", "false", "no", "n", "off":
+		return false
+	default:
+		return fallback
+	}
+}
+
+func getEnvInt(key string, fallback int) int {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		return fallback
+	}
+	return n
+}
+
+func tryAcquire(sem chan struct{}) bool {
+	select {
+	case sem <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func releaseSem(sem chan struct{}) {
+	select {
+	case <-sem:
+	default:
+	}
+}
+
 type NodeDiagnosticInfo struct {
-	ID          int    `json:"id"`
-	ProxyHost   string `json:"proxy_host"`
-	DeviceName  string `json:"device_name"`
-	Status      string `json:"status"`
-	RelayBytes  uint64 `json:"relay_bytes"`
-	LastError   string `json:"last_error"`
-	ConnectedAt string `json:"connected_at"`
+	ID                int    `json:"id"`
+	ProxyHost         string `json:"proxy_host"`
+	DeviceName        string `json:"device_name"`
+	Status            string `json:"status"`
+	StatusSince       string `json:"status_since"`
+	UpdatedAt         string `json:"updated_at"`
+	RelayBytes        uint64 `json:"relay_bytes"`
+	RelayMB           string `json:"relay_mb"`
+	LastError         string `json:"last_error"`
+	LastErrorCode     string `json:"last_error_code"`
+	LastErrorAt       string `json:"last_error_at"`
+	ConnectedAt       string `json:"connected_at"`
+	ActiveConnections int32  `json:"active_connections"`
+	LocalBridgePort   int    `json:"local_bridge_port"`
+	RelayIP           string `json:"relay_ip"`
+	TunnelRestarts    uint64 `json:"tunnel_restarts"`
+	FailCount         int    `json:"fail_count"`
 }
 
 type NodeRegistry struct {
@@ -201,16 +264,36 @@ type NodeRegistry struct {
 
 var globalRegistry = &NodeRegistry{nodes: make(map[int]*NodeDiagnosticInfo)}
 
+var errorCodePattern = regexp.MustCompile(`^\[([^\]]+)\]`)
+
+func nowStamp() string {
+	return time.Now().Format("2006-01-02 15:04:05")
+}
+
+func extractErrorCode(msg string) string {
+	if m := errorCodePattern.FindStringSubmatch(msg); len(m) == 2 {
+		return m[1]
+	}
+	return ""
+}
+
 func (r *NodeRegistry) Update(id int, host, device, status, lastErr string, addBytes uint64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	n, exists := r.nodes[id]
 	if !exists {
-		n = &NodeDiagnosticInfo{ID: id, ProxyHost: host, DeviceName: device}
+		n = &NodeDiagnosticInfo{ID: id, ProxyHost: host, DeviceName: device, StatusSince: nowStamp()}
 		r.nodes[id] = n
 	}
-	if status != "" {
+	if host != "" {
+		n.ProxyHost = host
+	}
+	if device != "" {
+		n.DeviceName = device
+	}
+	if status != "" && status != n.Status {
 		n.Status = status
+		n.StatusSince = nowStamp()
 		if status == "ONLINE" && n.ConnectedAt == "" {
 			n.ConnectedAt = time.Now().Format("15:04:05")
 		} else if status != "ONLINE" {
@@ -222,8 +305,30 @@ func (r *NodeRegistry) Update(id int, host, device, status, lastErr string, addB
 		cleanErr = strings.ReplaceAll(cleanErr, "\n", " ")
 		cleanErr = strings.ReplaceAll(cleanErr, "\r", "")
 		n.LastError = strings.TrimSpace(cleanErr)
+		n.LastErrorCode = extractErrorCode(n.LastError)
+		n.LastErrorAt = nowStamp()
 	}
-	n.RelayBytes += addBytes
+	if addBytes > 0 {
+		n.RelayBytes += addBytes
+		n.RelayMB = fmt.Sprintf("%.2f", float64(n.RelayBytes)/(1024*1024))
+	}
+	n.UpdatedAt = nowStamp()
+}
+
+func (r *NodeRegistry) UpdateRuntime(id int, activeConns int32, localPort int, relayIP string, tunnelRestarts uint64, failCount int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n, exists := r.nodes[id]
+	if !exists {
+		n = &NodeDiagnosticInfo{ID: id, StatusSince: nowStamp()}
+		r.nodes[id] = n
+	}
+	n.ActiveConnections = activeConns
+	n.LocalBridgePort = localPort
+	n.RelayIP = relayIP
+	n.TunnelRestarts = tunnelRestarts
+	n.FailCount = failCount
+	n.UpdatedAt = nowStamp()
 }
 
 type SafeWSConn struct {
@@ -275,6 +380,12 @@ type NodeSession struct {
 	cancel         context.CancelFunc
 	bridgeListener net.Listener
 	tunnelCmd      *exec.Cmd
+	tunnelCancel   context.CancelFunc
+	connSem        chan struct{}
+	activeConns    int32
+	localPort      int
+	relayIP        string
+	tunnelRestarts uint64
 	tunnelLock     sync.Mutex
 	mu             sync.Mutex
 }
@@ -287,8 +398,17 @@ type StateManager struct {
 func LoadStateManager() *StateManager {
 	sm := &StateManager{Devices: make(map[string]DeviceProfile)}
 	data, err := os.ReadFile(STATE_FILE)
-	if err == nil {
-		json.Unmarshal(data, &sm.Devices)
+	if err == nil && len(strings.TrimSpace(string(data))) > 0 {
+		// Backward compatible loader: older versions saved a bare proxy-keyed map,
+		// while StateManager itself declares a {"devices": ...} envelope.
+		var wrapped struct {
+			Devices map[string]DeviceProfile `json:"devices"`
+		}
+		if json.Unmarshal(data, &wrapped) == nil && len(wrapped.Devices) > 0 {
+			sm.Devices = wrapped.Devices
+		} else {
+			_ = json.Unmarshal(data, &sm.Devices)
+		}
 	}
 	return sm
 }
@@ -297,7 +417,9 @@ func (sm *StateManager) Save() {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	data, err := json.MarshalIndent(sm.Devices, "", "  ")
+	data, err := json.MarshalIndent(struct {
+		Devices map[string]DeviceProfile `json:"devices"`
+	}{Devices: sm.Devices}, "", "  ")
 	if err != nil {
 		return
 	}
@@ -308,11 +430,23 @@ func (sm *StateManager) Save() {
 	}
 }
 
+func stateKeyForProxy(proxyStr string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(proxyStr)))
+	return "proxy_sha256:" + hex.EncodeToString(sum[:])
+}
+
 func (sm *StateManager) GetOrGenerate(proxyStr string, index int) DeviceProfile {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
+	stateKey := stateKeyForProxy(proxyStr)
+	if p, ok := sm.Devices[stateKey]; ok && p.DeviceID != "" {
+		return p
+	}
+	// Legacy fallback for state files created before proxy keys were hashed.
 	if p, ok := sm.Devices[proxyStr]; ok && p.DeviceID != "" {
+		delete(sm.Devices, proxyStr)
+		sm.Devices[stateKey] = p
 		return p
 	}
 
@@ -326,7 +460,8 @@ func (sm *StateManager) GetOrGenerate(proxyStr string, index int) DeviceProfile 
 	cores := []int{4, 6, 8, 12, 16}
 	mems := []int{8192, 16384, 32768}
 
-	hb := int(h[0])
+	rawIDBytes, _ := hex.DecodeString(h)
+	hb := int(rawIDBytes[0])
 	osChoice := osList[hb%len(osList)]
 	plat := "win32"
 	gpu := "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0)"
@@ -346,14 +481,71 @@ func (sm *StateManager) GetOrGenerate(proxyStr string, index int) DeviceProfile 
 		Platform:   plat,
 		CPUCores:   cores[hb%len(cores)],
 		MemoryMB:   mems[hb%len(mems)],
-		MACAddr:    fmt.Sprintf("%s:%02x:%02x:%02x", ouis[hb%len(ouis)], h[1], h[2], h[3]),
+		MACAddr:    fmt.Sprintf("%s:%02x:%02x:%02x", ouis[hb%len(ouis)], rawIDBytes[1], rawIDBytes[2], rawIDBytes[3]),
 		Resolution: resolutions[hb%len(resolutions)],
 		GPUDesc:    gpu,
 		AppVer:     "1.4.2",
 	}
 
-	sm.Devices[proxyStr] = profile
+	sm.Devices[stateKey] = profile
 	return profile
+}
+
+func newDirectIPv4HTTPClient(timeout time.Duration, jar http.CookieJar, stopRedirect bool) *http.Client {
+	transport := &http.Transport{
+		Proxy: nil,
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return (&net.Dialer{Timeout: 12 * time.Second, KeepAlive: 30 * time.Second}).DialContext(ctx, "tcp4", addr)
+		},
+		TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12},
+		TLSHandshakeTimeout:   12 * time.Second,
+		ResponseHeaderTimeout: 20 * time.Second,
+		IdleConnTimeout:       30 * time.Second,
+		MaxIdleConns:          32,
+		MaxIdleConnsPerHost:   8,
+		ForceAttemptHTTP2:     false,
+	}
+	client := &http.Client{Timeout: timeout, Jar: jar, Transport: transport}
+	if stopRedirect {
+		client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		}
+	}
+	return client
+}
+
+func isPrivateOrReservedIP(ip net.IP) bool {
+	if ip == nil {
+		return false
+	}
+	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() {
+		return true
+	}
+	privateCIDRs := []string{
+		"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
+		"100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16",
+		"0.0.0.0/8", "224.0.0.0/4", "240.0.0.0/4",
+		"::1/128", "fc00::/7", "fe80::/10", "ff00::/8",
+	}
+	for _, cidr := range privateCIDRs {
+		_, n, err := net.ParseCIDR(cidr)
+		if err == nil && n.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+func isBlockedTargetHost(host string) bool {
+	host = strings.Trim(strings.ToLower(host), "[]")
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") || strings.HasSuffix(host, ".local") || strings.HasSuffix(host, ".internal") {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return isPrivateOrReservedIP(ip)
+	}
+	// Do not resolve domains here: local DNS resolution would defeat SOCKS remote-DNS behavior.
+	return false
 }
 
 type MasterAuth struct {
@@ -404,16 +596,18 @@ func (a *MasterAuth) Authenticate() error {
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		req.Header.Set("User-Agent", "Mozilla/5.0 Wipter/1.4.2")
 
-		client := &http.Client{Timeout: 15 * time.Second}
+		client := newDirectIPv4HTTPClient(15*time.Second, nil, false)
 		resp, err := client.Do(req)
-		if err == nil && resp.StatusCode == 200 {
+		if err == nil && resp != nil {
+			defer resp.Body.Close()
+		}
+		if err == nil && resp != nil && resp.StatusCode == 200 {
 			var res struct {
 				IdToken     string `json:"id_token"`
 				AccessToken string `json:"access_token"`
 				ExpiresIn   int    `json:"expires_in"`
 			}
 			json.NewDecoder(resp.Body).Decode(&res)
-			resp.Body.Close()
 			if res.AccessToken != "" {
 				a.IdToken = res.IdToken
 				a.AccessToken = res.AccessToken
@@ -426,13 +620,7 @@ func (a *MasterAuth) Authenticate() error {
 	verifier, challenge := generatePKCE()
 
 	jar, _ := cookiejar.New(nil)
-	client := &http.Client{
-		Jar:     jar,
-		Timeout: 20 * time.Second,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
+	client := newDirectIPv4HTTPClient(20*time.Second, jar, true)
 
 	loginParams := url.Values{
 		"client_id":             {COGNITO_CLIENT_ID},
@@ -500,7 +688,7 @@ func (a *MasterAuth) Authenticate() error {
 	req3.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req3.Header.Set("User-Agent", "Mozilla/5.0 Wipter/1.4.2")
 
-	clientToken := &http.Client{Timeout: 15 * time.Second}
+	clientToken := newDirectIPv4HTTPClient(15*time.Second, nil, false)
 	resp3, err := clientToken.Do(req3)
 	if err != nil {
 		return fmt.Errorf("lỗi đổi token: %w", err)
@@ -552,7 +740,7 @@ func parseSocks5(raw string) (host string, auth *proxy.Auth, err error) {
 // TẦNG 3: DATA PLANE - LOCAL SOCKS5 BRIDGE & RATHOLE TUNNEL PROCESS
 // ==============================================================================
 
-func (n *NodeSession) startLocalSocksBridge(ctx context.Context, localPort int, proxyHost string) error {
+func (n *NodeSession) startLocalSocksBridge(ctx context.Context, localPort int, proxyHost string) (int, error) {
 	n.mu.Lock()
 	if n.bridgeListener != nil {
 		n.bridgeListener.Close()
@@ -560,14 +748,21 @@ func (n *NodeSession) startLocalSocksBridge(ctx context.Context, localPort int, 
 	}
 	n.mu.Unlock()
 
-	listener, err := net.Listen("tcp4", fmt.Sprintf("127.0.0.1:%d", localPort))
-	if err != nil {
-		return fmt.Errorf("lỗi tạo bridge port %d: %w", localPort, err)
+	listenAddr := "127.0.0.1:0"
+	if localPort > 0 {
+		listenAddr = fmt.Sprintf("127.0.0.1:%d", localPort)
 	}
+	listener, err := net.Listen("tcp4", listenAddr)
+	if err != nil {
+		return 0, fmt.Errorf("lỗi tạo bridge %s: %w", listenAddr, err)
+	}
+	actualPort := listener.Addr().(*net.TCPAddr).Port
 
 	n.mu.Lock()
 	n.bridgeListener = listener
+	n.localPort = actualPort
 	n.mu.Unlock()
+	globalRegistry.UpdateRuntime(n.ID, atomic.LoadInt32(&n.activeConns), actualPort, n.relayIP, atomic.LoadUint64(&n.tunnelRestarts), n.FailCount)
 
 	go func() {
 		<-ctx.Done()
@@ -580,10 +775,36 @@ func (n *NodeSession) startLocalSocksBridge(ctx context.Context, localPort int, 
 			if err != nil {
 				return
 			}
-			go n.handleBridgeConnection(conn, proxyHost)
+			if n.connSem == nil {
+				n.connSem = make(chan struct{}, maxConnPerNode)
+			}
+			if !tryAcquire(globalConnSem) {
+				globalRegistry.Update(n.ID, proxyHost, n.Profile.Hostname, "", "[BACKPRESSURE] Global connection limit reached", 0)
+				_ = conn.Close()
+				continue
+			}
+			if !tryAcquire(n.connSem) {
+				releaseSem(globalConnSem)
+				globalRegistry.Update(n.ID, proxyHost, n.Profile.Hostname, "", "[BACKPRESSURE] Per-node connection limit reached", 0)
+				_ = conn.Close()
+				continue
+			}
+			atomic.AddInt32(&activeConnections, 1)
+			atomic.AddInt32(&n.activeConns, 1)
+			globalRegistry.UpdateRuntime(n.ID, atomic.LoadInt32(&n.activeConns), n.localPort, n.relayIP, atomic.LoadUint64(&n.tunnelRestarts), n.FailCount)
+			go func(c net.Conn) {
+				defer releaseSem(globalConnSem)
+				defer releaseSem(n.connSem)
+				defer atomic.AddInt32(&activeConnections, -1)
+				defer func() {
+					atomic.AddInt32(&n.activeConns, -1)
+					globalRegistry.UpdateRuntime(n.ID, atomic.LoadInt32(&n.activeConns), n.localPort, n.relayIP, atomic.LoadUint64(&n.tunnelRestarts), n.FailCount)
+				}()
+				n.handleBridgeConnection(c, proxyHost)
+			}(conn)
 		}
 	}()
-	return nil
+	return actualPort, nil
 }
 
 func (n *NodeSession) handleBridgeConnection(localConn net.Conn, proxyHost string) {
@@ -636,6 +857,18 @@ func (n *NodeSession) handleBridgeConnection(localConn net.Conn, proxyHost strin
 		return
 	}
 
+	if blockPrivateTarget {
+		targetHost, _, splitErr := net.SplitHostPort(targetAddr)
+		if splitErr != nil {
+			targetHost = targetAddr
+		}
+		if isBlockedTargetHost(targetHost) {
+			globalRegistry.Update(n.ID, proxyHost, n.Profile.Hostname, "", fmt.Sprintf("[BLOCKED_TARGET] %s", targetHost), 0)
+			localConn.Write([]byte{5, 2, 0, 1, 0, 0, 0, 0, 0, 0})
+			return
+		}
+	}
+
 	outConn, err := n.Dialer.Dial("tcp4", targetAddr)
 	if err != nil {
 		localConn.Write([]byte{5, 5, 0, 1, 0, 0, 0, 0, 0, 0})
@@ -656,10 +889,12 @@ func (n *NodeSession) handleBridgeConnection(localConn net.Conn, proxyHost strin
 		b := getDynamicBuffer()
 		defer putDynamicBuffer(b)
 		for {
+			_ = localConn.SetReadDeadline(time.Now().Add(bridgeIdleTimeout))
 			nr, rErr := localConn.Read(*b)
 			if nr > 0 {
 				atomic.AddUint64(&accumulatedBytes, uint64(nr))
 				globalRegistry.Update(n.ID, proxyHost, n.Profile.Hostname, "", "", uint64(nr))
+				_ = outConn.SetWriteDeadline(time.Now().Add(bridgeIdleTimeout))
 				if _, wErr := outConn.Write((*b)[:nr]); wErr != nil {
 					break
 				}
@@ -676,10 +911,12 @@ func (n *NodeSession) handleBridgeConnection(localConn net.Conn, proxyHost strin
 		b := getDynamicBuffer()
 		defer putDynamicBuffer(b)
 		for {
+			_ = outConn.SetReadDeadline(time.Now().Add(bridgeIdleTimeout))
 			nr, rErr := outConn.Read(*b)
 			if nr > 0 {
 				atomic.AddUint64(&accumulatedBytes, uint64(nr))
 				globalRegistry.Update(n.ID, proxyHost, n.Profile.Hostname, "", "", uint64(nr))
+				_ = localConn.SetWriteDeadline(time.Now().Add(bridgeIdleTimeout))
 				if _, wErr := localConn.Write((*b)[:nr]); wErr != nil {
 					break
 				}
@@ -695,13 +932,24 @@ func (n *NodeSession) handleBridgeConnection(localConn net.Conn, proxyHost strin
 }
 
 func (n *NodeSession) launchRatholeDataPlane(ctx context.Context, serverIP string, localPort int) {
-	n.tunnelLock.Lock()
-	defer n.tunnelLock.Unlock()
+	n.mu.Lock()
+	n.relayIP = serverIP
+	n.localPort = localPort
+	n.mu.Unlock()
+	globalRegistry.UpdateRuntime(n.ID, atomic.LoadInt32(&n.activeConns), localPort, serverIP, atomic.LoadUint64(&n.tunnelRestarts), n.FailCount)
 
+	n.tunnelLock.Lock()
+	if n.tunnelCancel != nil {
+		n.tunnelCancel()
+		n.tunnelCancel = nil
+	}
 	if n.tunnelCmd != nil && n.tunnelCmd.Process != nil {
-		n.tunnelCmd.Process.Kill()
+		_ = n.tunnelCmd.Process.Kill()
 		n.tunnelCmd = nil
 	}
+	tunnelCtx, tunnelCancel := context.WithCancel(ctx)
+	n.tunnelCancel = tunnelCancel
+	n.tunnelLock.Unlock()
 
 	configContent := fmt.Sprintf(`[client]
 remote_addr = "%s:%s"
@@ -713,19 +961,75 @@ local_addr = "127.0.0.1:%d"
 `, serverIP, FRPC_SERVER_PORT, FRPC_TOKEN, n.Profile.DeviceID, FRPC_TOKEN, localPort)
 
 	configFile := fmt.Sprintf("/tmp/wipter_rathole_%d.toml", n.ID)
-	os.WriteFile(configFile, []byte(configContent), 0644)
+	if err := os.WriteFile(configFile, []byte(configContent), 0600); err != nil {
+		globalRegistry.Update(n.ID, "", n.Profile.Hostname, "TUNNEL_CONFIG_ERROR", fmt.Sprintf("[TUNNEL_CONFIG] %v", err), 0)
+		return
+	}
 
 	cmdPath := "/usr/local/bin/wipter-tunnel"
 	if _, err := os.Stat(cmdPath); err != nil {
 		cmdPath = "wipter-tunnel"
 	}
 
-	cmd := exec.CommandContext(ctx, cmdPath, "-c", configFile)
-	n.tunnelCmd = cmd
-
 	go func() {
-		_ = cmd.Run()
-		os.Remove(configFile)
+		defer os.Remove(configFile)
+		backoff := 2 * time.Second
+		for {
+			select {
+			case <-tunnelCtx.Done():
+				return
+			default:
+			}
+
+			cmd := exec.CommandContext(tunnelCtx, cmdPath, "-c", configFile)
+			cmd.Stdout = io.Discard
+			cmd.Stderr = io.Discard
+
+			n.tunnelLock.Lock()
+			n.tunnelCmd = cmd
+			n.tunnelLock.Unlock()
+
+			err := cmd.Run()
+
+			n.tunnelLock.Lock()
+			if n.tunnelCmd == cmd {
+				n.tunnelCmd = nil
+			}
+			n.tunnelLock.Unlock()
+
+			select {
+			case <-tunnelCtx.Done():
+				return
+			default:
+			}
+
+			errText := "process exited"
+			if err != nil {
+				errText = err.Error()
+			}
+			restarts := atomic.AddUint64(&n.tunnelRestarts, 1)
+			globalRegistry.UpdateRuntime(n.ID, atomic.LoadInt32(&n.activeConns), n.localPort, n.relayIP, restarts, n.FailCount)
+			globalRegistry.Update(n.ID, "", n.Profile.Hostname, "TUNNEL_RESTARTING", fmt.Sprintf("[TUNNEL_EXIT] %s; restart in %s", errText, backoff), 0)
+
+			timer := time.NewTimer(backoff)
+			select {
+			case <-timer.C:
+			case <-tunnelCtx.Done():
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				return
+			}
+			if backoff < 60*time.Second {
+				backoff *= 2
+				if backoff > 60*time.Second {
+					backoff = 60 * time.Second
+				}
+			}
+		}
 	}()
 }
 
@@ -752,6 +1056,7 @@ func (n *NodeSession) Run(ctx context.Context, auth *MasterAuth) {
 				n.FailCount++
 				fc := n.FailCount
 				n.mu.Unlock()
+				globalRegistry.UpdateRuntime(n.ID, atomic.LoadInt32(&n.activeConns), n.localPort, n.relayIP, atomic.LoadUint64(&n.tunnelRestarts), fc)
 
 				var sleepSec time.Duration
 				errStr := err.Error()
@@ -806,7 +1111,7 @@ func (n *NodeSession) executeSession(ctx context.Context, auth *MasterAuth) erro
 		NetDial: func(network, addr string) (net.Conn, error) {
 			return dialer.Dial("tcp4", addr)
 		},
-		TLSClientConfig:  &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS12},
+		TLSClientConfig:  &tls.Config{MinVersion: tls.VersionTLS12, ServerName: "ch.wipter.com"},
 		HandshakeTimeout: 15 * time.Second,
 	}
 
@@ -847,6 +1152,9 @@ func (n *NodeSession) executeSession(ctx context.Context, auth *MasterAuth) erro
 	}
 
 	respStr := strings.ReplaceAll(string(respMsg), "\x00", "")
+	if !strings.HasPrefix(respStr, "CONNECTED") && !strings.HasPrefix(respStr, "ERROR") {
+		return fmt.Errorf("unexpected STOMP handshake response: %s", strings.TrimSpace(respStr))
+	}
 	if strings.HasPrefix(respStr, "ERROR") {
 		lines := strings.Split(respStr, "\n")
 		errMsg := "auth failed"
@@ -905,9 +1213,13 @@ func (n *NodeSession) executeSession(ctx context.Context, auth *MasterAuth) erro
 		return err
 	}
 
-	atomic.AddInt32(&onlineNodesCount, 1)
-	globalRegistry.Update(n.ID, host, n.Profile.Hostname, "ONLINE", "[PENDING] Đang chờ cấp phép...", 0)
-	defer atomic.AddInt32(&onlineNodesCount, -1)
+	registeredOnline := false
+	globalRegistry.Update(n.ID, host, n.Profile.Hostname, "REG_PENDING", "[PENDING] Đang chờ cấp phép...", 0)
+	defer func() {
+		if registeredOnline {
+			atomic.AddInt32(&onlineNodesCount, -1)
+		}
+	}()
 
 	// Luồng STOMP Heartbeat ngẫu nhiên
 	go func() {
@@ -959,18 +1271,24 @@ func (n *NodeSession) executeSession(ctx context.Context, auth *MasterAuth) erro
 								if errMsg == "" {
 									errMsg = "REGISTRATION_FAILED"
 								}
-								globalRegistry.Update(n.ID, host, n.Profile.Hostname, "ONLINE", fmt.Sprintf("[REJECTED] %s", errMsg), 0)
+								globalRegistry.Update(n.ID, host, n.Profile.Hostname, "REG_REJECTED", fmt.Sprintf("[REJECTED] %s", errMsg), 0)
 							} else if regRes.PublicIP != "" {
-								localBridgePort := 12000 + n.ID
-								_ = n.startLocalSocksBridge(ctx, localBridgePort, host)
+								localBridgePort, err := n.startLocalSocksBridge(ctx, 0, host)
+								if err != nil {
+									return fmt.Errorf("local bridge failed: %w", err)
+								}
 								n.launchRatholeDataPlane(ctx, regRes.PublicIP, localBridgePort)
+								if !registeredOnline {
+									atomic.AddInt32(&onlineNodesCount, 1)
+									registeredOnline = true
+								}
 
 								note := fmt.Sprintf("[ACTIVE] Relay: %s (Tunnel OK)", regRes.PublicIP)
 								globalRegistry.Update(n.ID, host, n.Profile.Hostname, "ONLINE", note, 0)
 							}
 						}
-					} else if strings.Contains(headersPart, "/topic/session-options") {
-						globalRegistry.Update(n.ID, host, n.Profile.Hostname, "ONLINE", "[SESSION_ACTIVE]", 0)
+					} else if strings.Contains(headersPart, "/topic/session-options") && !registeredOnline {
+						globalRegistry.Update(n.ID, host, n.Profile.Hostname, "REG_PENDING", "[SESSION_ACTIVE] Đang chờ đăng ký thiết bị", 0)
 					}
 				}
 			}
@@ -986,8 +1304,12 @@ func (n *NodeSession) cleanup() {
 		n.SafeWS = nil
 	}
 	n.tunnelLock.Lock()
+	if n.tunnelCancel != nil {
+		n.tunnelCancel()
+		n.tunnelCancel = nil
+	}
 	if n.tunnelCmd != nil && n.tunnelCmd.Process != nil {
-		n.tunnelCmd.Process.Kill()
+		_ = n.tunnelCmd.Process.Kill()
 		n.tunnelCmd = nil
 	}
 	n.tunnelLock.Unlock()
@@ -995,10 +1317,23 @@ func (n *NodeSession) cleanup() {
 		n.bridgeListener.Close()
 		n.bridgeListener = nil
 	}
+	n.localPort = 0
+	n.relayIP = ""
 	n.IsOnline = false
+	globalRegistry.UpdateRuntime(n.ID, atomic.LoadInt32(&n.activeConns), 0, "", atomic.LoadUint64(&n.tunnelRestarts), n.FailCount)
 }
 
 func startDiagnosticServer() {
+	diagnosticAddr := strings.TrimSpace(os.Getenv("WIPTER_DIAGNOSTIC_ADDR"))
+	if diagnosticAddr == "" {
+		diagnosticAddr = DIAGNOSTIC_ADDR_DEFAULT
+	}
+
+	http.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte("ok"))
+	})
+
 	http.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
 		globalRegistry.mu.RLock()
 		defer globalRegistry.mu.RUnlock()
@@ -1026,6 +1361,10 @@ func startDiagnosticServer() {
 			"online":        atomic.LoadInt32(&onlineNodesCount),
 			"dead_isolated": atomic.LoadInt32(&isolatedDeadNode),
 			"total_bytes":   atomic.LoadUint64(&accumulatedBytes),
+			"active_connections": atomic.LoadInt32(&activeConnections),
+			"max_conn_global": maxConnGlobal,
+			"max_conn_per_node": maxConnPerNode,
+			"block_private_targets": blockPrivateTarget,
 			"host_total_mb": atomic.LoadInt64(&totalHostRAM_MB),
 			"host_avail_mb": atomic.LoadInt64(&availHostRAM_MB),
 			"pressure_zone": zoneName,
@@ -1035,7 +1374,7 @@ func startDiagnosticServer() {
 
 	go func() {
 		server := &http.Server{
-			Addr:         DIAGNOSTIC_PORT,
+			Addr:         diagnosticAddr,
 			ReadTimeout:  5 * time.Second,
 			WriteTimeout: 5 * time.Second,
 		}
@@ -1050,6 +1389,12 @@ func main() {
 	if email == "" || password == "" {
 		log.Fatal("[FATAL] Chưa cấu hình WIPTER_EMAIL hoặc WIPTER_PASSWORD trong config.env")
 	}
+
+	maxConnPerNode = getEnvInt("WIPTER_MAX_CONN_PER_NODE", maxConnPerNode)
+	maxConnGlobal = getEnvInt("WIPTER_MAX_CONN_GLOBAL", maxConnGlobal)
+	bridgeIdleTimeout = time.Duration(getEnvInt("WIPTER_IDLE_TIMEOUT_SEC", int(bridgeIdleTimeout/time.Second))) * time.Second
+	blockPrivateTarget = getEnvBool("WIPTER_BLOCK_PRIVATE_TARGETS", blockPrivateTarget)
+	globalConnSem = make(chan struct{}, maxConnGlobal)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

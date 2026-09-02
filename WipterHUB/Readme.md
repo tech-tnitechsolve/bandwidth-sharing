@@ -114,3 +114,104 @@ Khi gõ lệnh `wipter doctor`, màn hình sẽ hiển thị trực quan:
    * Gõ `wipter start` để xem dòng `Public IPv4: x.x.x.x`.
    * Lấy IP đó dán vào mục **Whitelist IP** trên Dashboard nhà cung cấp Proxy (Decodo, Webshare...).
 ```
+---
+
+## 🔧 Production Hardening mới
+
+Phiên bản hiện tại đã được tối ưu cho proxy dạng **IP-Authentication** và chạy song song với các container khác:
+
+### Network mode
+
+`wipter.sh` chạy container bằng Docker bridge thay vì `--net=host`:
+
+```bash
+--network bridge
+-p 127.0.0.1:${WIPTER_DIAGNOSTIC_HOST_PORT:-28999}:28999
+```
+
+Lợi ích:
+
+- Không chiếm namespace mạng của host.
+- Không đụng port với container/source khác.
+- Diagnostic API chỉ lắng nghe local host.
+- Outbound của container vẫn SNAT qua IPv4 VPS, phù hợp các proxy IP-Auth đã whitelist IP VPS.
+
+### Không probe IP ra ngoài
+
+Startup script không còn gọi các dịch vụ như `api.ipify.org` hoặc `icanhazip.com`. Điều này tránh tạo request kiểm tra IP không cần thiết ra bên ngoài.
+
+### Biến cấu hình runtime
+
+Có thể chỉnh trong `config.env`:
+
+```env
+WIPTER_DIAGNOSTIC_HOST_PORT="28999"
+WIPTER_MAX_CONN_GLOBAL="2000"
+WIPTER_MAX_CONN_PER_NODE="32"
+WIPTER_IDLE_TIMEOUT_SEC="120"
+WIPTER_BLOCK_PRIVATE_TARGETS="true"
+WIPTER_MEMORY_LIMIT=""
+```
+
+Ý nghĩa:
+
+| Biến | Mặc định | Chức năng |
+| :--- | :--- | :--- |
+| `WIPTER_DIAGNOSTIC_HOST_PORT` | `28999` | Port host local cho `wipter doctor`. |
+| `WIPTER_MAX_CONN_GLOBAL` | `2000` | Tổng số connection bridge tối đa toàn engine. |
+| `WIPTER_MAX_CONN_PER_NODE` | `32` | Số connection bridge tối đa mỗi node. |
+| `WIPTER_IDLE_TIMEOUT_SEC` | `120` | Tự đóng connection treo quá thời gian này. |
+| `WIPTER_BLOCK_PRIVATE_TARGETS` | `true` | Chặn target localhost/private/link-local/metadata để tránh truy cập mạng nội bộ. |
+| `WIPTER_MEMORY_LIMIT` | rỗng | Tùy chọn giới hạn RAM container, ví dụ `256m`. |
+
+### Trạng thái mới trong `wipter doctor`
+
+- `REG_PENDING`: websocket đã lên, đang chờ trạng thái đăng ký.
+- `REG_REJECTED`: registration bị từ chối.
+- `TUNNEL_RESTARTING`: tunnel process chết và supervisor đang tự restart.
+- `TUNNEL_CONFIG_ERROR`: không ghi được file cấu hình tunnel.
+- `[BACKPRESSURE]`: vượt giới hạn connection, engine từ chối connection mới để bảo vệ máy.
+- `[BLOCKED_TARGET]`: request bị chặn vì trỏ vào IP private/internal/metadata.
+
+
+### Diagnostic chuẩn hóa
+
+`wipter doctor` hiển thị các chỉ số chính theo từng node:
+
+| Cột | Ý nghĩa |
+| :--- | :--- |
+| `RELAY` | MB đã relay qua node. |
+| `CONN` | Số connection đang mở của node. |
+| `FAIL` | Số lần fail liên tiếp trước khi retry/quarantine. |
+| `TUN` | Số lần tunnel process bị restart. |
+| `ERR_CODE` | Mã lỗi rút gọn từ `last_error`, ví dụ `PROXY_DEAD`, `TUNNEL_EXIT`, `BLOCKED_TARGET`. |
+| `GHI CHÚ` | Lỗi chi tiết đã sanitize. |
+
+Muốn lấy dữ liệu đầy đủ dạng JSON để phân tích/log ngoài:
+
+```bash
+wipter json
+```
+
+Các field JSON quan trọng trong mỗi node:
+
+```json
+{
+  "id": 1,
+  "proxy_host": "proxy.example.com:1080",
+  "device_name": "PC-ABC123",
+  "status": "ONLINE",
+  "status_since": "2026-09-02 12:00:00",
+  "updated_at": "2026-09-02 12:01:00",
+  "relay_bytes": 1048576,
+  "relay_mb": "1.00",
+  "last_error": "",
+  "last_error_code": "",
+  "last_error_at": "",
+  "active_connections": 2,
+  "local_bridge_port": 34567,
+  "relay_ip": "x.x.x.x",
+  "tunnel_restarts": 0,
+  "fail_count": 0
+}
+```
