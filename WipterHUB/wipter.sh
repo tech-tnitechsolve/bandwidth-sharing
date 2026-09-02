@@ -6,7 +6,7 @@ set -e
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$DIR"
-BUILD_ID="2026-09-02-native-flow-v1"
+BUILD_ID="2026-09-02-native-flow-v2"
 
 # 1. Tự cấp quyền & tạo phím tắt toàn hệ thống
 chmod +x "$0" 2>/dev/null || true
@@ -117,7 +117,7 @@ case "${1:-start}" in
       -e WIPTER_PASSWORD="$WIPTER_PASSWORD" \
       -e WIPTER_APP_VERSION="${WIPTER_APP_VERSION:-1.25.988}" \
       -e WIPTER_PLATFORM_VERSION="${WIPTER_PLATFORM_VERSION:-Debian GNU/Linux 13 (trixie)}" \
-      -e WIPTER_REQUIRE_REST_REGISTER="${WIPTER_REQUIRE_REST_REGISTER:-true}" \
+      -e WIPTER_REQUIRE_REST_REGISTER="${WIPTER_REQUIRE_REST_REGISTER:-false}" \
       -e WIPTER_DIAGNOSTIC_ADDR="0.0.0.0:28999" \
       -e WIPTER_MAX_CONN_GLOBAL="$MAX_CONN_GLOBAL" \
       -e WIPTER_MAX_CONN_PER_NODE="$MAX_CONN_PER_NODE" \

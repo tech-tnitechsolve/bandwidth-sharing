@@ -415,7 +415,7 @@ func (r *NodeRegistry) Update(id int, host, device, status, lastErr string, addB
 	defer r.mu.Unlock()
 	n, exists := r.nodes[id]
 	if !exists {
-		n = &NodeDiagnosticInfo{ID: id, ProxyHost: host, DeviceName: device, StatusSince: nowStamp()}
+		n = &NodeDiagnosticInfo{ID: id, ProxyHost: host, DeviceName: device, RelayMB: "0.00", StatusSince: nowStamp()}
 		r.nodes[id] = n
 	}
 	if host != "" {
@@ -458,7 +458,7 @@ func (r *NodeRegistry) UpdateRuntime(id int, activeConns int32, localPort int, r
 	defer r.mu.Unlock()
 	n, exists := r.nodes[id]
 	if !exists {
-		n = &NodeDiagnosticInfo{ID: id, StatusSince: nowStamp()}
+		n = &NodeDiagnosticInfo{ID: id, RelayMB: "0.00", StatusSince: nowStamp()}
 		r.nodes[id] = n
 	}
 	n.ActiveConnections = activeConns
@@ -853,34 +853,50 @@ func (a *MasterAuth) Authenticate() error {
 }
 
 func (a *MasterAuth) RegisterProviderAccount(ctx context.Context, dialer proxy.Dialer, token string) error {
-	payload := map[string]interface{}{
-		"email":  a.Email,
-		"source": "desktop",
+	client := newHTTPClientViaDialer(25*time.Second, dialer)
+	endpoint := WIPTER_BFF_BASE + "/wipter/app/account/register"
+	type attempt struct {
+		contentType string
+		body        []byte
 	}
-	body, _ := json.Marshal(payload)
-	req, err := http.NewRequestWithContext(ctx, "POST", WIPTER_BFF_BASE+"/wipter/app/account/register", bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json, text/plain, */*")
-	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) Wipter/"+configuredAppVersion())
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-		req.Header.Set("token", token)
+	jsonBody, _ := json.Marshal(map[string]interface{}{"email": a.Email, "source": "desktop"})
+	formBody := url.Values{"email": {a.Email}, "source": {"desktop"}}.Encode()
+	attempts := []attempt{
+		{contentType: "application/json", body: jsonBody},
+		{contentType: "application/x-www-form-urlencoded", body: []byte(formBody)},
+		{contentType: "application/json", body: []byte(fmt.Sprintf(`{"email":%q}`, a.Email))},
+		{contentType: "", body: nil},
 	}
 
-	client := newHTTPClientViaDialer(25*time.Second, dialer)
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("rest pre-register request failed: %w", err)
+	var lastErr error
+	for _, at := range attempts {
+		req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(at.body))
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Accept", "application/json, text/plain, */*")
+		req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) Wipter/"+configuredAppVersion())
+		if at.contentType != "" {
+			req.Header.Set("Content-Type", at.contentType)
+		}
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+			req.Header.Set("token", token)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("rest pre-register request failed: %w", err)
+			continue
+		}
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		resp.Body.Close()
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			return nil
+		}
+		lastErr = fmt.Errorf("rest pre-register status %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+		// 400 usually means our guessed body is not accepted; try next body shape.
 	}
-	defer resp.Body.Close()
-	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("rest pre-register status %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
-	}
-	return nil
+	return lastErr
 }
 
 func parseSocks5(raw string) (host string, auth *proxy.Auth, err error) {
@@ -1248,7 +1264,11 @@ func (n *NodeSession) Run(ctx context.Context, auth *MasterAuth) {
 					globalRegistry.Update(n.ID, host, n.Profile.Hostname, "DEAD_QUARANTINE", fmt.Sprintf("[PROXY_DEAD] %s", errStr), 0)
 					sleepSec = 5 * time.Minute
 				} else {
-					globalRegistry.Update(n.ID, host, n.Profile.Hostname, "RETRYING", fmt.Sprintf("[%s] %s", extractErrorCode(errStr), errStr), 0)
+					code := extractErrorCode(errStr)
+					if code == "" {
+						code = "RUNTIME_ERROR"
+					}
+					globalRegistry.Update(n.ID, host, n.Profile.Hostname, "RETRYING", fmt.Sprintf("[%s] %s", code, errStr), 0)
 					sleepSec = time.Duration(8+mathRand.Intn(12)) * time.Second
 				}
 
@@ -1287,7 +1307,7 @@ func (n *NodeSession) executeSession(ctx context.Context, auth *MasterAuth) erro
 
 	globalRegistry.Update(n.ID, host, n.Profile.Hostname, "REST_REGISTER", "[REST_REGISTER] calling provider account register", 0)
 	if err := auth.RegisterProviderAccount(ctx, dialer, token); err != nil {
-		if getEnvBool("WIPTER_REQUIRE_REST_REGISTER", true) {
+		if getEnvBool("WIPTER_REQUIRE_REST_REGISTER", false) {
 			return err
 		}
 		globalRegistry.Update(n.ID, host, n.Profile.Hostname, "REST_REGISTER_WARN", fmt.Sprintf("[REST_REGISTER_WARN] %v", err), 0)
