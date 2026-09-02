@@ -237,6 +237,24 @@ func releaseSem(sem chan struct{}) {
 	}
 }
 
+func configuredAppVersion() string {
+	v := strings.TrimSpace(os.Getenv("WIPTER_APP_VERSION"))
+	if v == "" {
+		return "1.4.2"
+	}
+	return v
+}
+
+func effectiveAppVersion(profileVersion string) string {
+	if envVersion := strings.TrimSpace(os.Getenv("WIPTER_APP_VERSION")); envVersion != "" {
+		return envVersion
+	}
+	if strings.TrimSpace(profileVersion) != "" {
+		return profileVersion
+	}
+	return configuredAppVersion()
+}
+
 type NodeDiagnosticInfo struct {
 	ID                int    `json:"id"`
 	ProxyHost         string `json:"proxy_host"`
@@ -273,7 +291,9 @@ func nowStamp() string {
 func extractErrorCode(msg string) string {
 	upper := strings.ToUpper(msg)
 	switch {
-	case strings.Contains(upper, "CLOSE 4500") || strings.Contains(upper, "REGISTRATION REJ") || strings.Contains(upper, "REGISTRATION TIMEOUT"):
+	case strings.Contains(upper, "UNSUPPORTED_VERSION"):
+		return "UNSUPPORTED_VERSION"
+	case strings.Contains(upper, "CLOSE 4500") || strings.Contains(upper, "REGISTRATION REJ") || strings.Contains(upper, "REGISTRATION TIMEOUT") || strings.Contains(upper, "REGISTRATION FAILED"):
 		return "REGISTRATION_4500"
 	case strings.Contains(upper, "TOO_MANY_CONNECTIONS_FROM_IP"):
 		return "TOO_MANY_CONNECTIONS_FROM_IP"
@@ -300,7 +320,7 @@ func extractErrorCode(msg string) string {
 
 func isRegistrationError(errStr string) bool {
 	upper := strings.ToUpper(errStr)
-	return strings.Contains(upper, "CLOSE 4500") || strings.Contains(upper, "REGISTRATION REJ") || strings.Contains(upper, "REGISTRATION TIMEOUT")
+	return strings.Contains(upper, "CLOSE 4500") || strings.Contains(upper, "REGISTRATION REJ") || strings.Contains(upper, "REGISTRATION TIMEOUT") || strings.Contains(upper, "REGISTRATION FAILED") || strings.Contains(upper, "UNSUPPORTED_VERSION")
 }
 
 func isAuthError(errStr string) bool {
@@ -515,7 +535,7 @@ func (sm *StateManager) GetOrGenerate(proxyStr string, index int) DeviceProfile 
 		MACAddr:    fmt.Sprintf("%s:%02x:%02x:%02x", ouis[hb%len(ouis)], rawIDBytes[1], rawIDBytes[2], rawIDBytes[3]),
 		Resolution: resolutions[hb%len(resolutions)],
 		GPUDesc:    gpu,
-		AppVer:     "1.4.2",
+		AppVer:     configuredAppVersion(),
 	}
 
 	sm.Devices[stateKey] = profile
@@ -1152,7 +1172,8 @@ func (n *NodeSession) executeSession(ctx context.Context, auth *MasterAuth) erro
 	}
 
 	headers := http.Header{}
-	headers.Add("User-Agent", fmt.Sprintf("Mozilla/5.0 (%s) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36 Wipter/%s", n.Profile.OS, n.Profile.AppVer))
+	appVersion := effectiveAppVersion(n.Profile.AppVer)
+	headers.Add("User-Agent", fmt.Sprintf("Mozilla/5.0 (%s) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36 Wipter/%s", n.Profile.OS, appVersion))
 
 	rawConn, resp, err := wsDialer.DialContext(ctx, WIPTER_STOMP_URL, headers)
 	if err != nil {
@@ -1231,7 +1252,7 @@ func (n *NodeSession) executeSession(ctx context.Context, auth *MasterAuth) erro
 		"platformVersion": n.Profile.OS,
 		"deviceType":      "DESKTOP",
 		"hostname":        n.Profile.Hostname,
-		"appVersion":      n.Profile.AppVer,
+		"appVersion":      appVersion,
 		"cpuCores":        n.Profile.CPUCores,
 		"lastUpdatedAt":   time.Now().UTC().Format("2006-01-02T15:04:05.000Z"),
 		"totalRAM":        n.Profile.MemoryMB,
@@ -1307,7 +1328,8 @@ func (n *NodeSession) executeSession(ctx context.Context, auth *MasterAuth) erro
 								if errMsg == "" {
 									errMsg = "REGISTRATION_FAILED"
 								}
-								globalRegistry.Update(n.ID, host, n.Profile.Hostname, "REG_REJECTED", fmt.Sprintf("[REJECTED] %s", errMsg), 0)
+								globalRegistry.Update(n.ID, host, n.Profile.Hostname, "REG_REJECTED", fmt.Sprintf("[%s] registration failed", errMsg), 0)
+								return fmt.Errorf("registration failed: %s", errMsg)
 							} else if regRes.PublicIP != "" {
 								localBridgePort, err := n.startLocalSocksBridge(ctx, 0, host)
 								if err != nil {
@@ -1384,7 +1406,7 @@ func startDiagnosticServer() {
 				if n.Status != "" {
 					statusCounts[n.Status]++
 				}
-				if n.LastErrorCode != "" {
+				if n.LastErrorCode != "" && n.LastErrorCode != "PENDING" && n.LastErrorCode != "SESSION_ACTIVE" {
 					errorCounts[n.LastErrorCode]++
 				}
 				if n.RelayBytes > 0 {

@@ -62,6 +62,7 @@ case "${1:-start}" in
     echo " • Network Docker                  : bridge + outbound SNAT qua IPv4 VPS"
     echo " • Diagnostic local                : 127.0.0.1:${DIAG_PORT}"
     echo " • Chặn target private/internal    : ${BLOCK_PRIVATE}"
+    echo " • App version                     : ${WIPTER_APP_VERSION:-1.4.2}"
     echo " • Tài khoản Wipter                : $WIPTER_EMAIL"
 
     # Tự động tìm proxies.txt nếu chưa có
@@ -111,6 +112,7 @@ case "${1:-start}" in
       -v "$DIR/devices_state.json:/app/devices_state.json:rw" \
       -e WIPTER_EMAIL="$WIPTER_EMAIL" \
       -e WIPTER_PASSWORD="$WIPTER_PASSWORD" \
+      -e WIPTER_APP_VERSION="${WIPTER_APP_VERSION:-1.4.2}" \
       -e WIPTER_DIAGNOSTIC_ADDR="0.0.0.0:28999" \
       -e WIPTER_MAX_CONN_GLOBAL="$MAX_CONN_GLOBAL" \
       -e WIPTER_MAX_CONN_PER_NODE="$MAX_CONN_PER_NODE" \
