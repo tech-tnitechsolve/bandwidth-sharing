@@ -215,3 +215,22 @@ Các field JSON quan trọng trong mỗi node:
   "fail_count": 0
 }
 ```
+
+### Gói chẩn đoán thực tế khi cần debug
+
+Nếu có lỗi lặp lại, chạy:
+
+```bash
+bash ./wipter.sh errors
+bash ./wipter.sh collect
+```
+
+`errors` in ra JSON rút gọn gồm `status_counts`, `error_counts`, từng node, `last_error_code`, `last_error`, `diagnosis_hint`.
+
+`collect` tạo file:
+
+```text
+wipter-diagnostics-YYYYMMDD-HHMMSS.tar.gz
+```
+
+Bên trong có status JSON, doctor output, docker inspect/stats/log tail, config đã ẩn email/password và proxy summary đã mask credential. Gửi file này khi cần rà soát lỗi thực tế.

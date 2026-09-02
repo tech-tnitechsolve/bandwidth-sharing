@@ -57,6 +57,7 @@ var (
 	currentPressureZone int32 = ZONE_YELLOW
 	totalHostRAM_MB     int64 = 2048
 	availHostRAM_MB     int64 = 1024
+	engineStartedAt          = time.Now()
 )
 
 var (
@@ -266,6 +267,7 @@ type NodeDiagnosticInfo struct {
 	RelayMB           string `json:"relay_mb"`
 	LastError         string `json:"last_error"`
 	LastErrorCode     string `json:"last_error_code"`
+	DiagnosisHint     string `json:"diagnosis_hint"`
 	LastErrorAt       string `json:"last_error_at"`
 	ConnectedAt       string `json:"connected_at"`
 	ActiveConnections int32  `json:"active_connections"`
@@ -328,6 +330,31 @@ func isAuthError(errStr string) bool {
 	return strings.Contains(upper, "401") || strings.Contains(upper, "UNAUTHORIZED") || strings.Contains(upper, "TOKEN")
 }
 
+func diagnosisHint(status, code, msg string) string {
+	upper := strings.ToUpper(status + " " + code + " " + msg)
+	switch {
+	case strings.Contains(upper, "UNSUPPORTED_VERSION"):
+		return "Server rejected the client/app version. Set WIPTER_APP_VERSION to the currently supported official client version, then restart."
+	case strings.Contains(upper, "REGISTRATION_4500") || strings.Contains(upper, "REGISTRATION"):
+		return "Control-plane registration was rejected or timed out. Auth and WebSocket reached the server; check official registration contract/account/IP policy."
+	case strings.Contains(upper, "AUTH_TOKEN"):
+		return "Authentication/token issue. Verify credentials, account status, time sync, and token refresh."
+	case strings.Contains(upper, "PROXY_DEAD") || strings.Contains(upper, "PROXY_OR_TIMEOUT"):
+		return "Proxy connection failed or timed out. Check SOCKS5 host/port, provider whitelist, and IP-auth permission."
+	case strings.Contains(upper, "TUNNEL_EXIT") || strings.Contains(upper, "TUNNEL_RESTARTING"):
+		return "Tunnel process exited. Supervisor will restart it; check relay reachability and tunnel binary compatibility."
+	case strings.Contains(upper, "BACKPRESSURE"):
+		return "Connection limit reached. Increase WIPTER_MAX_CONN_GLOBAL/PER_NODE or reduce incoming concurrency."
+	case strings.Contains(upper, "BLOCKED_TARGET"):
+		return "Target was blocked because it resolves to private/internal/metadata address space."
+	case strings.Contains(upper, "REG_PENDING") || strings.Contains(upper, "PENDING"):
+		return "Waiting for registration response. If it stays here, inspect logs and status JSON."
+	case strings.Contains(upper, "ONLINE"):
+		return "Node is active."
+	}
+	return ""
+}
+
 func (r *NodeRegistry) Update(id int, host, device, status, lastErr string, addBytes uint64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -345,6 +372,7 @@ func (r *NodeRegistry) Update(id int, host, device, status, lastErr string, addB
 	if status != "" && status != n.Status {
 		n.Status = status
 		n.StatusSince = nowStamp()
+		n.DiagnosisHint = diagnosisHint(n.Status, n.LastErrorCode, n.LastError)
 		if status == "ONLINE" && n.ConnectedAt == "" {
 			n.ConnectedAt = time.Now().Format("15:04:05")
 		} else if status != "ONLINE" {
@@ -357,11 +385,15 @@ func (r *NodeRegistry) Update(id int, host, device, status, lastErr string, addB
 		cleanErr = strings.ReplaceAll(cleanErr, "\r", "")
 		n.LastError = strings.TrimSpace(cleanErr)
 		n.LastErrorCode = extractErrorCode(n.LastError)
+		n.DiagnosisHint = diagnosisHint(n.Status, n.LastErrorCode, n.LastError)
 		n.LastErrorAt = nowStamp()
 	}
 	if addBytes > 0 {
 		n.RelayBytes += addBytes
 		n.RelayMB = fmt.Sprintf("%.2f", float64(n.RelayBytes)/(1024*1024))
+	}
+	if n.DiagnosisHint == "" {
+		n.DiagnosisHint = diagnosisHint(n.Status, n.LastErrorCode, n.LastError)
 	}
 	n.UpdatedAt = nowStamp()
 }
@@ -1433,6 +1465,9 @@ func startDiagnosticServer() {
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
+			"engine_started_at": engineStartedAt.Format("2006-01-02 15:04:05"),
+			"engine_uptime_sec": int64(time.Since(engineStartedAt).Seconds()),
+			"configured_app_version": configuredAppVersion(),
 			"total":         atomic.LoadInt32(&totalNodesLoaded),
 			"online":        atomic.LoadInt32(&onlineNodesCount),
 			"dead_isolated": atomic.LoadInt32(&isolatedDeadNode),

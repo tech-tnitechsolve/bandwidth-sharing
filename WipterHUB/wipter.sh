@@ -159,9 +159,11 @@ case "${1:-start}" in
     ACTIVE_CONN=$(echo "$RAW_JSON" | jq -r '.active_connections // 0')
     MAX_CONN=$(echo "$RAW_JSON" | jq -r '.max_conn_global // 0')
     BLOCK_PRIVATE=$(echo "$RAW_JSON" | jq -r '.block_private_targets // true')
+    APP_VERSION=$(echo "$RAW_JSON" | jq -r '.configured_app_version // "unknown"')
+    UPTIME=$(echo "$RAW_JSON" | jq -r '.engine_uptime_sec // 0')
 
     echo -e "\n${C_C}========================= [BẢNG CHẨN ĐOÁN CHI TIẾT TỪNG NODE WIPTER] =========================${C_0}"
-    echo -e " [TÌNH TRẠNG RAM VPS] : ${C_G}Trống ${HOST_AVAIL}MB / Tổng ${HOST_TOTAL}MB${C_0} | [VÙNG CO GIÃN]: ${C_Y}${ZONE}${C_0} | Conn: ${ACTIVE_CONN}/${MAX_CONN} | BlockPrivate: ${BLOCK_PRIVATE}"
+    echo -e " [TÌNH TRẠNG RAM VPS] : ${C_G}Trống ${HOST_AVAIL}MB / Tổng ${HOST_TOTAL}MB${C_0} | [VÙNG CO GIÃN]: ${C_Y}${ZONE}${C_0} | Conn: ${ACTIVE_CONN}/${MAX_CONN} | BlockPrivate: ${BLOCK_PRIVATE} | AppVer: ${APP_VERSION} | Uptime: ${UPTIME}s"
     echo "------------------------------------------------------------------------------------------------------------------------------------------------------"
     printf " %-9s %-22s %-14s %-18s %-10s %-7s %-5s %-5s %-22s %s\n" "NODE ID" "PROXY IP:PORT" "HOSTNAME" "STATUS" "RELAY" "CONN" "FAIL" "TUN" "ERR_CODE" "GHI CHÚ"
     echo "------------------------------------------------------------------------------------------------------------------------------------------------------"
@@ -221,6 +223,64 @@ case "${1:-start}" in
     echo
     ;;
 
+  errors)
+    DIAG_PORT="${WIPTER_DIAGNOSTIC_HOST_PORT:-28999}"
+    if ! command -v curl >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
+      echo "[LỖI] Cần curl và jq để chạy errors."
+      exit 1
+    fi
+    curl -s -m 2 "http://127.0.0.1:${DIAG_PORT}/status" | jq '{status_counts,error_counts,nodes:[.nodes[] | {id,proxy_host,status,last_error_code,last_error,diagnosis_hint,fail_count,tunnel_restarts,relay_mb,active_connections}]}'
+    ;;
+
+  collect|diagnose)
+    DIAG_PORT="${WIPTER_DIAGNOSTIC_HOST_PORT:-28999}"
+    TS="$(date +%Y%m%d-%H%M%S)"
+    OUT_DIR="$DIR/wipter-diagnostics-$TS"
+    OUT_TGZ="$DIR/wipter-diagnostics-$TS.tar.gz"
+    mkdir -p "$OUT_DIR"
+
+    {
+      echo "timestamp=$TS"
+      echo "pwd=$DIR"
+      echo "kernel=$(uname -a)"
+      echo "disk=$(df -h . | tail -1)"
+    } > "$OUT_DIR/system.txt" 2>&1 || true
+
+    if command -v docker >/dev/null 2>&1; then
+      docker ps -a --filter "name=wipter-standalone-hub" > "$OUT_DIR/docker-ps.txt" 2>&1 || true
+      docker inspect wipter-standalone-hub > "$OUT_DIR/docker-inspect.json" 2>&1 || true
+      docker stats --no-stream wipter-standalone-hub > "$OUT_DIR/docker-stats.txt" 2>&1 || true
+      docker logs --tail=500 wipter-standalone-hub > "$OUT_DIR/docker-logs-tail.txt" 2>&1 || true
+      docker image ls wipter-engine > "$OUT_DIR/docker-image.txt" 2>&1 || true
+    fi
+
+    if command -v curl >/dev/null 2>&1; then
+      curl -s -m 3 "http://127.0.0.1:${DIAG_PORT}/healthz" > "$OUT_DIR/healthz.txt" 2>&1 || true
+      curl -s -m 3 "http://127.0.0.1:${DIAG_PORT}/status" > "$OUT_DIR/status.json" 2>&1 || true
+    fi
+
+    if command -v jq >/dev/null 2>&1 && [ -s "$OUT_DIR/status.json" ]; then
+      jq '{summary:{total,online,dead_isolated,total_mb,avg_mb_per_loaded_node,nodes_with_traffic,status_counts,error_counts,configured_app_version,engine_uptime_sec},nodes:[.nodes[] | {id,proxy_host,status,last_error_code,last_error,diagnosis_hint,fail_count,tunnel_restarts,relay_mb,active_connections,updated_at,status_since}]}' "$OUT_DIR/status.json" > "$OUT_DIR/status-summary.json" 2>/dev/null || true
+    fi
+
+    bash "$DIR/wipter.sh" doctor > "$OUT_DIR/doctor.txt" 2>&1 || true
+
+    {
+      echo "# sanitized config.env"
+      sed -E 's/^(WIPTER_PASSWORD)=.*/\1="***"/; s/^(WIPTER_EMAIL)=.*/\1="***"/' "$DIR/config.env" 2>/dev/null || true
+    } > "$OUT_DIR/config-sanitized.env"
+
+    {
+      echo "proxy_lines=$(grep -cve '^#' -e '^$' "$DIR/proxies.txt" 2>/dev/null || echo 0)"
+      awk 'NF && $0 !~ /^#/ {print NR ":" $0}' "$DIR/proxies.txt" 2>/dev/null | sed -E 's#(socks5h?://)?([^:@/]+):([^@/]+)@#\1***:***@#' | head -200
+    } > "$OUT_DIR/proxies-summary.txt"
+
+    tar -czf "$OUT_TGZ" -C "$DIR" "$(basename "$OUT_DIR")"
+    rm -rf "$OUT_DIR"
+    echo "[OK] Đã tạo gói chẩn đoán: $OUT_TGZ"
+    echo "Gửi file này hoặc chạy: tar -tzf $OUT_TGZ"
+    ;;
+
   stop)
     echo "[INFO] Đang dừng Wipter Engine an toàn..."
     docker stop -t 10 wipter-standalone-hub 2>/dev/null || true
@@ -247,7 +307,7 @@ case "${1:-start}" in
     ;;
 
   *)
-    echo "Cách dùng: wipter {start|stop|restart|logs|stats|doctor|json|health}"
+    echo "Cách dùng: wipter {start|stop|restart|logs|stats|doctor|json|errors|health|collect}"
     exit 1
     ;;
 esac
