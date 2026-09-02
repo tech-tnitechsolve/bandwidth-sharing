@@ -1375,10 +1375,28 @@ func startDiagnosticServer() {
 		defer globalRegistry.mu.RUnlock()
 
 		list := make([]*NodeDiagnosticInfo, 0, len(globalRegistry.nodes))
+		statusCounts := make(map[string]int)
+		errorCounts := make(map[string]int)
+		var nodesWithTraffic int
 		for i := 1; i <= len(globalRegistry.nodes); i++ {
 			if n, ok := globalRegistry.nodes[i]; ok {
 				list = append(list, n)
+				if n.Status != "" {
+					statusCounts[n.Status]++
+				}
+				if n.LastErrorCode != "" {
+					errorCounts[n.LastErrorCode]++
+				}
+				if n.RelayBytes > 0 {
+					nodesWithTraffic++
+				}
 			}
+		}
+
+		totalBytes := atomic.LoadUint64(&accumulatedBytes)
+		avgMBPerLoadedNode := 0.0
+		if loaded := atomic.LoadInt32(&totalNodesLoaded); loaded > 0 {
+			avgMBPerLoadedNode = float64(totalBytes) / 1048576 / float64(loaded)
 		}
 
 		zoneName := "GREEN (MAX_PERFORMANCE)"
@@ -1396,7 +1414,12 @@ func startDiagnosticServer() {
 			"total":         atomic.LoadInt32(&totalNodesLoaded),
 			"online":        atomic.LoadInt32(&onlineNodesCount),
 			"dead_isolated": atomic.LoadInt32(&isolatedDeadNode),
-			"total_bytes":   atomic.LoadUint64(&accumulatedBytes),
+			"total_bytes":   totalBytes,
+			"total_mb": fmt.Sprintf("%.2f", float64(totalBytes)/1048576),
+			"avg_mb_per_loaded_node": fmt.Sprintf("%.2f", avgMBPerLoadedNode),
+			"nodes_with_traffic": nodesWithTraffic,
+			"status_counts": statusCounts,
+			"error_counts": errorCounts,
 			"active_connections": atomic.LoadInt32(&activeConnections),
 			"max_conn_global": maxConnGlobal,
 			"max_conn_per_node": maxConnPerNode,

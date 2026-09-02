@@ -161,7 +161,7 @@ case "${1:-start}" in
     echo -e "\n${C_C}========================= [BẢNG CHẨN ĐOÁN CHI TIẾT TỪNG NODE WIPTER] =========================${C_0}"
     echo -e " [TÌNH TRẠNG RAM VPS] : ${C_G}Trống ${HOST_AVAIL}MB / Tổng ${HOST_TOTAL}MB${C_0} | [VÙNG CO GIÃN]: ${C_Y}${ZONE}${C_0} | Conn: ${ACTIVE_CONN}/${MAX_CONN} | BlockPrivate: ${BLOCK_PRIVATE}"
     echo "------------------------------------------------------------------------------------------------------------------------------------------------------"
-    printf " %-9s %-22s %-14s %-18s %-10s %-7s %-5s %-5s %-15s %s\n" "NODE ID" "PROXY IP:PORT" "HOSTNAME" "STATUS" "RELAY" "CONN" "FAIL" "TUN" "ERR_CODE" "GHI CHÚ"
+    printf " %-9s %-22s %-14s %-18s %-10s %-7s %-5s %-5s %-22s %s\n" "NODE ID" "PROXY IP:PORT" "HOSTNAME" "STATUS" "RELAY" "CONN" "FAIL" "TUN" "ERR_CODE" "GHI CHÚ"
     echo "------------------------------------------------------------------------------------------------------------------------------------------------------"
 
     echo "$RAW_JSON" | jq -c '.nodes[]' 2>/dev/null | while IFS= read -r node; do
@@ -185,7 +185,7 @@ case "${1:-start}" in
         st_text="${C_Y}${st}${C_0}"
       fi
 
-      printf " Node %03d  %-22s %-14s %-27b %-10s %-7s %-5s %-5s %-15s %s\n" "$id" "$host" "$dev" "$st_text" "${relay_mb}MB" "$conn" "$fail" "$tun" "${code:0:15}" "${err:0:48}"
+      printf " Node %03d  %-22s %-14s %-27b %-10s %-7s %-5s %-5s %-22s %s\n" "$id" "$host" "$dev" "$st_text" "${relay_mb}MB" "$conn" "$fail" "$tun" "${code:0:22}" "${err:0:64}"
     done
 
     echo "------------------------------------------------------------------------------------------------------------------------------------------------------"
@@ -194,6 +194,8 @@ case "${1:-start}" in
       PERCENT=$(awk "BEGIN {printf \"%.1f%%\", ($ONLINE/$TOTAL)*100}")
     fi
     echo -e " ${C_G}TỔNG KẾT: ${ONLINE}/${TOTAL} Nodes ONLINE (${PERCENT})${C_0} | ${C_R}${DEAD} Nodes DEAD (Đang cách ly)${C_0} | Băng thông: ${TOTAL_MB} MB"
+    echo " Status counts: $(echo "$RAW_JSON" | jq -c '.status_counts // {}')"
+    echo " Error counts : $(echo "$RAW_JSON" | jq -c '.error_counts // {}')"
     echo -e "${C_C}===============================================================================================================${C_0}\n"
     ;;
 
