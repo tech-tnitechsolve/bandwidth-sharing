@@ -1,1 +1,4 @@
-WipterHUB optimized build 2026-09-02-no-terminal-retry
+WipterHUB build 2026-09-02-native-flow-v1
+- appVersion default 1.25.988
+- REST pre-register before STOMP
+- device payload aligned with original Linux client logs

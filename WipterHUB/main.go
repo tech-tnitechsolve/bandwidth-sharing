@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/md5"
 	"crypto/rand"
@@ -40,6 +41,7 @@ const (
 	REDIRECT_URI      = "http://localhost:7777/callback"
 	AUTH_SCOPE        = "email openid https://ppc-production-resource-server/ws-api-read https://ppc-production-resource-server/metrics-service-read https://ppc-production-resource-server/user-service-read"
 	WIPTER_STOMP_URL  = "wss://ch.wipter.com/stomp-endpoint/websocket"
+	WIPTER_BFF_BASE   = "https://ppc.api.wipter.com/api/web/v1"
 	FRPC_TOKEN        = "nZ7wP25ETgQaq9eKA6b4JR"
 	FRPC_SERVER_PORT  = "10000"
 	STATE_FILE        = "devices_state.json"
@@ -242,7 +244,7 @@ func releaseSem(sem chan struct{}) {
 func configuredAppVersion() string {
 	v := strings.TrimSpace(os.Getenv("WIPTER_APP_VERSION"))
 	if v == "" {
-		return "1.4.2"
+		return "1.25.988"
 	}
 	return v
 }
@@ -255,6 +257,58 @@ func effectiveAppVersion(profileVersion string) string {
 		return profileVersion
 	}
 	return configuredAppVersion()
+}
+
+func configuredPlatformVersion(profileOS string) string {
+	if v := strings.TrimSpace(os.Getenv("WIPTER_PLATFORM_VERSION")); v != "" {
+		return v
+	}
+	if strings.TrimSpace(profileOS) != "" && (strings.Contains(strings.ToLower(profileOS), "debian") || strings.Contains(strings.ToLower(profileOS), "ubuntu")) {
+		return profileOS
+	}
+	return "Debian GNU/Linux 13 (trixie)"
+}
+
+func deviceFingerprint(deviceID string) string {
+	sum := sha256.Sum256([]byte("wipter-device-fingerprint-v2:" + deviceID))
+	return hex.EncodeToString(sum[:])
+}
+
+func currentRAMSnapshotMB(profileMemory int) (int, float64) {
+	total := int(atomic.LoadInt64(&totalHostRAM_MB))
+	avail := float64(atomic.LoadInt64(&availHostRAM_MB))
+	if total <= 0 {
+		total = profileMemory
+	}
+	if avail <= 0 {
+		avail = float64(total)
+	}
+	return total, avail
+}
+
+func newHTTPClientViaDialer(timeout time.Duration, dialer proxy.Dialer) *http.Client {
+	transport := &http.Transport{
+		Proxy: nil,
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			type result struct { conn net.Conn; err error }
+			ch := make(chan result, 1)
+			go func() { c, err := dialer.Dial("tcp4", addr); ch <- result{c, err} }()
+			select {
+			case r := <-ch:
+				return r.conn, r.err
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		},
+		TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12},
+		TLSHandshakeTimeout:   12 * time.Second,
+		ResponseHeaderTimeout: 20 * time.Second,
+		IdleConnTimeout:       30 * time.Second,
+		MaxIdleConns:          16,
+		MaxIdleConnsPerHost:   4,
+		ForceAttemptHTTP2:     false,
+	}
+	return &http.Client{Timeout: timeout, Transport: transport}
 }
 
 type NodeDiagnosticInfo struct {
@@ -798,6 +852,37 @@ func (a *MasterAuth) Authenticate() error {
 	return nil
 }
 
+func (a *MasterAuth) RegisterProviderAccount(ctx context.Context, dialer proxy.Dialer, token string) error {
+	payload := map[string]interface{}{
+		"email":  a.Email,
+		"source": "desktop",
+	}
+	body, _ := json.Marshal(payload)
+	req, err := http.NewRequestWithContext(ctx, "POST", WIPTER_BFF_BASE+"/wipter/app/account/register", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/plain, */*")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) Wipter/"+configuredAppVersion())
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("token", token)
+	}
+
+	client := newHTTPClientViaDialer(25*time.Second, dialer)
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("rest pre-register request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("rest pre-register status %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
+	return nil
+}
+
 func parseSocks5(raw string) (host string, auth *proxy.Auth, err error) {
 	raw = strings.TrimSpace(raw)
 	if !strings.HasPrefix(raw, "socks5://") && !strings.HasPrefix(raw, "socks5h://") {
@@ -1037,12 +1122,11 @@ func (n *NodeSession) launchRatholeDataPlane(ctx context.Context, serverIP strin
 
 	configContent := fmt.Sprintf(`[client]
 remote_addr = "%s:%s"
-default_token = "%s"
 
-[client.services."%s"]
+[client.services.%s]
 token = "%s"
-local_addr = "127.0.0.1:%d"
-`, serverIP, FRPC_SERVER_PORT, FRPC_TOKEN, n.Profile.DeviceID, FRPC_TOKEN, localPort)
+local_addr = "localhost:%d"
+`, serverIP, FRPC_SERVER_PORT, n.Profile.DeviceID, FRPC_TOKEN, localPort)
 
 	configFile := fmt.Sprintf("/tmp/wipter_rathole_%d.toml", n.ID)
 	if err := os.WriteFile(configFile, []byte(configContent), 0600); err != nil {
@@ -1201,6 +1285,14 @@ func (n *NodeSession) executeSession(ctx context.Context, auth *MasterAuth) erro
 		return fmt.Errorf("token empty")
 	}
 
+	globalRegistry.Update(n.ID, host, n.Profile.Hostname, "REST_REGISTER", "[REST_REGISTER] calling provider account register", 0)
+	if err := auth.RegisterProviderAccount(ctx, dialer, token); err != nil {
+		if getEnvBool("WIPTER_REQUIRE_REST_REGISTER", true) {
+			return err
+		}
+		globalRegistry.Update(n.ID, host, n.Profile.Hostname, "REST_REGISTER_WARN", fmt.Sprintf("[REST_REGISTER_WARN] %v", err), 0)
+	}
+
 	wsDialer := websocket.Dialer{
 		NetDial: func(network, addr string) (net.Conn, error) {
 			return dialer.Dial("tcp4", addr)
@@ -1233,7 +1325,7 @@ func (n *NodeSession) executeSession(ctx context.Context, auth *MasterAuth) erro
 	n.mu.Unlock()
 
 	// 1. GỬI KHUNG CONNECT KÈM ĐẦY ĐỦ deviceId, newSessionId VÀ token
-	stompConnect := fmt.Sprintf("CONNECT\naccept-version:1.1,1.2\nhost:ch.wipter.com\nheart-beat:10000,10000\ndeviceId:%s\nnewSessionId:%s\ntoken:%s\n\n\x00",
+	stompConnect := fmt.Sprintf("CONNECT\naccept-version:1.1,1.2\nhost:ch.wipter.com\nheart-beat:20000,60000\ndeviceId:%s\nnewSessionId:%s\ntoken:%s\n\n\x00",
 		n.Profile.DeviceID, n.Profile.DeviceID, token)
 	if err := safeWS.WriteMessage(websocket.TextMessage, []byte(stompConnect)); err != nil {
 		return err
@@ -1279,28 +1371,24 @@ func (n *NodeSession) executeSession(ctx context.Context, auth *MasterAuth) erro
 	}
 
 	// 3. GỬI BẢN TIN ĐĂNG KÝ VỚI HEADER token VÀ content-type: application/json
-	platformName := "Windows"
-	if strings.Contains(strings.ToLower(n.Profile.OS), "ubuntu") || strings.Contains(strings.ToLower(n.Profile.OS), "linux") {
-		platformName = "Linux"
-	}
-
+	totalRAM, availableRAM := currentRAMSnapshotMB(n.Profile.MemoryMB)
 	regPayload, _ := json.Marshal(map[string]interface{}{
 		"deviceId":        n.Profile.DeviceID,
-		"devicePlatform":  platformName,
-		"platformVersion": n.Profile.OS,
+		"devicePlatform":  "Linux",
+		"platformVersion": configuredPlatformVersion(n.Profile.OS),
 		"deviceType":      "DESKTOP",
 		"hostname":        n.Profile.Hostname,
 		"appVersion":      appVersion,
-		"cpuCores":        n.Profile.CPUCores,
+		"cpuCores":        runtime.NumCPU(),
 		"lastUpdatedAt":   time.Now().UTC().Format("2006-01-02T15:04:05.000Z"),
-		"totalRAM":        n.Profile.MemoryMB,
-		"availableRAM":    n.Profile.MemoryMB / 2,
+		"totalRAM":        totalRAM,
 		"connectionType":  "ETHERNET",
-		"port25Enabled":   false,
+		"port25Enabled":   true,
 		"socksEnabled":    true,
 		"cpuArch":         "x64",
-		"fingerprint":     strings.ReplaceAll(n.Profile.DeviceID, "-", ""),
-		"cpuUsage":        0.05,
+		"fingerprint":     deviceFingerprint(n.Profile.DeviceID),
+		"cpuUsage":        0.04,
+		"availableRAM":    availableRAM,
 	})
 
 	sendReg := fmt.Sprintf("SEND\ndestination:/app/topic/registration\ncontent-type:application/json\ntoken:%s\n\n%s\x00", token, string(regPayload))
