@@ -6,6 +6,7 @@ set -e
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$DIR"
+BUILD_ID="2026-09-02-collect-v2"
 
 # 1. Tự cấp quyền & tạo phím tắt toàn hệ thống
 chmod +x "$0" 2>/dev/null || true
@@ -58,6 +59,7 @@ case "${1:-start}" in
       MEM_ARGS=(--memory "$WIPTER_MEMORY_LIMIT" --memory-swap "$WIPTER_MEMORY_LIMIT")
     fi
 
+    echo " • Build                           : ${BUILD_ID}"
     echo " • Chế độ IP-Auth                  : Không probe/check IP ra dịch vụ bên ngoài"
     echo " • Network Docker                  : bridge + outbound SNAT qua IPv4 VPS"
     echo " • Diagnostic local                : 127.0.0.1:${DIAG_PORT}"
@@ -203,6 +205,11 @@ case "${1:-start}" in
     echo -e "${C_C}===============================================================================================================${C_0}\n"
     ;;
 
+  version)
+    echo "WipterHUB build: ${BUILD_ID}"
+    [ -f "$DIR/VERSION" ] && cat "$DIR/VERSION"
+    ;;
+
   json|status-json)
     DIAG_PORT="${WIPTER_DIAGNOSTIC_HOST_PORT:-28999}"
     if ! command -v curl >/dev/null 2>&1; then
@@ -307,7 +314,7 @@ case "${1:-start}" in
     ;;
 
   *)
-    echo "Cách dùng: wipter {start|stop|restart|logs|stats|doctor|json|errors|health|collect}"
+    echo "Cách dùng: wipter {start|stop|restart|logs|stats|doctor|json|errors|health|collect|version}"
     exit 1
     ;;
 esac
