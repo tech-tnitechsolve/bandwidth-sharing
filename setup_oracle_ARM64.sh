@@ -1,19 +1,16 @@
 #!/usr/bin/env bash
 #============================================================================
-#  setup_oracle_ARM64.sh — Production Ready cho Oracle Cloud Ampere A1
+#  setup_oracle_ARM64.sh — Production Ready Master (Oracle Cloud Ampere A1)
 #  Kiến trúc      : aarch64 / ARM64 (1 - 4 OCPU, 6 - 24GB RAM)
-#  Tính năng cốt lõi:
-#    - Tự động vá Native ARM64 cho Traffmonetizer (:arm64v8) & toàn bộ app
-#    - Cơ chế QEMU Multi-Arch vĩnh viễn cho các app x86-only (PacketStream...)
-#    - Bộ nhớ nén ZRAM ZSTD (Pri 10) + SSD Swapfile dự phòng (Pri 0)
-#    - Multi-Core Receive Packet Steering (RPS) + TCP BBR + Policy Routing
-#    - Khóa IP-Auth Whitelist & Anti-Leak IPv4 Precedence (/etc/gai.conf)
-#    - FlapGuard Engine (Chống Reconnect Loop gây ban tài khoản)
-#    - Hệ thống Telemetry 5 phần: ii-status, ii-cpu, ii-deep, ii-fix-arm
+#  Bảo toàn 100%  : Native ARM64 Auto-Patch, QEMU Multi-Arch, ZRAM ZSTD, KSM,
+#                   Multi-Core RPS, Anti-Leak IPv4, FlapGuard, Watchdog,
+#                   Staggered Boot, Full 5-Part Diagnostic & Telemetry.
 #============================================================================
 set -Eeuo pipefail
 
-# --- 1. TỐI ƯU GIỚI HẠN FILE DESCRIPTORS VÀ INOTIFY ---
+# ============================================================================
+# 1. TỐI ƯU GIỚI HẠN FILE DESCRIPTORS VÀ INOTIFY
+# ============================================================================
 ulimit -n 1048576 2>/dev/null || true
 sysctl -w fs.inotify.max_user_watches=2097152 >/dev/null 2>&1 || true
 sysctl -w fs.inotify.max_user_instances=65536 >/dev/null 2>&1 || true
@@ -30,11 +27,13 @@ log()  { echo -e "${C_G}[ARM64-OK]${C_0} $*"; }
 warn() { echo -e "${C_Y}[ARM64-WARN]${C_0} $*"; }
 die()  { echo -e "${C_R}[ARM64-ERR]${C_0} $*"; exit 1; }
 
-[[ $EUID -eq 0 ]] || die "Vui long chay script voi quyen root: sudo bash $0"
+[[ $EUID -eq 0 ]] || die "Vui long chay script bang quyen root: sudo bash $0"
 
 has_systemd() { command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; }
 
-# --- 2. TRIỆT TIÊU TOÀN BỘ POPUP NEEDRESTART & DEBCONF ---
+# ============================================================================
+# 2. TRIỆT TIÊU TOÀN BỘ POPUP NEEDRESTART & DEBCONF
+# ============================================================================
 export DEBIAN_FRONTEND=noninteractive
 export NEEDRESTART_MODE=a
 if [[ -f /etc/needrestart/needrestart.conf ]]; then
@@ -47,7 +46,9 @@ $nrconf{restart} = 'a';
 $nrconf{ui} = 'NeedRestart::UI::stdio';
 EOF_NR
 
-# --- 3. GIẢI PHÓNG KHÓA APT NGẦM CỦA ORACLE LINUX / UBUNTU ---
+# ============================================================================
+# 3. GIẢI PHÓNG KHÓA APT NGẦM CỦA ORACLE CLOUD
+# ============================================================================
 clear_apt_locks() {
   log "Giai phong tien trinh va khoa APT ngam cua Oracle Cloud..."
   if has_systemd; then
@@ -63,7 +64,9 @@ clear_apt_locks
 echo iptables-persistent iptables-persistent/autosave_v4 boolean true | debconf-set-selections 2>/dev/null || true
 echo iptables-persistent iptables-persistent/autosave_v6 boolean true | debconf-set-selections 2>/dev/null || true
 
-# --- 4. NHẬN DIỆN CARD MẠNG & HOST IP DÀNH CHO IP-AUTHENTICATION ---
+# ============================================================================
+# 4. NHẬN DIỆN CARD MẠNG & HOST PUBLIC IP (CHO IP-AUTHENTICATION)
+# ============================================================================
 PRIMARY_IFACE=$(ip -4 route show default 2>/dev/null | awk '{print $5}' | head -n1)
 if [[ -z "$PRIMARY_IFACE" ]]; then
   PRIMARY_IFACE=$(ip link show up 2>/dev/null | grep -E '^[0-9]+: (enp|ens|eth|eno)' | awk -F': ' '{print $2}' | head -n1)
@@ -76,9 +79,11 @@ HOST_PUBLIC_IP=$(curl -s4 -m 3 --interface "$PRIMARY_IFACE" https://api.ipify.or
 
 echo -e "\n${C_BG_BLUE}${C_BOLD} [!] HOST PUBLIC IP DÀNH CHO IP-AUTHENTICATION PROXIES (WHITELIST IP) ${C_0}"
 echo -e " ${C_BOLD}>>> IP CẦN WHITELIST : ${C_G}${C_BOLD}${HOST_PUBLIC_IP}${C_0}"
-echo -e " ${C_Y}Hay chac chan IP nay da duoc Whitelist tren Dashboard Proxy cua ban!${C_0}\n"
+echo -e " ${C_Y}Hay chac chan IP tren da duoc Whitelist chinh xac tren Dashboard Proxy!${C_0}\n"
 
-# --- 5. CÀI ĐẶT CÁC GÓI CỐT LÕI + QEMU MULTI-ARCH CHO ARM64 ---
+# ============================================================================
+# 5. CÀI ĐẶT CÁC GÓI CỐT LÕI + QEMU MULTI-ARCH CHO ARM64
+# ============================================================================
 log "Cap nhat APT va cai dat Engine QEMU Multi-Arch x86_64 tren nen ARM64..."
 apt-get update -y -qq || { clear_apt_locks; apt-get update -y -qq; }
 apt-get install -y -qq --no-install-recommends \
@@ -87,7 +92,9 @@ apt-get install -y -qq --no-install-recommends \
   iptables-persistent netfilter-persistent systemd-timesyncd vnstat nload dnsutils util-linux zram-tools \
   qemu-user-static binfmt-support linux-modules-extra-"$(uname -r)" 2>/dev/null || true
 
-# --- 6. DỌN DẸP TIẾN TRÌNH RÁC VÀ ORACLE-CLOUD-AGENT GIẢI PHÓNG RAM ---
+# ============================================================================
+# 6. DỌN DẸP DỊCH VỤ RÁC & TIÊU DIỆT ORACLE-CLOUD-AGENT GIẢI PHÓNG RAM
+# ============================================================================
 log "Tieu diet cac daemon ngom RAM cua Oracle Cloud..."
 if has_systemd; then
   systemctl stop oracle-cloud-agent oracle-cloud-agent-updater snapd multipathd udisks2 accountsservice earlyoom unattended-upgrades 2>/dev/null || true
@@ -97,7 +104,9 @@ fi
 apt-get purge -y snapd earlyoom 2>/dev/null || true
 rm -rf /var/cache/snapd/ /var/lib/snapd/ 2>/dev/null || true
 
-# --- 7. THIẾT LẬP MẠNG TUN & MỞ KHÓA IPTABLES ROUTING ---
+# ============================================================================
+# 7. THIẾT LẬP MẠNG TUN & DỌN SẠCH TỒN DƯ REJECT CỦA ORACLE
+# ============================================================================
 log "Thiet lap Card mang TUN (/dev/net/tun) va Routing Forwarding..."
 mkdir -p /etc/modules-load.d
 cat > /etc/modules-load.d/internetincome.conf <<'EOF_MODULES'
@@ -121,6 +130,11 @@ if [[ ! -c /dev/net/tun ]]; then
   chmod 666 /dev/net/tun 2>/dev/null || true
 fi
 
+# Xóa các quy tắc REJECT mặc định của Oracle Linux/Ubuntu
+iptables -D INPUT -j REJECT 2>/dev/null || true
+iptables -D FORWARD -j REJECT 2>/dev/null || true
+iptables -D INPUT -m state --state INVALID -j DROP 2>/dev/null || true
+
 # Mở khóa toàn diện iptables FORWARD cho Docker Multi-TUN
 iptables -P INPUT ACCEPT 2>/dev/null || true
 iptables -P FORWARD ACCEPT 2>/dev/null || true
@@ -129,7 +143,9 @@ if command -v netfilter-persistent >/dev/null 2>&1; then
   netfilter-persistent save 2>/dev/null || true
 fi
 
-# --- 8. ÉP ƯU TIÊN IPV4 TUYỆT ĐỐI CHO IP-AUTH (/etc/gai.conf) ---
+# ============================================================================
+# 8. ÉP ƯU TIÊN IPV4 TUYỆT ĐỐI CHO IP-AUTH (/etc/gai.conf)
+# ============================================================================
 log "Cau hinh /etc/gai.conf uu tien IPv4 tuyet doi chong leak..."
 cat << 'EOF_GAI' > /etc/gai.conf
 precedence ::ffff:0:0/96  100
@@ -139,7 +155,9 @@ precedence ::/96          20
 precedence ::1/128        50
 EOF_GAI
 
-# --- 9. ĐỒNG BỘ THỜI GIAN NTP & DNS DIRECT UPSTREAM ---
+# ============================================================================
+# 9. ĐỒNG BỘ THỜI GIAN NTP & DNS DIRECT UPSTREAM (KHÓA CHATTR +I)
+# ============================================================================
 if has_systemd; then
   systemctl unmask systemd-timesyncd 2>/dev/null || true
   systemctl enable --now systemd-timesyncd 2>/dev/null || true
@@ -155,6 +173,7 @@ timedatectl set-timezone Asia/Ho_Chi_Minh 2>/dev/null || true
 chattr -i /etc/resolv.conf 2>/dev/null || true
 rm -f /etc/resolv.conf
 cat > /etc/resolv.conf << 'EOF_RESOLV'
+# Direct Upstream High-Speed DNS
 options timeout:1 attempts:2 rotate
 nameserver 1.1.1.1
 nameserver 8.8.8.8
@@ -163,7 +182,9 @@ EOF_RESOLV
 chmod 644 /etc/resolv.conf
 chattr +i /etc/resolv.conf 2>/dev/null || true
 
-# --- 10. CÀI ĐẶT & TỐI ƯU DOCKER ENGINE CHO ARM64 ---
+# ============================================================================
+# 10. CÀI ĐẶT & TỐI ƯU DOCKER ENGINE CHO ARM64
+# ============================================================================
 if ! command -v docker >/dev/null 2>&1; then
   log "Dang cai dat Docker Official Engine..."
   curl -fsSL https://get.docker.com | sh || apt-get install -y -qq docker.io
@@ -222,7 +243,9 @@ if has_systemd; then
   systemctl enable ii-qemu-arm64.service 2>/dev/null || true
 fi
 
-# --- 11. PHÂN BỔ TÀI NGUYÊN & MULTI-CORE RPS CHO AMPERE A1 ---
+# ============================================================================
+# 11. PHÂN BỔ TÀI NGUYÊN & MULTI-CORE RPS CHO AMPERE A1
+# ============================================================================
 MEM_MB=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
 CPU=$(nproc 2>/dev/null || echo 1)
 
@@ -272,7 +295,9 @@ if [[ -f /sys/kernel/mm/ksm/run ]]; then
   fi
 fi
 
-# --- 12. BỘ NHỚ KÉP: ZRAM ZSTD (PRI 10) + SSD SWAPFILE (PRI 0) ---
+# ============================================================================
+# 12. BỘ NHỚ KÉP: ZRAM ZSTD (PRI 10) + SSD SWAPFILE (PRI 0)
+# ============================================================================
 log "Kich hoat ZRAM ZSTD ${MEM_MB}MB (Pri 10) va Swap SSD ${TARGET_SWAP_MB}MB (Pri 0)..."
 
 cat > /usr/local/bin/ii-init-zram.sh <<'EOF_ZRAM_INIT'
@@ -321,7 +346,9 @@ if ! swapon --show 2>/dev/null | grep -q "/swapfile"; then
   grep -q "^/swapfile" /etc/fstab || echo "/swapfile none swap sw,pri=0 0 0" >> /etc/fstab
 fi
 
-# --- 13. TỐI ƯU KERNEL TCP BBR & CONNTRACK ---
+# ============================================================================
+# 13. TỐI ƯU KERNEL TCP BBR & CONNTRACK
+# ============================================================================
 cat > /etc/sysctl.d/99-arm64-internetincome.conf << 'EOF_SYSCTL'
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
@@ -366,7 +393,9 @@ root soft nofile 1048576
 root hard nofile 1048576
 EOF_LIMITS
 
-# --- 14. THƯ VIỆN ĐỊNH MỨC HỒ SƠ ỨNG DỤNG (24+ APP CHUẨN MA TRẬN) ---
+# ============================================================================
+# 14. THƯ VIỆN ĐỊNH MỨC HỒ SƠ ỨNG DỤNG (24+ APP CHUẨN MA TRẬN)
+# ============================================================================
 mkdir -p /usr/local/lib
 cat > /usr/local/lib/ii-app-profiles.sh << 'EOF_PROFILES'
 #!/usr/bin/env bash
@@ -468,7 +497,9 @@ ii_profile() {
 EOF_PROFILES
 chmod 644 /usr/local/lib/ii-app-profiles.sh
 
-# --- 15. TỰ ĐỘNG QUÉT & VÁ PROPERTIES.CONF + INTERNETINCOME.SH TOÀN BỘ CLUSTER ---
+# ============================================================================
+# 15. TỰ ĐỘNG QUÉT & VÁ TOÀN BỘ PROPERTIES.CONF + INTERNETINCOME.SH
+# ============================================================================
 auto_patch_arm64_ecosystem() {
   log "Dang tu dong patch properties.conf & internetIncome.sh sang chuan Native ARM64..."
   ROOTS=(/opt /root /home /srv /home/ubuntu /home/opc)
@@ -512,12 +543,14 @@ auto_patch_arm64_ecosystem() {
     sed -i 's|traffmonetizer/cli_v2"|traffmonetizer/cli_v2:arm64v8"|g' "$f" 2>/dev/null || true
     sed -i 's|traffmonetizer/cli_v2'\''|traffmonetizer/cli_v2:arm64v8'\''|g' "$f" 2>/dev/null || true
     sed -i 's|--platform linux/amd64||g' "$f" 2>/dev/null || true
-    log "Da patch Native ARM64 cho Script khoi chay tai: $f"
+    log "Da patch Native ARM64 cho Script tai: $f"
   done < <(find "${ROOTS[@]}" -maxdepth 5 \( -name "internetIncome.sh" -o -name "run.sh" -o -name "start.sh" \) -type f 2>/dev/null | sort -u)
 }
 auto_patch_arm64_ecosystem
 
-# --- 16. FLAPGUARD - CHỐNG RECONNECT LOOP & BẢO VỆ TÀI KHOẢN ---
+# ============================================================================
+# 16. FLAPGUARD - CHỐNG RECONNECT LOOP & BẢO VỆ TÀI KHOẢN (ANTI-BAN)
+# ============================================================================
 cat > /usr/local/bin/ii-flapguard.sh << 'EOF_FLAPGUARD'
 #!/usr/bin/env bash
 set -uo pipefail
@@ -561,7 +594,29 @@ done
 EOF_FLAPGUARD
 chmod +x /usr/local/bin/ii-flapguard.sh
 
-# --- 17. ENGINE TỰ ĐỘNG ĐỒNG BỘ RAM & POLICY ---
+# ============================================================================
+# 17. WATCHDOG PHỤC HỒI PROXY BỊ TREO NGẦM (DEAD SOCKET RESCUE)
+# ============================================================================
+cat > /usr/local/bin/ii-watchdog.sh << 'EOF_WATCHDOG'
+#!/usr/bin/env bash
+set -uo pipefail
+command -v docker >/dev/null 2>&1 || exit 0
+
+for cid in $(docker ps -q --filter "name=tun" 2>/dev/null); do
+  cname=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null | sed 's|^/||')
+  
+  # Thử ping outbound qua namespace mạng của TUN
+  if ! docker exec "$cid" curl -s4 -m 3 -o /dev/null https://1.1.1.1 2>/dev/null; then
+    echo "[$(date '+%F %T')] [WATCHDOG] Node $cname mat ket noi Outbound -> Dang tu dong restart..." >> /var/log/ii-watchdog.log
+    docker restart "$cid" >/dev/null 2>&1 || true
+  fi
+done
+EOF_WATCHDOG
+chmod +x /usr/local/bin/ii-watchdog.sh
+
+# ============================================================================
+# 18. ENGINE TỰ ĐỘNG ĐỒNG BỘ RAM & POLICY (AUTOSYNC)
+# ============================================================================
 cat > /usr/local/bin/ii-autosync.sh << 'EOF_AUTOSYNC'
 #!/usr/bin/env bash
 set -uo pipefail
@@ -586,14 +641,16 @@ chmod +x /usr/local/bin/ii-autosync.sh
 ln -sf /usr/local/bin/ii-autosync.sh /usr/bin/ii-sync 2>/dev/null || true
 /usr/local/bin/ii-autosync.sh || true
 
-# --- 18. KHỞI ĐỘNG TUẦN TỰ TUNNEL-FIRST ---
+# ============================================================================
+# 19. KHỞI ĐỘNG TUẦN TỰ TUNNEL-FIRST & SYSTEMD SERVICE
+# ============================================================================
 cat > /usr/local/bin/ii-staggered-start.sh << 'EOF_STAGGER'
 #!/usr/bin/env bash
 set -uo pipefail
 command -v docker >/dev/null 2>&1 || exit 0
 while ! docker info >/dev/null 2>&1; do sleep 1; done
 
-# Start nhóm Tunnel/Proxy trước
+# Khởi động TUN proxy trước
 for cid in $(docker ps -aq 2>/dev/null); do
   cname=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null | sed 's|^/||')
   if [[ "$cname" =~ ^tun|^hev|^socks5|^dind ]]; then
@@ -604,7 +661,7 @@ done
 
 sleep 2
 
-# Start nhóm Worker sau
+# Khởi động Worker platforms sau
 for cid in $(docker ps -aq 2>/dev/null); do
   cname=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null | sed 's|^/||')
   running=$(docker inspect -f '{{.State.Running}}' "$cid" 2>/dev/null || echo "false")
@@ -641,7 +698,9 @@ EOF_BOOT_SVC
   systemctl enable ii-boot-staggered.service 2>/dev/null || true
 fi
 
-# --- 19. CÔNG CỤ SỬA LỖI NHANH 1-CLICK (II-FIX-ARM) ---
+# ============================================================================
+# 20. CÔNG CỤ SỬA LỖI NHANH 1-CLICK (II-FIX-ARM)
+# ============================================================================
 cat > /usr/local/bin/ii-fix-arm.sh << 'EOF_FIX'
 #!/usr/bin/env bash
 echo "=== DANG RESET QEMU VA DONG BO TOAN DIEN HE THONG ARM64 ==="
@@ -652,7 +711,9 @@ EOF_FIX
 chmod +x /usr/local/bin/ii-fix-arm.sh
 ln -sf /usr/local/bin/ii-fix-arm.sh /usr/bin/ii-fix-arm 2>/dev/null || true
 
-# --- 20. BẢNG CHẨN ĐOÁN TIÊU CHUẨN 5 PHẦN (II-STATUS) ---
+# ============================================================================
+# 21. BẢNG CHẨN ĐOÁN TIÊU CHUẨN 5 PHẦN (II-STATUS)
+# ============================================================================
 cat > /usr/local/bin/ii-status.sh << 'EOF_STATUS'
 #!/usr/bin/env bash
 set +u
@@ -857,7 +918,9 @@ EOF_STATUS
 chmod +x /usr/local/bin/ii-status.sh
 ln -sf /usr/local/bin/ii-status.sh /usr/bin/ii-status 2>/dev/null || true
 
-# --- 21. CÔNG CỤ CHẨN ĐOÁN NGHẼN CPU (II-CPU) ---
+# ============================================================================
+# 22. CÔNG CỤ CHẨN ĐOÁN NGHẼN CPU (II-CPU)
+# ============================================================================
 cat > /usr/local/bin/ii-cpu << 'EOF_CPU'
 #!/usr/bin/env bash
 set -u
@@ -885,23 +948,34 @@ EOF_CPU
 chmod +x /usr/local/bin/ii-cpu
 ln -sf /usr/local/bin/ii-cpu /usr/bin/ii-cpu 2>/dev/null || true
 
-# --- 22. CRONJOB AUTO-PILOT 24/7 ---
+# ============================================================================
+# 23. CRONJOB AUTO-PILOT & DỌN LOG RÁC ĐỊNH KỲ
+# ============================================================================
 cat > /etc/cron.d/internetincome_arm64 << 'EOF_CRON'
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 */5 * * * * root /usr/local/bin/ii-autosync.sh >/dev/null 2>&1
 */10 * * * * root /usr/local/bin/ii-flapguard.sh >/dev/null 2>&1
+*/15 * * * * root /usr/local/bin/ii-watchdog.sh >/dev/null 2>&1
+0 */6 * * * root find /var/lib/docker/containers/ -name "*-json.log" -size +10M -exec truncate -s 0 {} + 2>/dev/null
 0 3 * * 0 root /usr/bin/docker network prune -f >/dev/null 2>&1
 0 4 * * 0 root /usr/bin/docker image prune -f >/dev/null 2>&1
 EOF_CRON
 chmod 644 /etc/cron.d/internetincome_arm64
 
-# --- 23. HOTFIX SỬA LỖI DIVISION BY 0 TRONG CHECK_NETWORK_PROXY.SH ---
+# ============================================================================
+# 24. HOTFIX SỬA LỖI DIVISION BY 0 TRONG CHECK_NETWORK_PROXY.SH
+# ============================================================================
 if [[ -f "./check_network_proxy.sh" ]]; then
   sed -i 's|% total_p|% ${total_p:-1}|g' ./check_network_proxy.sh 2>/dev/null || true
   cp ./check_network_proxy.sh /usr/local/bin/check-proxy 2>/dev/null || true
   chmod +x /usr/local/bin/check-proxy 2>/dev/null || true
 fi
+
+# Đồng bộ file cài đặt cho các user chuẩn OCI
+cp -f "$0" /root/setup_oracle_ARM64.sh 2>/dev/null || true
+cp -f "$0" /home/opc/setup_oracle_ARM64.sh 2>/dev/null || true
+cp -f "$0" /home/ubuntu/setup_oracle_ARM64.sh 2>/dev/null || true
 
 echo "=========================================================================="
 echo "  CÀI ĐẶT HOÀN TẤT: PROFILE ${TIER_NAME}"
