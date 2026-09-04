@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 #============================================================================
-#  setup_oracle_ARM64.sh — Production Ready Master (Oracle Cloud Ampere A1)
+#  setup_oracle_ARM64.sh — Master Production Engine (Oracle Cloud Ampere A1)
 #  Kiến trúc      : aarch64 / ARM64 (1 - 4 OCPU, 6 - 24GB RAM)
-#  Bảo toàn 100%  : Native ARM64 Auto-Patch, QEMU Multi-Arch, ZRAM ZSTD, KSM,
-#                   Multi-Core RPS, Anti-Leak IPv4, FlapGuard, Watchdog,
+#  Bảo toàn 100%  : Native ARM64 (:arm64v8), Persistent QEMU Multi-Arch,
+#                   Dual ZRAM ZSTD (Pri 10) + SSD Swap (Pri 0), Multi-Core RPS,
+#                   Anti-Leak IPv4, nsenter-based Dead-Loop Watchdog, FlapGuard,
 #                   Staggered Boot, Full 5-Part Diagnostic & Telemetry.
 #============================================================================
 set -Eeuo pipefail
@@ -221,7 +222,7 @@ EOF_DOCKER_SVC
   systemctl enable docker 2>/dev/null || true
 fi
 
-# Kích hoạt bộ dịch QEMU Multi-Arch tự động qua Systemd
+# Kích hoạt bộ dịch QEMU Multi-Arch có vòng lặp chờ Docker sẵn sàng
 docker run --rm --privileged multiarch/qemu-user-static --reset -p yes >/dev/null 2>&1 || true
 
 cat > /etc/systemd/system/ii-qemu-arm64.service << 'EOF_QEMU_SVC'
@@ -232,6 +233,7 @@ Requires=docker.service
 
 [Service]
 Type=oneshot
+ExecStartPre=/bin/sh -c 'while ! /usr/bin/docker info >/dev/null 2>&1; do sleep 1; done'
 ExecStart=/usr/bin/docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
 RemainAfterExit=yes
 
@@ -498,10 +500,10 @@ EOF_PROFILES
 chmod 644 /usr/local/lib/ii-app-profiles.sh
 
 # ============================================================================
-# 15. TỰ ĐỘNG QUÉT & VÁ TOÀN BỘ PROPERTIES.CONF + INTERNETINCOME.SH
+# 15. TỰ ĐỘNG QUÉT & VÁ PROPERTIES.CONF + DOCKER-COMPOSE + INTERNETINCOME.SH
 # ============================================================================
 auto_patch_arm64_ecosystem() {
-  log "Dang tu dong patch properties.conf & internetIncome.sh sang chuan Native ARM64..."
+  log "Dang tu dong patch toan bo he thong sang chuan Native ARM64 (:arm64v8)..."
   ROOTS=(/opt /root /home /srv /home/ubuntu /home/opc)
 
   # 15a. Vá properties.conf
@@ -535,7 +537,7 @@ auto_patch_arm64_ecosystem() {
     log "Da patch properties.conf tai: $(dirname "$f")"
   done < <(find "${ROOTS[@]}" -maxdepth 5 -name properties.conf -type f 2>/dev/null | sort -u)
 
-  # 15b. Vá source internetIncome.sh & run.sh sang tag Native ARM64 (:arm64v8)
+  # 15b. Vá source internetIncome.sh, run.sh, start.sh, docker-compose*.yml
   while IFS= read -r f; do
     [[ -f "$f" ]] || continue
     sed -i 's|traffmonetizer/cli_v2:latest|traffmonetizer/cli_v2:arm64v8|g' "$f" 2>/dev/null || true
@@ -543,8 +545,8 @@ auto_patch_arm64_ecosystem() {
     sed -i 's|traffmonetizer/cli_v2"|traffmonetizer/cli_v2:arm64v8"|g' "$f" 2>/dev/null || true
     sed -i 's|traffmonetizer/cli_v2'\''|traffmonetizer/cli_v2:arm64v8'\''|g' "$f" 2>/dev/null || true
     sed -i 's|--platform linux/amd64||g' "$f" 2>/dev/null || true
-    log "Da patch Native ARM64 cho Script tai: $f"
-  done < <(find "${ROOTS[@]}" -maxdepth 5 \( -name "internetIncome.sh" -o -name "run.sh" -o -name "start.sh" \) -type f 2>/dev/null | sort -u)
+    log "Da patch Native ARM64 cho: $f"
+  done < <(find "${ROOTS[@]}" -maxdepth 5 \( -name "internetIncome.sh" -o -name "run.sh" -o -name "start.sh" -o -name "docker-compose*.yml" -o -name "docker-compose*.yaml" \) -type f 2>/dev/null | sort -u)
 }
 auto_patch_arm64_ecosystem
 
@@ -595,7 +597,7 @@ EOF_FLAPGUARD
 chmod +x /usr/local/bin/ii-flapguard.sh
 
 # ============================================================================
-# 17. WATCHDOG PHỤC HỒI PROXY BỊ TREO NGẦM (DEAD SOCKET RESCUE)
+# 17. WATCHDOG PHỤC HỒI PROXY QUA NSENTER (ZERO-OVERHEAD, CHUẨN XÁC 100%)
 # ============================================================================
 cat > /usr/local/bin/ii-watchdog.sh << 'EOF_WATCHDOG'
 #!/usr/bin/env bash
@@ -604,10 +606,13 @@ command -v docker >/dev/null 2>&1 || exit 0
 
 for cid in $(docker ps -q --filter "name=tun" 2>/dev/null); do
   cname=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null | sed 's|^/||')
+  pid=$(docker inspect -f '{{.State.Pid}}' "$cid" 2>/dev/null || echo 0)
   
-  # Thử ping outbound qua namespace mạng của TUN
-  if ! docker exec "$cid" curl -s4 -m 3 -o /dev/null https://1.1.1.1 2>/dev/null; then
-    echo "[$(date '+%F %T')] [WATCHDOG] Node $cname mat ket noi Outbound -> Dang tu dong restart..." >> /var/log/ii-watchdog.log
+  (( pid > 0 )) || continue
+
+  # Dùng nsenter mượn namespace mạng của container để test outbound
+  if ! nsenter -t "$pid" -n curl -s4 -m 3 -o /dev/null https://1.1.1.1 2>/dev/null; then
+    echo "[$(date '+%F %T')] [WATCHDOG] Node $cname mat ket noi Outbound -> Dang restart..." >> /var/log/ii-watchdog.log
     docker restart "$cid" >/dev/null 2>&1 || true
   fi
 done
@@ -642,7 +647,7 @@ ln -sf /usr/local/bin/ii-autosync.sh /usr/bin/ii-sync 2>/dev/null || true
 /usr/local/bin/ii-autosync.sh || true
 
 # ============================================================================
-# 19. KHỞI ĐỘNG TUẦN TỰ TUNNEL-FIRST & SYSTEMD SERVICE
+# 19. KHỞI ĐỘNG TUẦN TỰ TUNNEL-FIRST & SYSTEMD BOOT
 # ============================================================================
 cat > /usr/local/bin/ii-staggered-start.sh << 'EOF_STAGGER'
 #!/usr/bin/env bash
@@ -650,7 +655,7 @@ set -uo pipefail
 command -v docker >/dev/null 2>&1 || exit 0
 while ! docker info >/dev/null 2>&1; do sleep 1; done
 
-# Khởi động TUN proxy trước
+# Khởi động nhóm TUN proxy trước
 for cid in $(docker ps -aq 2>/dev/null); do
   cname=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null | sed 's|^/||')
   if [[ "$cname" =~ ^tun|^hev|^socks5|^dind ]]; then
@@ -741,7 +746,7 @@ if (( ${#ROOTS[@]} == 0 )); then ROOTS=(/opt /root /home /srv /home/ubuntu /home
 found=0
 while IFS= read -r cn; do
   d=$(dirname "$cn")
-  [[ -f "${d}/internetIncome.sh" ]] || continue
+  [[ -f "${d}/internetIncome.sh" || -f "${d}/docker-compose.yml" ]] || continue
   found=1
   total=0; running=0; stopped=0; oom_cnt=0; high_restart=0
   while IFS= read -r c; do
@@ -964,10 +969,16 @@ EOF_CRON
 chmod 644 /etc/cron.d/internetincome_arm64
 
 # ============================================================================
-# 24. HOTFIX SỬA LỖI DIVISION BY 0 TRONG CHECK_NETWORK_PROXY.SH
+# 24. HOTFIX SỬA LỖI DIVISION BY 0 TRONG CHECK_NETWORK_PROXY.SH TRÊN TOÀN MÁY
 # ============================================================================
+ROOTS=(/opt /root /home /srv /home/ubuntu /home/opc /usr/local/bin)
+while IFS= read -r f; do
+  [[ -f "$f" ]] || continue
+  sed -i 's|% total_p|% ${total_p:-1}|g' "$f" 2>/dev/null || true
+  sed -i 's|%total_p|%${total_p:-1}|g' "$f" 2>/dev/null || true
+done < <(find "${ROOTS[@]}" -maxdepth 5 -name "check_network_proxy.sh" -type f 2>/dev/null | sort -u)
+
 if [[ -f "./check_network_proxy.sh" ]]; then
-  sed -i 's|% total_p|% ${total_p:-1}|g' ./check_network_proxy.sh 2>/dev/null || true
   cp ./check_network_proxy.sh /usr/local/bin/check-proxy 2>/dev/null || true
   chmod +x /usr/local/bin/check-proxy 2>/dev/null || true
 fi
@@ -979,6 +990,6 @@ cp -f "$0" /home/ubuntu/setup_oracle_ARM64.sh 2>/dev/null || true
 
 echo "=========================================================================="
 echo "  CÀI ĐẶT HOÀN TẤT: PROFILE ${TIER_NAME}"
-echo "  BẢN CHUYÊN BIỆT CHO CHIP ARM64 ĐÃ TÍCH HỢP 100% ĐẦY ĐỦ NHẤT!"
+echo "  BẢN MASTER ARM64 ĐÃ TỐI ƯU TOÀN DIỆN 100% SẴN SÀNG CHẠY 24/7!"
 echo "=========================================================================="
 /usr/local/bin/ii-status.sh || true
