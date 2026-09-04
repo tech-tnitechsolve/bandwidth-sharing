@@ -48,10 +48,9 @@ $nrconf{ui} = 'NeedRestart::UI::stdio';
 EOF_NR
 
 # ============================================================================
-# 3. GIẢI PHÓNG KHÓA APT NGẦM CỦA ORACLE CLOUD
+# 3. GIẢI PHÓNG KHÓA APT NGẦM CỦA ORACLE CLOUD (LOCK BREAKER)
 # ============================================================================
 clear_apt_locks() {
-  log "Giai phong tien trinh va khoa APT ngam cua Oracle Cloud..."
   if has_systemd; then
     systemctl stop apt-daily.service apt-daily-upgrade.service unattended-upgrades.service 2>/dev/null || true
     systemctl disable apt-daily.service apt-daily-upgrade.service unattended-upgrades.service 2>/dev/null || true
@@ -61,6 +60,7 @@ clear_apt_locks() {
   dpkg --configure -a 2>/dev/null || true
 }
 clear_apt_locks
+log "Da giai phong toan bo khoa APT ngam cua Ubuntu / Oracle Cloud!"
 
 echo iptables-persistent iptables-persistent/autosave_v4 boolean true | debconf-set-selections 2>/dev/null || true
 echo iptables-persistent iptables-persistent/autosave_v6 boolean true | debconf-set-selections 2>/dev/null || true
@@ -86,6 +86,7 @@ echo -e " ${C_Y}Hay chac chan IP tren da duoc Whitelist chinh xac tren Dashboard
 # 5. CÀI ĐẶT CÁC GÓI CỐT LÕI + QEMU MULTI-ARCH CHO ARM64
 # ============================================================================
 log "Cap nhat APT va cai dat Engine QEMU Multi-Arch x86_64 tren nen ARM64..."
+clear_apt_locks
 apt-get update -y -qq || { clear_apt_locks; apt-get update -y -qq; }
 apt-get install -y -qq --no-install-recommends \
   -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
@@ -184,11 +185,24 @@ chmod 644 /etc/resolv.conf
 chattr +i /etc/resolv.conf 2>/dev/null || true
 
 # ============================================================================
-# 10. CÀI ĐẶT & TỐI ƯU DOCKER ENGINE CHO ARM64
+# 10. CÀI ĐẶT & TỐI ƯU DOCKER ENGINE CHO ARM64 (AUTO-RETRY VÀ CHỐNG KẸT LOCK)
 # ============================================================================
 if ! command -v docker >/dev/null 2>&1; then
   log "Dang cai dat Docker Official Engine..."
-  curl -fsSL https://get.docker.com | sh || apt-get install -y -qq docker.io
+  DOCKER_INSTALLED=0
+  for attempt in 1 2 3 4 5; do
+    clear_apt_locks
+    if curl -fsSL https://get.docker.com | sh; then
+      DOCKER_INSTALLED=1
+      break
+    fi
+    warn "Docker installer gap xung dot lock APT lan $attempt/5. Dang giai phong va thu lai sau 3s..."
+    sleep 3
+  done
+  if [[ $DOCKER_INSTALLED -eq 0 ]] && ! command -v docker >/dev/null 2>&1; then
+    clear_apt_locks
+    apt-get install -y -qq docker.io docker-compose-v2 || true
+  fi
 fi
 
 for u in ubuntu opc root; do
@@ -222,7 +236,7 @@ EOF_DOCKER_SVC
   systemctl enable docker 2>/dev/null || true
 fi
 
-# Kích hoạt bộ dịch QEMU Multi-Arch có vòng lặp chờ Docker sẵn sàng
+# Kích hoạt bộ dịch QEMU Multi-Arch có vòng lặp chờ Docker Daemon sẵn sàng
 docker run --rm --privileged multiarch/qemu-user-static --reset -p yes >/dev/null 2>&1 || true
 
 cat > /etc/systemd/system/ii-qemu-arm64.service << 'EOF_QEMU_SVC'
@@ -537,7 +551,7 @@ auto_patch_arm64_ecosystem() {
     log "Da patch properties.conf tai: $(dirname "$f")"
   done < <(find "${ROOTS[@]}" -maxdepth 5 -name properties.conf -type f 2>/dev/null | sort -u)
 
-  # 15b. Vá source internetIncome.sh, run.sh, start.sh, docker-compose*.yml
+  # 15b. Vá source internetIncome.sh, run.sh, start.sh, docker-compose*.yml sang Native ARM64
   while IFS= read -r f; do
     [[ -f "$f" ]] || continue
     sed -i 's|traffmonetizer/cli_v2:latest|traffmonetizer/cli_v2:arm64v8|g' "$f" 2>/dev/null || true
