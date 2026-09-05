@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # VPS Network Capacity Audit
 # Mục đích duy nhất: xác định bandwidth VPS có đủ tải cho các IP/container đang chạy hay không.
-# Có test iperf3 trực tiếp theo khu vực; không speedtest/ping/curl/wget và không gọi qua proxy.
+# Passive-only: chỉ đọc traffic thật; không tạo benchmark hay gọi endpoint bên ngoài.
 # Chạy:
 #   sudo bash vps-network-audit.sh              # đo 24 giờ
 #   sudo bash vps-network-audit.sh 259200       # đo 72 giờ
@@ -30,10 +30,12 @@ if ! [[ "$DURATION" =~ ^[0-9]+$ ]] || (( DURATION < 60 )); then
   exit 1
 fi
 
+# Chỉ giữ log tối đa 7 ngày; không đụng tới thư mục khác.
+find "$HOME" -maxdepth 1 -mindepth 1 -type d -name 'vps-network-audit-*' -mtime +7 -exec rm -rf -- {} + 2>/dev/null || true
 mkdir -p "$LOG_DIR"
 
 install_missing_packages() {
-  local packages=(vnstat sysstat ethtool iproute2 procps iperf3)
+  local packages=(vnstat sysstat ethtool iproute2 procps)
   local missing=()
   local package
 
@@ -82,54 +84,9 @@ get_sar_values() {
   sar -n DEV 1 1 2>/dev/null | awk -v iface="$IFACE" '$2==iface {rx=$5; tx=$6} END {printf "%s %s", rx+0, tx+0}'
 }
 
-# Regional route capacity tests.
-# Public endpoints can be busy/offline; failed tests are recorded and skipped.
-# Tests run sequentially, IPv4, 2 TCP streams, 30 seconds per direction.
-# They create direct traffic only to the listed iperf3 servers, never through containers/proxies.
-REGIONAL_LOG="$LOG_DIR/regional-capacity.csv"
-printf 'region,country,endpoint,port,direction,status,result_file\n' > "$REGIONAL_LOG"
-
-run_regional_test() {
-  local region="$1" country="$2" endpoint="$3" port="$4" direction="$5"
-  local tag="${region}_${country}_${direction}"
-  local outfile="$LOG_DIR/${tag}.txt"
-  local reverse=()
-  [[ "$direction" == "download" ]] && reverse=(-R)
-
-  echo "Regional test: $region / $country / $direction -> $endpoint:$port"
-  if timeout 45s iperf3 -4 -c "$endpoint" -p "$port" -P 2 -t 30 --connect-timeout 5000 "${reverse[@]}" >"$outfile" 2>&1; then
-    local result
-    result=$(awk '/sender|receiver/ {v=$0} END {print v}' "$outfile" | tail -1 | tr ',' ';')
-    printf '%s,%s,%s,%s,%s,OK,%s\n' "$region" "$country" "$endpoint" "$port" "$direction" "$outfile" >> "$REGIONAL_LOG"
-    echo "  OK: ${result:-xem $outfile}"
-  else
-    printf '%s,%s,%s,%s,%s,FAILED,%s\n' "$region" "$country" "$endpoint" "$port" "$direction" "$outfile" >> "$REGIONAL_LOG"
-    echo "  FAILED/OFFLINE: xem $outfile"
-  fi
-  sleep 10
-}
-
-{
-  echo
-  echo "===== REGIONAL DIRECT BANDWIDTH TESTS ====="
-  echo "Chạy tuần tự, không qua proxy/container. Có thể tạo traffic tạm thời."
-  echo
-} | tee "$LOG_DIR/regional-capacity.txt"
-
-# EU: France + Netherlands; Americas: US; Asia: Singapore + Japan; Oceania: Sydney.
-# Endpoints/ports sourced from public iPerf server lists; public servers may change availability.
-run_regional_test "EU" "France" "ping.online.net" "5200" "upload"
-run_regional_test "EU" "France" "ping.online.net" "5200" "download"
-run_regional_test "EU" "Netherlands" "speedtest.serverius.net" "5002" "upload"
-run_regional_test "EU" "Netherlands" "speedtest.serverius.net" "5002" "download"
-run_regional_test "AMERICAS" "USA" "iperf.he.net" "5201" "upload"
-run_regional_test "AMERICAS" "USA" "iperf.he.net" "5201" "download"
-run_regional_test "ASIA" "Singapore" "speedtest.sin1.sg.leaseweb.net" "5201" "upload"
-run_regional_test "ASIA" "Singapore" "speedtest.sin1.sg.leaseweb.net" "5201" "download"
-run_regional_test "ASIA" "Japan" "speedtest.tyo11.jp.leaseweb.net" "5201" "upload"
-run_regional_test "ASIA" "Japan" "speedtest.tyo11.jp.leaseweb.net" "5201" "download"
-run_regional_test "OCEANIA" "Australia" "speedtest.syd12.au.leaseweb.net" "5201" "upload"
-run_regional_test "OCEANIA" "Australia" "speedtest.syd12.au.leaseweb.net" "5201" "download"
+# Passive-only mode: no iperf3/speedtest/ping/curl/wget and no external probes.
+# This intentionally measures only live VPS/container traffic so it cannot consume
+# bandwidth or CPU needed by the running proxy containers.
 
 START=$(date +%s)
 END=$((START + DURATION))
@@ -162,6 +119,15 @@ while (( $(date +%s) < END )); do
   RAM_AVAILABLE=$(awk '/MemAvailable:/ {print int($2/1024)}' /proc/meminfo)
   read -r RX_DROP TX_DROP RX_ERR TX_ERR <<< "$(get_counters)"
   CONTAINERS=$(docker ps -q 2>/dev/null | wc -l || true)
+
+  # Snapshot network cumulative per container/proxy. This is read-only and does
+  # not create traffic. The container name is used as the proxy identifier.
+  if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+    {
+      echo "timestamp,container,net_io"
+      docker stats --no-stream --format "$(date '+%F %T'),{{.Name}},{{.NetIO}}" 2>/dev/null || true
+    } > "$LOG_DIR/container-net-${COUNT}.csv"
+  fi
 
   printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
     "$NOW" "$RX_KB" "$TX_KB" "$RX_MBPS" "$TX_MBPS" "$ESTABLISHED" \
@@ -218,10 +184,6 @@ awk -F, -v port="$PORT_MBPS" -v safe="$SAFE_LIMIT_MBPS" '
       print "verdict=INSUFFICIENT_OR_NETWORK_ERRORS__DO_NOT_ADD_IPS_YET"
   }
 ' "$SUMMARY_LOG" | tee "$LOG_DIR/final-verdict.txt"
-
-echo
- echo "===== REGIONAL TEST SUMMARY ====="
-column -s, -t "$REGIONAL_LOG" 2>/dev/null || cat "$REGIONAL_LOG"
 
 echo
  echo "===== TRAFFIC HISTORY ====="
