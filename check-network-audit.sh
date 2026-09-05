@@ -9,7 +9,8 @@ set -Eeuo pipefail
 
 MODE="${1:-}"
 DURATION="${1:-86400}"
-INTERVAL=60
+# Đo mỗi 5 phút để giảm tối đa CPU/Docker API overhead trên VPS nhiều container.
+INTERVAL=300
 
 if [[ "$MODE" == "--install" ]]; then
   SCRIPT_PATH="$(readlink -f "$0")"
@@ -66,6 +67,12 @@ install_missing() {
 }
 install_missing
 
+# Kiểm tra Docker một lần, không gọi docker info lặp lại mỗi chu kỳ.
+DOCKER_OK=0
+if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+  DOCKER_OK=1
+fi
+
 # Không dùng proxy environment; toàn bộ phép đo dưới đây là local/read-only.
 unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy || true
 
@@ -92,7 +99,7 @@ read -r OLD_RX_DROP OLD_TX_DROP OLD_RX_ERR OLD_TX_ERR < <(interface_counters)
 # Parse one docker stats snapshot, calculate deltas and append one compact CSV.
 parse_containers() {
   local now="$1" snap="$RUN_DIR/.docker-snapshot"
-  if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
+  if (( DOCKER_OK == 0 )); then
     return 0
   fi
   docker stats --no-stream --format '{{.Name}}|{{.ID}}|{{.NetIO}}' > "$snap" 2>/dev/null || return 0
@@ -158,7 +165,7 @@ while (( $(date +%s) < END )); do
   OLD_RX_DROP=$RD; OLD_TX_DROP=$TD; OLD_RX_ERR=$RE; OLD_TX_ERR=$TE
   parse_containers "$NOW"
   CONTAINERS=0
-  command -v docker >/dev/null 2>&1 && CONTAINERS=$(docker ps -q 2>/dev/null | wc -l || true)
+  (( DOCKER_OK == 1 )) && CONTAINERS=$(docker ps -q 2>/dev/null | wc -l || true)
   printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' "$NOW" "$RX_KB" "$TX_KB" "$RX_MBPS" "$TX_MBPS" "$TOTAL_MBPS" "$EST" "$LOAD" "$RAM" "$DR" "$DT" "$DE" "$DF" >> "$SUMMARY"
   printf '%s RX=%s Mbps TX=%s Mbps Total=%s Mbps EST=%s Containers=%s Drops=%s/%s Errors=%s/%s Load=%s RAM=%sMiB\n' "$NOW" "$RX_MBPS" "$TX_MBPS" "$TOTAL_MBPS" "$EST" "$CONTAINERS" "$DR" "$DT" "$DE" "$DF" "$LOAD" "$RAM" | tee -a "$RAW"
   if awk -v x="$TOTAL_MBPS" -v lim="$SAFE_LIMIT_MBPS" 'BEGIN{exit !(x>=lim)}'; then
