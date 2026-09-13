@@ -1000,16 +1000,22 @@ sleep 2
 IDX=0
 for cid in $(docker ps -aq 2>/dev/null); do
   cname=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null | sed 's|^/||')
+  cimg=$(docker inspect -f '{{.Config.Image}}' "$cid" 2>/dev/null || echo "")
   running=$(docker inspect -f '{{.State.Running}}' "$cid" 2>/dev/null || echo "false")
   IDX=$((IDX+1))
   if [[ "$running" == "true" ]]; then continue; fi
 
+  # LOẠI TRỪ CÁC APP NHẠY CẢM - KHÔNG TỰ BẬT LẠI KHI ĐANG TẮT ĐỂ TRÁNH SUSPEND
+  case "${cname}${cimg}" in
+    *honey*|*pawns*|*packetstream*|*packetshare*|*earnfm*|*earnapp*|*repocket*|*grass*|*gradient*|*nodepay*|*dawn*|*titan*|*uprock*)
+      continue
+      ;;
+  esac
+
   docker start "$cid" >/dev/null 2>&1 || true
 
-  if [[ "$cname" =~ ebesucher|adnade|depinext|grass|gradient|nodepay|dawn|titan|uprock|customchrome|customfirefox ]]; then
+  if [[ "$cname" =~ ebesucher|adnade|depinext|customchrome|customfirefox ]]; then
     sleep 8
-  elif [[ "$cname" =~ honey|repocket|packetstream|packetshare|pawns|earnfm|earnapp ]]; then
-    sleep 3.5
   else
     sleep 0.8
   fi
