@@ -285,7 +285,8 @@ net.ipv4.ip_forward = 1
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
 
-# Netfilter Conntrack for High-density Nodes
+# Netfilter Conntrack & Anti-NAT Overflow (Mức cân bằng tuyệt đối)
+net.ipv4.tcp_fin_timeout = 15
 net.netfilter.nf_conntrack_max = 524288
 net.netfilter.nf_conntrack_tcp_timeout_established = 600
 net.netfilter.nf_conntrack_tcp_timeout_close_wait = 15
