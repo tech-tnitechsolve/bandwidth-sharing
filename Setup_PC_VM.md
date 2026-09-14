@@ -1,39 +1,7 @@
 # 🌐 MASTER PRODUCTION PLAYBOOK: 24/7 BANDWIDTH SHARING & MULTI-PC HIGH-DENSITY FARM
 > **Tài liệu hướng dẫn toàn diện hạ tầng ngoại cảnh:** Tối ưu hóa Modem Nhà Mạng -> Windows Host -> Phần mềm Ảo hóa (VMware/VBox) -> Mở rộng Multi-PC Farm & Tăng Băng Thông.
 
----
-
-## 📑 MỤC LỤC
-1. [Bản Chất Hạ Tầng & Giải Đáp Các Vấn Đề Cốt Lõi](#1-bản-chất-hạ-tầng--giải-đáp-các-vấn-đề-cốt-lõi)
-2. [Định Mức Giới Hạn Node & Băng Thông An Toàn](#2-định-mức-giới-hạn-node--băng-thông-an-toàn)
-3. [Tối Ưu Hóa Toàn Diện Modem Nhà Mạng (ONT Router)](#3-tối-ưu-hóa-toàn-diện-modem-nhà-mạng-ont-router)
-4. [Tối Ưu Hóa Máy Tính Windows Host (Chạy 24/7 Bền Bỉ)](#4-tối-ưu-hóa-máy-tính-windows-host-chạy-247-bền-bỉ)
-5. [Tối Ưu Hóa Phần Mềm Máy Ảo (VMware / VirtualBox)](#5-tối-ưu-hóa-phần-mềm-máy-ảo-vmware--virtualbox)
-6. [Chiến Lược Mở Rộng Nhiều PC & Tăng Tốc Băng Thông](#6-chiến-lược-mở-rộng-nhiều-pc--tăng-tốc-băng-thông)
-7. [Quy Trình Khởi Chạy & Lệnh Quản Trị Telemetry](#7-quy-trình-khởi-chạy--lệnh-quản-trị-telemetry)
-8. [Cẩm Nang Xử Lý Sự Cố Định Kỳ (FAQ)](#8-cẩm-nang-xử-lý-sự-cố-định-kỳ-faq)
-
----
-
-## 1. BẢN CHẤT HẠ TẦNG & GIẢI ĐÁP CÁC VẤN ĐỀ CỐT LÕI
-
-### ❓ 1.1. Thuê VPS Contabo có nên mua thêm "Private Networking" không?
-* **Trả lời: TUYỆT ĐỐI KHÔNG NÊN MUA.**
-* **Lý do:** Private Networking là mạng nội bộ ảo (VLAN) kết nối các VPS với nhau bằng IP private (`10.x.x.x`). Các app chia sẻ băng thông (Grass, Honeygain, EarnApp, Spide, Mysterium...) chỉ cần **Public IP công cộng** để kết nối ra ngoài Internet. Mua tính năng này vừa tốn tiền vừa không làm tăng tốc độ mạng Internet hay cấp thêm IP công cộng.
-
-### ❓ 1.2. Mạng lag hoặc mất kết nối có bị vô tình XÓA node hay mất dữ liệu không?
-* **Trả lời: KHÔNG BAO GIỜ BỊ XÓA.**
-* **Cơ chế:** Tính năng `FlapGuard` trong script chỉ dùng lệnh `docker stop` (tạm dừng) để chống reconnect loop làm khóa tài khoản. Script **tuyệt đối không có lệnh `docker rm` (xóa)**. Toàn bộ session đăng nhập, SQLite database, ví tiền và token đều nằm an toàn 100% trên ổ cứng.
-
-### ❓ 1.3. Ép timeout socket (10s, 15s, 600s) có làm bóp thu nhập không?
-* **Trả lời: KHÔNG BỊ BÓP, MÀ CÒN TĂNG ĐỘ ỔN ĐỊNH.**
-* **Bản chất:**
-  * Các kết nối `FIN-WAIT` (10s) hay `TIME_WAIT` (15s) là những kết nối **đã truyền xong dữ liệu**. Thu dọn nhanh giúp giải phóng cổng mạng cho task mới.
-  * Mức `timeout_established = 600s` (10 phút) chỉ ngắt khi kết nối câm lặng 100%. Trong khi đó, mọi nền tảng (Honeygain, Mysterium, Grass...) và Cloudflare/AWS đều gửi gói tin **Ping / Heartbeat mỗi 15 – 60 giây**, nên node đang online sẽ liên tục được reset bộ đếm và không bao giờ bị ngắt giữa chừng.
-
----
-
-## 2. ĐỊNH MỨC GIỚI HẠN NODE & BĂNG THÔNG AN TOÀN
+## 1. ĐỊNH MỨC GIỚI HẠN NODE & BĂNG THÔNG AN TOÀN
 
 Khi chạy trên đường truyền mạng gia đình (gói 150 Mbps – 300 Mbps), việc phân bổ node cần tuân thủ bảng định mức sau:
 
