@@ -247,12 +247,17 @@ modprobe br_netfilter 2>/dev/null || true
 modprobe nf_conntrack 2>/dev/null || true
 modprobe tun 2>/dev/null || true
 
+# Tắt THP chống phình RAM máy ảo
+echo never > /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || true
+echo never > /sys/kernel/mm/transparent_hugepage/defrag 2>/dev/null || true
+
 cat << 'EOF' > /etc/sysctl.d/99-internetincome-vm.conf
 # File & Process Descriptors
 fs.file-max = 2097152
 fs.inotify.max_user_instances = 8192
 fs.inotify.max_user_watches = 524288
 kernel.pid_max = 4194304
+vm.page-cluster = 0
 
 # Memory Swappiness & Cache Reclaim
 vm.swappiness = 100
@@ -319,12 +324,13 @@ cat << 'EOF' > /usr/local/bin/ii-zram-setup.sh
 #!/usr/bin/env bash
 modprobe zram num_devices=1 2>/dev/null || true
 swapoff /dev/zram0 2>/dev/null || true
+echo 1 > /sys/block/zram0/reset 2>/dev/null || true
 
 RAM_TOTAL_BYTES=$(grep MemTotal /proc/meminfo | awk '{print $2 * 1024}')
 echo zstd > /sys/block/zram0/comp_algorithm 2>/dev/null || echo lz4 > /sys/block/zram0/comp_algorithm
-echo "$RAM_TOTAL_BYTES" > /sys/block/zram0/disksize
+echo "$RAM_TOTAL_BYTES" > /sys/block/zram0/disksize 2>/dev/null || true
 mkswap /dev/zram0 >/dev/null 2>&1
-swapon -p 10 /dev/zram0
+swapon -p 10 /dev/zram0 2>/dev/null || true
 EOF
 chmod +x /usr/local/bin/ii-zram-setup.sh
 
@@ -515,7 +521,8 @@ docker ps --format '{{.ID}}|{{.Names}}|{{.Status}}' 2>/dev/null | while IFS='|' 
     RESTART_COUNT=$(docker inspect --format '{{.RestartCount}}' "$CID" 2>/dev/null || echo 0)
     
     if (( RESTART_COUNT >= 5 )) || [[ "$CSTAT" =~ (Restarting) ]]; then
-        echo "$(date '+%Y-%m-%d %H:%M:%S') [FLAPGUARD] Container $CNAME ($CID) crash loop ($RESTART_COUNT lần). Tạm dừng 12h..." >> "$LOG_FILE"
+        echo "$(date '+%Y-%m-%d %H:%M:%S') [FLAPGUARD] Container $CNAME ($CID) crash loop ($RESTART_COUNT lần). Tạm dừng an toàn..." >> "$LOG_FILE"
+        docker update --restart=no "$CID" >/dev/null 2>&1 || true
         docker stop -t 5 "$CID" >/dev/null 2>&1 || true
     fi
 done
@@ -560,6 +567,11 @@ for CID in $CONTAINERS; do
         --memory-reservation="${FLOOR_MB}m" \
         --memory="${BURST_MB}m" \
         --memory-swap="-1" \
+        --cpu-shares=256 \
+        "$CID" >/dev/null 2>&1 || \
+    docker update \
+        --memory-reservation="${FLOOR_MB}m" \
+        --memory="${BURST_MB}m" \
         --cpu-shares=256 \
         "$CID" >/dev/null 2>&1 || true
 done
@@ -655,6 +667,11 @@ log_step "BƯỚC 10: ĐỒNG BỘ CRONJOBS & HÀM AUTO-PATCH PROPERTIES.CONF"
 0 3 * * * docker image prune -af --filter "until=168h" >/dev/null 2>&1
 EOF
 ) | crontab -
+
+# Xóa sạch ký tự Windows CRLF (\r) trong toàn bộ file proxy
+find /root /home /opt -maxdepth 5 -type f \( -name "*.txt" -o -name "*.list" \) 2>/dev/null | while IFS= read -r pf; do
+    [[ -f "$pf" ]] && sed -i 's/\r$//' "$pf" 2>/dev/null || true
+done
 
 auto_patch_engageub_repo() {
     local target_dir="${1:-$HOME/InternetIncome}"
