@@ -14,7 +14,7 @@ Khi chạy trên đường truyền mạng gia đình (gói 150 Mbps – 300 Mbp
 
 ---
 
-## 3. TỐI ƯU HÓA TOÀN DIỆN MODEM NHÀ MẠNG (ONT ROUTER)
+## 2. TỐI ƯU HÓA TOÀN DIỆN MODEM NHÀ MẠNG (ONT ROUTER)
 
 Áp dụng trực tiếp trên trang quản trị Modem (`http://192.168.1.1` - Đăng nhập tài khoản `admin` / Mật khẩu là dãy **GPON SN** in hoa in ở tem đáy thiết bị, VD: `ZTEGDE291D38`):
 
@@ -35,7 +35,7 @@ Khi chạy trên đường truyền mạng gia đình (gói 150 Mbps – 300 Mbp
 
 ---
 
-## 4. TỐI ƯU HÓA MÁY TÍNH WINDOWS HOST (CHẠY 24/7 BỀN BỈ)
+## 3. TỐI ƯU HÓA MÁY TÍNH WINDOWS HOST (CHẠY 24/7 BỀN BỈ)
 
 Thực hiện trên hệ điều hành Windows máy chủ cắm chạy máy ảo:
 
@@ -69,7 +69,7 @@ Thực hiện trên hệ điều hành Windows máy chủ cắm chạy máy ảo
 
 ---
 
-## 5. TỐI ƯU HÓA PHẦN MỀM MÁY ẢO (VMWARE / VIRTUALBOX)
+## 4. TỐI ƯU HÓA PHẦN MỀM MÁY ẢO (VMWARE / VIRTUALBOX)
 
 ### A. Chuyển chế độ Card Mạng sang `Bridged Adapter` (BẮT BUỘC):
 * **Tuyệt đối không dùng NAT Mode** (tránh bị nghẽn do 2 tầng định tuyến).
@@ -85,7 +85,7 @@ Thực hiện trên hệ điều hành Windows máy chủ cắm chạy máy ảo
 
 ---
 
-## 6. CHIẾN LƯỢC MỞ RỘNG NHIỀU PC & TĂNG TỐC BĂNG THÔNG
+## 5. CHIẾN LƯỢC MỞ RỘNG NHIỀU PC & TĂNG TỐC BĂNG THÔNG
 
 Khi mở rộng quy mô từ **2 đến 10+ PC** chạy đồng thời trên 1 địa điểm:
 
