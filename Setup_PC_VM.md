@@ -1,38 +1,186 @@
-# 🌐 MASTER PLAYBOOK: 24/7 BANDWIDTH SHARING & MULTI-PC HIGH-DENSITY FARM
-> **Kiến trúc hạ tầng tối ưu toàn diện:** Tối ưu hóa Modem ISP -> Windows Host -> Virtualization Hypervisor -> Linux VM Kernel -> Tự động hóa Anti-Ban.
+# 🌐 MASTER PRODUCTION PLAYBOOK: 24/7 BANDWIDTH SHARING & MULTI-PC HIGH-DENSITY FARM
+> **Tài liệu hướng dẫn toàn diện hạ tầng ngoại cảnh:** Tối ưu hóa Modem Nhà Mạng -> Windows Host -> Phần mềm Ảo hóa (VMware/VBox) -> Mở rộng Multi-PC Farm & Tăng Băng Thông.
 
 ---
 
 ## 📑 MỤC LỤC
-1. [Định Mức Giới Hạn Node & Băng Thông An Toàn](#1-định-mức-giới-hạn-node--băng-thông-an-toàn)
-2. [Chiến Lược Mở Rộng Khi Chạy Nhiều PC (Multi-PC Farm)](#2-chiến-lược-mở-rộng-khi-chạy-nhiều-pc-multi-pc-farm)
-3. [Giải Pháp Tăng Băng Thông & Chống Nghẽn Đường Truyền](#3-giải-pháp-tăng-băng-thông--chống-nghẽn-đường-truyền)
-4. [Quy Trình Tối Ưu Hóa Modem Nhà Mạng (ONT Router)](#4-quy-trình-tối-ưu-hóa-modem-nhà-mạng-ont-router)
-5. [Quy Trình Tối Ưu Hóa Máy Tính Windows Host](#5-quy-trình-tối-ưu-hóa-máy-tính-windows-host)
-6. [Cấu Hình Mạng Máy Ảo (VMware / VirtualBox)](#6-cấu-hình-mạng-máy-ảo-vmware--virtualbox)
-7. [Khởi Chạy & Lệnh Điều Khiển Telemetry (setup_vm.sh)](#7-khởi-chạy--lệnh-điều-khiển-telemetry-setup_vmsh)
-8. [Cẩm Nang Xử Lý Sự Cố (Troubleshooting FAQ)](#8-cẩm-nang-xử-lý-sự-cố-troubleshooting-faq)
+1. [Bản Chất Hạ Tầng & Giải Đáp Các Vấn Đề Cốt Lõi](#1-bản-chất-hạ-tầng--giải-đáp-các-vấn-đề-cốt-lõi)
+2. [Định Mức Giới Hạn Node & Băng Thông An Toàn](#2-định-mức-giới-hạn-node--băng-thông-an-toàn)
+3. [Tối Ưu Hóa Toàn Diện Modem Nhà Mạng (ONT Router)](#3-tối-ưu-hóa-toàn-diện-modem-nhà-mạng-ont-router)
+4. [Tối Ưu Hóa Máy Tính Windows Host (Chạy 24/7 Bền Bỉ)](#4-tối-ưu-hóa-máy-tính-windows-host-chạy-247-bền-bỉ)
+5. [Tối Ưu Hóa Phần Mềm Máy Ảo (VMware / VirtualBox)](#5-tối-ưu-hóa-phần-mềm-máy-ảo-vmware--virtualbox)
+6. [Chiến Lược Mở Rộng Nhiều PC & Tăng Tốc Băng Thông](#6-chiến-lược-mở-rộng-nhiều-pc--tăng-tốc-băng-thông)
+7. [Quy Trình Khởi Chạy & Lệnh Quản Trị Telemetry](#7-quy-trình-khởi-chạy--lệnh-quản-trị-telemetry)
+8. [Cẩm Nang Xử Lý Sự Cố Định Kỳ (FAQ)](#8-cẩm-nang-xử-lý-sự-cố-định-kỳ-faq)
 
 ---
 
-## 1. ĐỊNH MỨC GIỚI HẠN NODE & BĂNG THÔNG AN TOÀN
+## 1. BẢN CHẤT HẠ TẦNG & GIẢI ĐÁP CÁC VẤN ĐỀ CỐT LÕI
 
-Khi chạy trên đường truyền mạng gia đình (Viettel, FPT, VNPT gói 150Mbps – 300Mbps), việc phân bổ node cần tuân thủ các mốc tải sau:
+### ❓ 1.1. Thuê VPS Contabo có nên mua thêm "Private Networking" không?
+* **Trả lời: TUYỆT ĐỐI KHÔNG NÊN MUA.**
+* **Lý do:** Private Networking là mạng nội bộ ảo (VLAN) kết nối các VPS với nhau bằng IP private (`10.x.x.x`). Các app chia sẻ băng thông (Grass, Honeygain, EarnApp, Spide, Mysterium...) chỉ cần **Public IP công cộng** để kết nối ra ngoài Internet. Mua tính năng này vừa tốn tiền vừa không làm tăng tốc độ mạng Internet hay cấp thêm IP công cộng.
 
-### A. Định mức theo loại IP:
-* **IP Gốc Dân Cư (Direct Residential IP):**
-  * **Quy tắc:** Chỉ chạy **1 Node duy nhất cho mỗi nền tảng** trên cùng 1 IP (1 Honeygain, 1 Pawns, 1 EarnApp, 1 Mysterium, 1 Spide, 1 Grass...).
-  * *Lý do:* Chạy trùng tài khoản hoặc cắm nhiều máy chung 1 IP gốc sẽ bị nền tảng hạ điểm uy tín (Quality Score), giảm 70% thu nhập hoặc khóa tài khoản.
-* **Chạy qua Proxy (Residential / Datacenter Proxies):**
-  * **1 PC (4 Core / 8GB – 16GB RAM):** Gánh tối đa **50 – 150 Proxy Nodes**.
-  * **1 PC (8 Core / 32GB RAM):** Gánh tối đa **200 – 350 Proxy Nodes**.
+### ❓ 1.2. Mạng lag hoặc mất kết nối có bị vô tình XÓA node hay mất dữ liệu không?
+* **Trả lời: KHÔNG BAO GIỜ BỊ XÓA.**
+* **Cơ chế:** Tính năng `FlapGuard` trong script chỉ dùng lệnh `docker stop` (tạm dừng) để chống reconnect loop làm khóa tài khoản. Script **tuyệt đối không có lệnh `docker rm` (xóa)**. Toàn bộ session đăng nhập, SQLite database, ví tiền và token đều nằm an toàn 100% trên ổ cứng.
 
-### B. Định mức tiêu thụ mạng trên 1 đường truyền:
-* **Lưu lượng Upload khuyến nghị:** Dưới **3 TB – 5 TB / tháng / đường mạng**.
-* *Lưu ý:* Vượt quá 5 TB/tháng trên gói cước cá nhân sẽ kích hoạt hệ thống DPI của nhà mạng, tự động bóp tốc độ luồng quốc tế.
+### ❓ 1.3. Ép timeout socket (10s, 15s, 600s) có làm bóp thu nhập không?
+* **Trả lời: KHÔNG BỊ BÓP, MÀ CÒN TĂNG ĐỘ ỔN ĐỊNH.**
+* **Bản chất:**
+  * Các kết nối `FIN-WAIT` (10s) hay `TIME_WAIT` (15s) là những kết nối **đã truyền xong dữ liệu**. Thu dọn nhanh giúp giải phóng cổng mạng cho task mới.
+  * Mức `timeout_established = 600s` (10 phút) chỉ ngắt khi kết nối câm lặng 100%. Trong khi đó, mọi nền tảng (Honeygain, Mysterium, Grass...) và Cloudflare/AWS đều gửi gói tin **Ping / Heartbeat mỗi 15 – 60 giây**, nên node đang online sẽ liên tục được reset bộ đếm và không bao giờ bị ngắt giữa chừng.
 
 ---
 
-## 2. CHIẾN LƯỢC MỞ RỘNG KHI CHẠY NHIỀU PC (MULTI-PC FARM)
+## 2. ĐỊNH MỨC GIỚI HẠN NODE & BĂNG THÔNG AN TOÀN
 
-Khi mở rộng quy mô từ **2 đến 10 PC** chạy đồng thời trên cùng một mạng gia đình, bạn bắt buộc phải áp dụng các giải pháp phần cứng sau:
+Khi chạy trên đường truyền mạng gia đình (gói 150 Mbps – 300 Mbps), việc phân bổ node cần tuân thủ bảng định mức sau:
+
+| Hạng mục | Quy chuẩn an toàn | Hậu quả nếu vượt ngưỡng |
+| :--- | :--- | :--- |
+| **Loại kết nối** | **Bắt buộc cắm cáp LAN (Cat5e/Cat6)** | Wi-Fi sẽ quá nhiệt chip phát sóng, rớt gói tin và lag sau 24h. |
+| **Node chạy IP Gốc** | **Tối đa 1 Node / 1 Nền tảng** trên 1 IP | Trùng IP gốc sẽ bị nền tảng hạ Quality Score, giảm 70% doanh thu. |
+| **Node chạy qua Proxy** | **50 – 150 Proxies / 1 PC** (RAM 8G–16G)<br>**200 – 350 Proxies / 1 PC** (RAM 32G) | Mở quá nhiều proxy trên PC yếu sẽ tràn RAM và nghẽn CPU. |
+| **Lưu lượng Upload** | **Dưới 3 TB – 5 TB / tháng / 1 đường mạng** | Vượt 5 TB/tháng sẽ bị hệ thống DPI nhà mạng đưa vào diện bóp luồng quốc tế. |
+
+---
+
+## 3. TỐI ƯU HÓA TOÀN DIỆN MODEM NHÀ MẠNG (ONT ROUTER)
+
+Áp dụng trực tiếp trên trang quản trị Modem (`http://192.168.1.1` - Đăng nhập tài khoản `admin` / Mật khẩu là dãy **GPON SN** in hoa in ở tem đáy thiết bị, VD: `ZTEGDE291D38`):
+
+### 🛠️ 4 Bước "mở khóa công suất" bắt buộc trên Modem:
+
+1. **Hạ mức Firewall (Giảm tải CPU Modem):**
+   * Vào `Internet` -> `Security` -> `Firewall` -> Chuyển **Firewall Level sang `Low`** -> Bấm **`Apply`**.
+2. **TẮT BỎ Anti-DoS / Anti-hacking (Thủ phạm gây bóp mạng):**
+   * Cuộn xuống mục *Anti-DoS Attack* -> *Anti-hacking* (mục giới hạn 100 kết nối/3 giây).
+   * **BỎ TÍCH ô `Enable`** -> Bấm **`Apply`**.
+3. **MỞ KHÓA Trần Kết Nối (Session Limit):**
+   * Vào `Security` -> `Session Configuration`.
+   * Chuyển **`Session Limit` sang `Off`** (Xóa bỏ hoàn toàn giới hạn 5.000 kết nối ngầm) -> Bấm **`Apply`**.
+4. **BẬT DMZ (Mở thông toàn bộ cổng cho PC chạy LAN):**
+   * Vào `Security` -> `DMZ` -> Chọn **`On`**.
+   * Bấm *Select from the associated devices* -> Chọn đúng dòng chứa **Card mạng LAN** của PC (VD: `[DESKTOP-xxx] - IP: [192.168.1.2]`) -> Bấm **`Apply`**.
+   * *(Lưu ý: Khi đã bật DMZ thì không cần tìm bật UPnP nữa vì DMZ đã bao quát mở 100% port)*.
+
+---
+
+## 4. TỐI ƯU HÓA MÁY TÍNH WINDOWS HOST (CHẠY 24/7 BỀN BỈ)
+
+Thực hiện trên hệ điều hành Windows máy chủ cắm chạy máy ảo:
+
+### A. Chế độ nguồn điện (Power Options):
+1. Mở CMD quyền Administrator, dán lệnh sau để kích hoạt chế độ tối thượng:
+   ```cmd
+   powercfg -duplicatescheme e9a42b02-d5df-448d-aa00-03f14749eb61
+   ```
+2. Mở *Control Panel -> Power Options* -> Chọn gói **`Ultimate Performance`** (hoặc `High Performance`).
+3. Vào `Change plan settings` -> Đặt **Put the computer to sleep = `Never`**.
+4. Bấm dòng xanh `Change advanced power settings`:
+   * **Hard disk** -> *Turn off hard disk after* -> Điền **`0`** (Never).
+   * **PCI Express** -> *Link State Power Management* -> Đổi thành **`Off`** *(Chống hạ nguồn khe cắm card mạng/NVMe)*.
+
+### B. Tắt tiết kiệm điện Card mạng (Device Manager):
+1. Nhấn `Windows + X` -> Chọn **Device Manager** -> Mở rộng **Network adapters**.
+2. Chuột phải vào Card mạng LAN chính (Intel / Realtek) -> Chọn **Properties**:
+   * **Tab `Power Management`:** **BỎ TÍCH** ô *"Allow the computer to turn off this device to save power"*.
+   * **Tab `Advanced`:** Chuyển tất cả các mục sau về **`Disabled`**:
+     * `Energy Efficient Ethernet (EEE)` -> **Disabled**
+     * `Green Ethernet` -> **Disabled**
+     * `Power Saving Mode` / `Gigabit Lite` -> **Disabled**
+
+### C. Chặn Windows Update tự ý Restart nửa đêm:
+1. Nhấn `Windows + R` -> gõ **`gpedit.msc`** -> Enter.
+2. Điều hướng: `Computer Configuration` -> `Administrative Templates` -> `Windows Components` -> `Windows Update`.
+3. Nhấp đúp vào: **`No auto-restart with logged on users for scheduled automatic updates installations`** -> Chọn **`Enabled`** -> Bấm **OK**.
+
+### D. Loại trừ Windows Defender Antivirus:
+* Vào `Windows Security` -> `Virus & threat protection` -> `Manage settings` -> `Exclusions` -> **Add an exclusion -> Folder** -> Trỏ đến thư mục chứa file máy ảo `.vmdk` / `.vdi` để Windows không ngốn CPU quét gói tin Docker.
+
+---
+
+## 5. TỐI ƯU HÓA PHẦN MỀM MÁY ẢO (VMWARE / VIRTUALBOX)
+
+### A. Chuyển chế độ Card Mạng sang `Bridged Adapter` (BẮT BUỘC):
+* **Tuyệt đối không dùng NAT Mode** (tránh bị nghẽn do 2 tầng định tuyến).
+* **Cài đặt:**
+  * **VMware Workstation:** Vào *VM Settings* -> *Network Adapter* -> Tích chọn **`Bridged: Connected directly to the physical network`**.
+  * **VirtualBox:** Vào *Settings* -> *Network* -> *Attached to:* Chọn **`Bridged Adapter`** -> Trỏ đúng tên Card LAN vật lý của PC.
+* 👉 *Tác dụng:* Máy ảo Linux nhận trực tiếp 1 địa chỉ IP riêng từ Modem (VD: `192.168.1.15`), giảm 50% độ trễ và giải phóng hoàn toàn gánh nặng xử lý mạng cho Windows host.
+
+### B. Tỉ lệ vàng cấp phát phần cứng cho Máy ảo:
+* **RAM:** Cấp tối đa **70% tổng RAM vật lý** (để lại 30% cho Windows). *Nhờ ZRAM ZSTD trong script, RAM thực tế của máy ảo sẽ được nén x2 lần*.
+* **vCPU:** Cấp tối đa **75% số luồng CPU** (VD: CPU 8 Core / 16 Thread -> cấp 10 - 12 vCPU cho VM).
+* **Virtualization Engine:** Tích chọn *Virtualize Intel VT-x/EPT or AMD-V/RVI* trong cài đặt CPU của máy ảo.
+
+---
+
+## 6. CHIẾN LƯỢC MỞ RỘNG NHIỀU PC & TĂNG TỐC BĂNG THÔNG
+
+Khi mở rộng quy mô từ **2 đến 10+ PC** chạy đồng thời trên 1 địa điểm:
+
+```text
+[ Đường Cáp Quang Nhà Mạng 1 ] ──┐
+                                 ├──> [ Router Chịu Tải MikroTik / OpenWrt ] (Gộp mạng Multi-WAN)
+[ Đường Cáp Quang Nhà Mạng 2 ] ──┘                 │
+                                                   ▼
+                                  [ Switch Chia Mạng Gigabit 8-24 Ports ]
+                                                   ├── PC 1 (Static IP: 192.168.1.10) ──> [ VM Linux 150 Nodes ]
+                                                   ├── PC 2 (Static IP: 192.168.1.11) ──> [ VM Linux 150 Nodes ]
+                                                   └── PC 3 (Static IP: 192.168.1.12) ──> [ VM Linux 150 Nodes ]
+```
+
+### 🥇 Giải pháp 1: Bridge Mode + Dùng Router Chịu Tải (Dành cho Farm từ 2 PC trở lên)
+* **Cách làm:** Gọi tổng đài nhà mạng (Viettel 1800 8119) yêu cầu chuyển modem chính sang chế độ **Bridge Mode**.
+* **Trang bị Router chuyên dụng:**
+  * **Tầm trung (400k – 700k):** Mua **Newifi 3 D2** hoặc **Xiaomi AX3000** cài firmware OpenWrt.
+  * **Chuyên nghiệp (1.2tr – 1.8tr):** Mua **MikroTik hEX (RB750Gr3)** hoặc **PC Router x86 (chạy pfSense / OpenWrt)**.
+* **Hiệu quả:** Xử lý mượt mà **50.000 – 150.000 kết nối NAT đồng thời**, chạy liên tục 365 ngày không bao giờ bị đơ hay tụt băng thông.
+
+### 🥈 Giải pháp 2: Gộp 2 Đường Mạng (Multi-WAN Load Balancing)
+* **Cách làm:** Kéo 2 đường truyền (VD: 1 Line Viettel 200Mbps + 1 Line VNPT 200Mbps), cắm vào Router MikroTik / OpenWrt và bật tính năng **PCC Load Balancing**.
+* **Hiệu quả:**
+  * Băng thông gộp x2: `200Mbps + 200Mbps = 400Mbps`.
+  * Sở hữu **2 IP Public dân cư độc lập** -> Nhân đôi số lượng node chạy IP Gốc.
+  * Tự động chuyển vùng (Failover): Nếu một nhà mạng bảo trì, toàn bộ node tự chuyển sang đường còn lại, không gián đoạn thu nhập.
+
+### 🥉 Giải pháp 3: Dùng Ổ Cắm Hẹn Giờ Thông Minh (Chi Phí ~70.000đ)
+* Dành cho ai chạy 1 PC trên Modem nhà mạng: Dùng ổ cắm Wi-Fi (Tuya / Sonoff / Rạng Đông) cài lịch tự tắt nguồn modem lúc `04:00 AM` và bật lại lúc `04:01 AM` hàng ngày để tự động xả sạch 100% bảng NAT.
+
+---
+
+## 7. QUY TRÌNH KHỞI CHẠY & LỆNH QUẢN TRỊ TELEMETRY
+
+### A. Khởi chạy trên Máy ảo Linux:
+```bash
+# 1. Cấp quyền thực thi
+chmod +x setup_vm.sh
+
+# 2. Khởi chạy Master Script
+sudo bash setup_vm.sh
+
+# (Tùy chọn) Hẹn giờ tắt VM an toàn mỗi đêm lúc 23:30 để bảo vệ SQLite Database
+sudo bash setup_vm.sh --auto-off 23:30
+```
+
+### B. Bộ lệnh quản trị nhanh (Gõ trực tiếp vào Terminal):
+* **`ii-status`** : Bảng điều khiển viễn trắc kiểm tra toàn diện RAM, ZRAM ZSTD, Conntrack và trạng thái 100% của từng nền tảng.
+* **`check-proxy`** : Đo độ trễ, kiểm tra tính thông tuyến và chất lượng danh sách Proxy.
+* **`ii-capacity`** : Đo đạc sức chịu tải tối đa của phần cứng PC xem có thể cắm thêm bao nhiêu Node.
+* **`ii-sync`** : Cưỡng chế cân bằng bộ nhớ RAM động giữa các container.
+
+---
+
+## 8. CẨM NANG XỬ LÝ SỰ CỐ ĐỊNH KỲ (FAQ)
+
+#### ❓ Sau 2-3 ngày cắm máy, lưu lượng có dấu hiệu chững lại?
+* **Xử lý:** Đây là chu kỳ phân phối task tự nhiên của nền tảng (Platform Demand Cycle). Bạn chỉ cần truy cập `192.168.1.1` bấm nút **`Reboot`** để làm mới dải IP WAN từ nhà mạng, task sẽ được phân phối mạnh mẽ trở lại.
+
+#### ❓ Làm sao biết máy ảo có bị lệch giờ khi Windows Sleep không?
+* **Kiểm tra:** Script đã tích hợp sẵn `Time-Drift Guard (Chrony Service)` tự đồng bộ microsecond mỗi 30s. Bạn gõ lệnh `ii-status`, nếu thấy dòng `NTP Time Sync Status: ACTIVE` là hệ thống chuẩn xác 100%.
+
+#### ❓ File Proxy copy từ Windows vào Linux bị lỗi kết nối?
+* **Xử lý:** Script đã tích hợp bộ lọc tự động xóa ký tự xuống dòng ẩn `\r` (CRLF) của Windows trong toàn bộ file `.txt` / `.list`. Mọi proxy nạp vào đều được chuẩn hóa tuyệt đối.
+```
