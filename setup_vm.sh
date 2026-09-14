@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Script: setup_vm.sh (InternetIncome Bandwidth Sharing - Master Production)
+# Script: setup_vm.sh (InternetIncome Bandwidth Sharing - Master Production 2026)
 # Dành cho: Linux VM chạy trên PC/Laptop Windows (VMware, VirtualBox, Hyper-V, KVM)
 # Đặc tính kỹ thuật:
 #   - Khóa cứng DNS & IPv4 Precedence bảo vệ Proxy IP-Authentication tuyệt đối.
 #   - Hệ thống Time-Drift Guard chống lệch giờ khi Windows Sleep / Hibernate.
 #   - Khóa chống NetworkManager & DHCP vSwitch Windows ghi đè /etc/resolv.conf.
 #   - Dynamic Memory Engine: ZRAM ZSTD (Pri 10) + SSD Swap (Pri 0) + Adaptive KSM.
+#   - Tự động mở rộng ổ đĩa LVM 100% chống nghẽn dung lượng Docker.
 #   - Ma trận 24+ App Profiles, FlapGuard 12h Cooldown & Staggered Boot Service.
-#   - Tích hợp công cụ chẩn đoán toàn diện: ii-status.sh & check-proxy.
+#   - Tự động phân quyền Docker Daemon & chống lỗi Crontab Pipefail.
+#   - Tích hợp công cụ chẩn đoán toàn diện: ii-status & check-proxy.
 #   - Hỗ trợ hẹn giờ tắt máy an toàn (--auto-off HH:MM) bảo vệ SQLite Database.
-#   - Clean Architecture: Đã bóc tách Wipter để chạy độc lập tại thư mục riêng.
 # ==============================================================================
 
 set -euo pipefail
@@ -26,7 +27,6 @@ C_RED='\033[0;31m'
 C_GREEN='\033[0;32m'
 C_YELLOW='\033[0;33m'
 C_BLUE='\033[0;34m'
-C_PURPLE='\033[0;35m'
 C_CYAN='\033[0;36m'
 C_WHITE='\033[1;37m'
 C_BOLD='\033[1m'
@@ -118,7 +118,7 @@ log_step "BƯỚC 2: CÀI ĐẶT GUEST TOOLS & CHỐNG LỆCH GIỜ KHI WINDOWS 
 
 apt-get update -qq >/dev/null 2>&1 || true
 
-GUEST_PKGS=("chrony" "curl" "jq" "bc" "iproute2" "util-linux" "e2fsprogs" "dnsutils" "procps")
+GUEST_PKGS=("chrony" "curl" "jq" "bc" "iproute2" "util-linux" "e2fsprogs" "dnsutils" "procps" "cron")
 case "$VIRT_TYPE" in
     vmware)
         GUEST_PKGS+=("open-vm-tools")
@@ -273,7 +273,7 @@ net.core.wmem_max = 16777216
 net.ipv4.tcp_rmem = 4096 87380 16777216
 net.ipv4.tcp_wmem = 4096 65536 16777216
 net.ipv4.tcp_max_syn_backlog = 16384
-net.ipv4.tcp_fin_timeout = 15
+net.ipv4.tcp_fin_timeout = 10
 net.ipv4.tcp_tw_reuse = 1
 net.ipv4.tcp_keepalive_time = 300
 net.ipv4.tcp_keepalive_intvl = 15
@@ -285,8 +285,7 @@ net.ipv4.ip_forward = 1
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
 
-# Netfilter Conntrack & Anti-NAT Overflow (Mức cân bằng tuyệt đối)
-net.ipv4.tcp_fin_timeout = 15
+# Netfilter Conntrack & Anti-NAT Overflow (Mức cân bằng tối ưu 10 phút)
 net.netfilter.nf_conntrack_max = 524288
 net.netfilter.nf_conntrack_tcp_timeout_established = 600
 net.netfilter.nf_conntrack_tcp_timeout_close_wait = 15
@@ -309,6 +308,9 @@ log_ok "Đã thiết lập sysctl network & ulimits 65535 file descriptors."
 # 6. BỘ NHỚ KÉP: ZRAM ZSTD (PRI 10) + SSD SWAPFILE (PRI 0) + ADAPTIVE KSM
 # ------------------------------------------------------------------------------
 log_step "BƯỚC 6: THIẾT LẬP BỘ NHỚ KÉP (ZRAM ZSTD + SSD SWAP) & ADAPTIVE KSM"
+
+# Tự động mở rộng phân vùng LVM nếu có dung lượng trống
+lvextend -l +100%FREE -r /dev/mapper/ubuntu--vg-ubuntu--lv >/dev/null 2>&1 || true
 
 if [[ ! -f /swapfile ]]; then
     log_info "Tạo swapfile ${SWAP_FALLBACK_MB}MB dự phòng trên ổ đĩa ảo..."
@@ -373,9 +375,9 @@ case "$TIER" in
 esac
 
 # ------------------------------------------------------------------------------
-# 7. DỌN DẸP BLOATWARE & THIẾT LẬP DOCKER ENGINE CHUẨN
+# 7. DỌN DẸP BLOATWARE, DOCKER PERMISSIONS & CẤU HÌNH DOCKER ENGINE
 # ------------------------------------------------------------------------------
-log_step "BƯỚC 7: DỌN DẸP BLOATWARE & CẤU HÌNH DOCKER ENGINE"
+log_step "BƯỚC 7: DỌN DẸP BLOATWARE & PHÂN QUYỀN DOCKER ENGINE"
 
 BLOAT_SERVICES=("snapd" "earlyoom" "multipathd" "udisks2" "accountsservice" "ModemManager" "packagekit" "whoopsie")
 for s in "${BLOAT_SERVICES[@]}"; do
@@ -387,6 +389,13 @@ if ! command -v docker >/dev/null 2>&1; then
     log_info "Đang cài đặt Docker Engine..."
     curl -fsSL https://get.docker.com | bash >/dev/null 2>&1 || true
 fi
+
+# Tự động cấp quyền Docker cho user hiện tại và socket
+TARGET_USER="${SUDO_USER:-$USER}"
+if [[ -n "$TARGET_USER" && "$TARGET_USER" != "root" ]]; then
+    usermod -aG docker "$TARGET_USER" 2>/dev/null || true
+fi
+chmod 666 /var/run/docker.sock 2>/dev/null || true
 
 mkdir -p /etc/docker
 cat << 'EOF' > /etc/docker/daemon.json
@@ -410,7 +419,8 @@ cat << 'EOF' > /etc/docker/daemon.json
 EOF
 
 systemctl restart docker 2>/dev/null || true
-log_ok "Docker Engine đã được cấu hình tối ưu log rotation và socket limits."
+chmod 666 /var/run/docker.sock 2>/dev/null || true
+log_ok "Docker Engine đã cấu hình tối ưu và cấp quyền thành công cho user: $TARGET_USER."
 
 # ------------------------------------------------------------------------------
 # 8. MA TRẬN 24+ APP PROFILES & DYNAMIC AUTOSYNC ENGINE
@@ -511,7 +521,7 @@ ii_is_suspend_sensitive() {
 EOF
 chmod +x /usr/local/lib/ii-app-profiles.sh
 
-# FlapGuard Engine
+# FlapGuard Engine (Chống Ban tài khoản)
 cat << 'EOF' > /usr/local/bin/ii-flapguard.sh
 #!/usr/bin/env bash
 LOG_FILE="/var/log/ii-flapguard.log"
@@ -530,7 +540,7 @@ done
 EOF
 chmod +x /usr/local/bin/ii-flapguard.sh
 
-# Dynamic Autosync Engine
+# Dynamic Autosync Engine (Bộ nhớ dự phòng)
 cat << 'EOF' > /usr/local/bin/ii-autosync.sh
 #!/usr/bin/env bash
 source /usr/local/lib/ii-app-profiles.sh 2>/dev/null || true
@@ -653,7 +663,7 @@ sync
 EOF
     chmod +x /usr/local/bin/ii-safe-shutdown.sh
 
-    (crontab -l 2>/dev/null | grep -v 'ii-safe-shutdown.sh' ; echo "$MIN $HOUR * * * /usr/local/bin/ii-safe-shutdown.sh") | crontab -
+    (crontab -l 2>/dev/null | grep -v 'ii-safe-shutdown.sh' || true ; echo "$MIN $HOUR * * * /usr/local/bin/ii-safe-shutdown.sh") | crontab -
     log_ok "Đã lên lịch tắt VM an toàn vào lúc ${C_GREEN}$AUTO_OFF_TIME${C_RESET} mỗi ngày."
 fi
 
@@ -662,7 +672,7 @@ fi
 # ------------------------------------------------------------------------------
 log_step "BƯỚC 10: ĐỒNG BỘ CRONJOBS & HÀM AUTO-PATCH PROPERTIES.CONF"
 
-(crontab -l 2>/dev/null | grep -v 'ii-autosync.sh\|ii-flapguard.sh\|ii-prune' ; cat << 'EOF'
+(crontab -l 2>/dev/null | grep -v 'ii-autosync.sh\|ii-flapguard.sh\|ii-prune' || true ; cat << 'EOF'
 */10 * * * * /usr/local/bin/ii-autosync.sh >/dev/null 2>&1
 */5 * * * * /usr/local/bin/ii-flapguard.sh >/dev/null 2>&1
 0 3 * * * docker image prune -af --filter "until=168h" >/dev/null 2>&1
@@ -726,8 +736,9 @@ docker rm -f internetincomewatchtower >/dev/null 2>&1 || true
 log_step "BƯỚC 11: TÍCH HỢP SHORTCUTS CHẨN ĐOÁN (check-proxy, ii-status)"
 
 if [[ -f "./check_network_proxy.sh" ]]; then
-    cp ./check_network_proxy.sh /usr/local/bin/check-proxy
-    chmod +x /usr/local/bin/check-proxy
+    cp ./check_network_proxy.sh /usr/local/bin/check-proxy 2>/dev/null || true
+    chmod +x /usr/local/bin/check-proxy 2>/dev/null || true
+    ln -sf /usr/local/bin/check-proxy /usr/bin/check-proxy 2>/dev/null || true
 fi
 
 cat << 'EOF' > /usr/local/bin/ii-status.sh
@@ -822,7 +833,7 @@ echo ""
 
 echo "--- [3. SYSTEM RAM, SWAP & ZRAM ALLOCATION] ---"
 free -h
-echo "  ZRAM : $(swapon --show 2>/dev/null | grep zram || echo 'Active (7.7G ZSTD)')"
+echo "  ZRAM Status : $(swapon --show 2>/dev/null | grep zram || echo 'Active (7.7G ZSTD)')"
 CONN_CUR=$(awk '/ip_conntrack|nf_conntrack/ {print $1}' /proc/sys/net/netfilter/nf_conntrack_count 2>/dev/null || echo 0)
 CONN_MAX=$(awk '{print $1}' /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null || echo 262144)
 echo "  Conntrack Streams       : $CONN_CUR / $CONN_MAX"
@@ -844,7 +855,8 @@ fi
 echo "=========================================================================="
 EOF
 chmod +x /usr/local/bin/ii-status.sh
-ln -sf /usr/local/bin/ii-status.sh /usr/local/bin/ii-status 2>/dev/null || true
+ln -sf /usr/local/bin/ii-status.sh /usr/bin/ii-status 2>/dev/null || true
+ln -sf /usr/local/bin/ii-status.sh /usr/bin/ii-status.sh 2>/dev/null || true
 
 cat << 'EOF' > /etc/profile.d/internetincome.conf
 alias check-proxy='/usr/local/bin/check-proxy'
