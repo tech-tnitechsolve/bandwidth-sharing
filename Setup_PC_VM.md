@@ -183,4 +183,3 @@ sudo bash setup_vm.sh --auto-off 23:30
 
 #### ❓ File Proxy copy từ Windows vào Linux bị lỗi kết nối?
 * **Xử lý:** Script đã tích hợp bộ lọc tự động xóa ký tự xuống dòng ẩn `\r` (CRLF) của Windows trong toàn bộ file `.txt` / `.list`. Mọi proxy nạp vào đều được chuẩn hóa tuyệt đối.
-```
