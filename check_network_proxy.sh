@@ -341,38 +341,36 @@ get_fast_proxy() {
         fi
     done
 
-    if [ -n "$fname" ] && [ -n "${FOLDER_PROXIES_COUNT["$fname"]}" ]; then
-        local total_p="${FOLDER_PROXIES_COUNT["$fname"]}"
-        if [ "$total_p" -eq 1 ]; then
-            p_res="${FOLDER_PROXY_BY_IDX["$fname,0"]}"
-        elif [ "$total_p" -gt 1 ]; then
-            if [ -n "$p_res" ]; then
-                for (( i=0; i<total_p; i++ )); do
-                    local cand="${FOLDER_PROXY_BY_IDX["$fname,$i"]}"
-                    local cand_clean="${cand#*://}"
-                    local cand_hp="${cand_clean#*@}"
-                    cand_hp="${cand_hp%%/*}"
-                    if [ -n "$cand_hp" ] && [[ "$p_res" == *"$cand_hp"* ]]; then
-                        p_res="$cand"
-                        break
-                    fi
-                done
-            else
-                local raw_digits
-                raw_digits=$(echo "$cname" | grep -oE '[0-9]+$' | tail -1)
-                if [ -n "$raw_digits" ]; then
-                    local clean_num="${raw_digits#"${raw_digits%%[!0]*}"}"
-                    [ -z "$clean_num" ] && clean_num=0
-                    local idx=$(( 10#$clean_num % total_p ))
-                    p_res="${FOLDER_PROXY_BY_IDX["$fname,$idx"]}"
+    local total_p="${FOLDER_PROXIES_COUNT["$fname"]:-0}"
+
+    if [ "$total_p" -eq 1 ]; then
+        p_res="${FOLDER_PROXY_BY_IDX["$fname,0"]:-$p_res}"
+    elif [ "$total_p" -gt 1 ]; then
+        if [ -n "$p_res" ]; then
+            for (( i=0; i<total_p; i++ )); do
+                local cand="${FOLDER_PROXY_BY_IDX["$fname,$i"]:-}"
+                local cand_clean="${cand#*://}"
+                local cand_hp="${cand_clean#*@}"
+                cand_hp="${cand_hp%%/*}"
+                if [ -n "$cand_hp" ] && [[ "$p_res" == *"$cand_hp"* ]]; then
+                    p_res="$cand"
+                    break
                 fi
+            done
+        else
+            local raw_digits
+            raw_digits=$(echo "$cname" | grep -oE '[0-9]+$' | tail -1)
+            if [ -n "$raw_digits" ]; then
+                local clean_num="${raw_digits#"${raw_digits%%[!0]*}"}"
+                [ -z "$clean_num" ] && clean_num=0
+                local idx=$(( 10#$clean_num % total_p ))
+                p_res="${FOLDER_PROXY_BY_IDX["$fname,$idx"]:-}"
             fi
         fi
     fi
 
     if [[ "$p_res" == *"127.0.0.1"* ]] || [ -z "$p_res" ]; then
-        if [ -n "$fname" ] && [ -n "${FOLDER_PROXIES_COUNT["$fname"]}" ]; then
-            local total_p="${FOLDER_PROXIES_COUNT["$fname"]}"
+        if [ "$total_p" -gt 0 ]; then
             local raw_digits
             raw_digits=$(echo "$cname" | grep -oE '[0-9]+$' | tail -1)
             local idx=0
@@ -381,7 +379,7 @@ get_fast_proxy() {
                 [ -z "$clean_num" ] && clean_num=0
                 idx=$(( 10#$clean_num % total_p ))
             fi
-            p_res="${FOLDER_PROXY_BY_IDX["$fname,$idx"]}"
+            p_res="${FOLDER_PROXY_BY_IDX["$fname,$idx"]:-Direct (Host Network)}"
         fi
     fi
 
