@@ -543,10 +543,10 @@ auto_patch_engageub_repo() {
   ROOTS=(/opt /root /home /srv /home/ubuntu /home/opc)
   if [[ -n "${BASE_DIR:-}" ]]; then ROOTS+=("$BASE_DIR"); fi
   
-  # Format lai file proxy tranh ky tu dac biet \r cua Windows
+  # Format lai file proxy tranh ky tu dac biet \r cho TOAN BO cac folder proxy (2PR_Korean, Webshare, List_Proxy...)
   while IFS= read -r pf; do
     [[ -f "$pf" ]] && sed -i 's/\r$//' "$pf" 2>/dev/null || true
-  done < <(find "${ROOTS[@]}" -maxdepth 5 -type f \( -name "*.txt" -o -name "*.list" \) -path "*/List_Proxy/*" 2>/dev/null | sort -u)
+  done < <(find "${ROOTS[@]}" -maxdepth 5 -type f \( -name "*.txt" -o -name "*.list" \) 2>/dev/null | sort -u)
 
   while IFS= read -r f; do
     [[ -f "$f" ]] || continue
