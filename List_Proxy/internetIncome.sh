@@ -808,8 +808,8 @@ start_containers() {
         echo -e "${RED}Failed to create network multi$UNIQUE_ID$i..Exiting..${NOCOLOUR}"
         exit 1
       fi
-    elif [ "$USE_TUN2PROXY" = true ];then
-      # Starting tun2proxy containers (Ho tro Fake-IP/Virtual DNS cho 2proxy, Proxyware, Webshare)
+elif [ "$USE_TUN2PROXY" = true ];then
+      # Starting tun2proxy containers (Fix Socket Dual-Stack & Mount TUN chuẩn)
       if [ "$container_pulled" = false ]; then
         sudo docker pull ghcr.io/tun2proxy/tun2proxy:$TUN2PROXY_VERSION
       fi
@@ -837,7 +837,7 @@ start_containers() {
           exit 1
         fi
       fi
-      docker_parameters=($HOST_NAME $LOGS_PARAM $DNS_VOLUME $MAX_MEMORY_PARAM $MEMORY_RESERVATION_PARAM $MEMORY_SWAP_PARAM $CPU_PARAM $CUSTOM_NETWORK --sysctl net.ipv6.conf.all.disable_ipv6=1 --sysctl net.ipv6.conf.default.disable_ipv6=1 --device /dev/net/tun --cap-add=NET_ADMIN $combined_ports ghcr.io/tun2proxy/tun2proxy:$TUN2PROXY_VERSION $dns_option --proxy $proxy --verbosity $TUN_LOG_PARAM)
+      docker_parameters=($HOST_NAME $LOGS_PARAM $MAX_MEMORY_PARAM $MEMORY_RESERVATION_PARAM $MEMORY_SWAP_PARAM $CPU_PARAM $CUSTOM_NETWORK --sysctl net.ipv6.conf.default.disable_ipv6=0 --mount type=bind,source=/dev/net/tun,target=/dev/net/tun --device /dev/net/tun --cap-add=NET_ADMIN $combined_ports ghcr.io/tun2proxy/tun2proxy:$TUN2PROXY_VERSION $dns_option --proxy $proxy --verbosity $TUN_LOG_PARAM)
       execute_docker_command "Proxy" "tun$UNIQUE_ID$i" "${docker_parameters[@]}"
     else
       # Starting tun2socks containers
