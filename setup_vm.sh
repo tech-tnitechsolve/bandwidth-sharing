@@ -615,20 +615,22 @@ chmod 644 /usr/local/lib/ii-app-profiles.sh
 . /usr/local/lib/ii-app-profiles.sh
 
 auto_patch_engageub_repo() {
-  log "Dong bo properties TEST & format list proxy an toan..."
+  log "Dong bo an toan VM: Bao ve setting rieng tung Folder & format list proxy..."
   ROOTS=(/opt /root /home /srv /home/ubuntu /home/opc)
   if [[ -n "${BASE_DIR:-}" ]]; then ROOTS+=("$BASE_DIR"); fi
   
+  # Format lai file proxy tranh ky tu dac biet \r khi copy tu Windows sang VM
   while IFS= read -r pf; do
     [[ -f "$pf" ]] && sed -i 's/\r$//' "$pf" 2>/dev/null || true
   done < <(find "${ROOTS[@]}" -maxdepth 5 -type f \( -name "*.txt" -o -name "*.list" \) 2>/dev/null | sort -u)
 
   while IFS= read -r f; do
     [[ -f "$f" ]] || continue
-    grep -qE 'USE_SOCKS5_DNS|USE_PROXIES|USE_DNS_OVER_HTTPS' "$f" || continue
-    cp -a "$f" "${f}.bak.$(date +%Y%m%d%H%M%S)" 2>/dev/null || true
+    grep -qE 'USE_SOCKS5_DNS|USE_PROXIES|USE_DNS_OVER_HTTPS|USE_TUN2PROXY' "$f" || continue
     
+    # 1. Xoa cac gioi han cung RAM/CPU de ii-autosync tu dong cap phat RAM dong
     sed -i -E '/^[[:space:]]*MAX_MEMORY=/d;/^[[:space:]]*MEMORY_RESERVATION=/d;/^[[:space:]]*MEMORY_SWAP=/d;/^[[:space:]]*CPU=/d' "$f" || true
+    
     set_kv() {
       local k="$1" v="$2"
       if grep -qE "^[[:space:]]*#?[[:space:]]*${k}=" "$f"; then
@@ -637,20 +639,13 @@ auto_patch_engageub_repo() {
         printf '\n%s=%s\n' "$k" "$v" >> "$f"
       fi
     }
-    set_kv USE_DIRECT_CONNECTION false
-    set_kv USE_PROXIES true
-    set_kv USE_VPNS false
-    set_kv USE_MULTI_IP false
-    set_kv USE_SOCKS5_DNS false
-    set_kv USE_DNS_OVER_HTTPS true
-    set_kv USE_DNSCRYPT false
-    set_kv USE_DNS_CACHE true
-    set_kv USE_TUN2PROXY false
-    set_kv USE_DOCKER_EMBEDDED_DNS false
-    set_kv USE_CUSTOM_NETWORK false
+    
+    # 2. Chi ep cac thong so An toan & Hieu nang Host (Khong can thiep vao che do mang rieng cua ban)
     set_kv AUTO_UPDATE_CONTAINERS false
     set_kv ENABLE_LOGS false
-    log "Da patch properties.conf tai: $(dirname "$f")"
+    set_kv USE_CUSTOM_NETWORK false
+    
+    log "Da kiem tra & bao ve properties.conf tai: $(dirname "$f")"
   done < <(find "${ROOTS[@]}" -maxdepth 5 -name properties.conf -type f 2>/dev/null | sort -u)
 }
 
