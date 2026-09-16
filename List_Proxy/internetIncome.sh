@@ -809,18 +809,18 @@ start_containers() {
         exit 1
       fi
     elif [ "$USE_TUN2PROXY" = true ];then
-      # Starting tun2proxy containers
+      # Starting tun2proxy containers (Ho tro Fake-IP/Virtual DNS cho 2proxy, Proxyware, Webshare)
       if [ "$container_pulled" = false ]; then
         sudo docker pull ghcr.io/tun2proxy/tun2proxy:$TUN2PROXY_VERSION
       fi
       if [[ "$ENABLE_LOGS" != true ]]; then
-        TUN_LOG_PARAM="off"
+        TUN_LOG_PARAM="warn"
       else
         TUN_LOG_PARAM="trace"
       fi
       if [ "$USE_SOCKS5_DNS" = true ]; then
          dns_option="--dns direct"
-      elif  [ "$USE_DNS_OVER_HTTPS" = true ]; then
+      elif [ "$USE_DNS_OVER_HTTPS" = true ]; then
          dns_option="--dns over-tcp"
       else
          dns_option="--dns virtual"
@@ -837,7 +837,7 @@ start_containers() {
           exit 1
         fi
       fi
-      docker_parameters=($HOST_NAME $LOGS_PARAM $MAX_MEMORY_PARAM $MEMORY_RESERVATION_PARAM $MEMORY_SWAP_PARAM $CPU_PARAM $CUSTOM_NETWORK --sysctl net.ipv6.conf.all.disable_ipv6=1 --sysctl net.ipv6.conf.default.disable_ipv6=1 --device /dev/net/tun --cap-add=NET_ADMIN $combined_ports -d ghcr.io/tun2proxy/tun2proxy:$TUN2PROXY_VERSION $dns_option --proxy $proxy --verbosity $TUN_LOG_PARAM)
+      docker_parameters=($HOST_NAME $LOGS_PARAM $DNS_VOLUME $MAX_MEMORY_PARAM $MEMORY_RESERVATION_PARAM $MEMORY_SWAP_PARAM $CPU_PARAM $CUSTOM_NETWORK --sysctl net.ipv6.conf.all.disable_ipv6=1 --sysctl net.ipv6.conf.default.disable_ipv6=1 --device /dev/net/tun --cap-add=NET_ADMIN $combined_ports ghcr.io/tun2proxy/tun2proxy:$TUN2PROXY_VERSION $dns_option --proxy $proxy --verbosity $TUN_LOG_PARAM)
       execute_docker_command "Proxy" "tun$UNIQUE_ID$i" "${docker_parameters[@]}"
     else
       # Starting tun2socks containers
