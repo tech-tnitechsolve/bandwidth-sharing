@@ -1,10 +1,10 @@
 # Restart lại Traffmonetier khi thiếu device IP
-
+-----------
 sudo bash -c 'for c in $(docker ps --filter "name=traffmon" --format "{{.Names}}"); do docker restart "$c" >/dev/null 2>&1; echo " -> Đã làm mới: $c"; sleep 1; done'
-
+-----------
 
 # Restart lại các Container Lỗi (ko ảnh hưởng tới các container đang chạy)
-
+-----------
 sudo bash -c '
 C_G="\033[1;32m"; C_R="\033[1;31m"; C_Y="\033[1;33m"; C_C="\033[1;36m"; C_0="\033[0m"
 
@@ -74,3 +74,4 @@ if (( RESTART_COUNT > 0 )); then
     check-proxy
 fi
 '
+----------
