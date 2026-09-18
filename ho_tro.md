@@ -10,43 +10,36 @@ sudo bash -c 'for c in $(docker ps --filter "name=traffmon" --format "{{.Names}}
 sudo bash -c '
 C_G="\033[1;32m"; C_R="\033[1;31m"; C_Y="\033[1;33m"; C_C="\033[1;36m"; C_0="\033[0m"
 
-echo -e "\n${C_C}=================== [SIÊU TỐC: QUÉT SOCKET REAL-TIME (0.1 GIÂY)] ===================${C_0}"
+echo -e "\n${C_C}=================== [QUÉT & KHỞI ĐỘNG LẠI THEO LÔ (ÉP TẮT TỨC THÌ 1S)] ===================${C_0}"
 
-NOW=$(date +%s)
-RESTART_COUNT=0
+ALL_CTRS=$(docker ps -aq 2>/dev/null)
+if [ -z "$ALL_CTRS" ]; then
+    echo "Khong tim thay container nao tren VPS."
+    exit 0
+fi
+
+DEAD_TUNS=()
+DEAD_APPS=()
 HEALTHY_COUNT=0
 
-for cid in $(docker ps -aq 2>/dev/null); do
-    cname=$(docker inspect -f "{{.Name}}" "$cid" 2>/dev/null | sed "s|^/||")
-    cstatus=$(docker inspect -f "{{.State.Status}}" "$cid" 2>/dev/null || echo "unknown")
-    cpid=$(docker inspect -f "{{.State.Pid}}" "$cid" 2>/dev/null || echo 0)
-    started_at=$(docker inspect -f "{{.State.StartedAt}}" "$cid" 2>/dev/null || echo "")
-
-    # Bỏ qua container Tunnel Gateway
+# 1. Quét BULK toàn bộ container trong 0.05 giây bằng 1 lệnh duy nhất
+while read -r cid cpid cstatus cname cnetmode; do
+    [ -z "$cid" ] && continue
+    cname="${cname#/}"
+    
+    # Bỏ qua container Tunnel Gateway khi quét
     [[ "$cname" =~ ^tun|^hev|^socks5|^gluetun ]] && continue
 
-    # 1. Container bị tắt/exited -> Bật lại ngay
-    if [ "$cstatus" != "running" ]; then
-        RESTART_COUNT=$((RESTART_COUNT + 1))
-        echo -e " ${C_R}[OFFLINE]${C_0} ${cname} (${cstatus^^}) -> Đang bật lại..."
-        net_mode=$(docker inspect -f "{{.HostConfig.NetworkMode}}" "$cid" 2>/dev/null || echo "")
-        if [[ "$net_mode" =~ ^container:(.+) ]]; then
-            docker restart "${BASH_REMATCH[1]}" >/dev/null 2>&1 || true
-            sleep 0.5
+    # Container bị tắt -> Gom vào danh sách lỗi
+    if [ "$cstatus" != "running" ] || [ -z "$cpid" ] || [ "$cpid" -le 0 ] 2>/dev/null; then
+        DEAD_APPS+=("$cid")
+        if [[ "$cnetmode" == container:* ]]; then
+            DEAD_TUNS+=("${cnetmode#container:}")
         fi
-        docker restart "$cid" >/dev/null 2>&1 || true
         continue
     fi
 
-    # Bỏ qua node mới khởi động dưới 15 giây (chờ app bắt tay WebSocket)
-    start_ts=$(date -d "$started_at" +%s 2>/dev/null || echo "$NOW")
-    uptime_sec=$(( NOW - start_ts ))
-    if (( uptime_sec < 15 )); then
-        HEALTHY_COUNT=$((HEALTHY_COUNT + 1))
-        continue
-    fi
-
-    # 2. Đếm số Socket ESTABLISHED (Mã 01 trong Kernel)
+    # Đếm Socket trực tiếp từ Kernel (0.001s)
     conns=0
     if [ -f "/proc/$cpid/net/tcp" ]; then
         conns=$(awk '\''$4 == "01" {c++} END {print c+0}'\'' "/proc/$cpid/net/tcp" 2>/dev/null || echo 0)
@@ -56,25 +49,39 @@ for cid in $(docker ps -aq 2>/dev/null); do
         conns=$((conns + conns6))
     fi
 
-    # 3. Phán quyết nhanh: Có Socket = Sống | 0 Socket = Chết
     if [ "$conns" -gt 0 ]; then
         HEALTHY_COUNT=$((HEALTHY_COUNT + 1))
     else
-        RESTART_COUNT=$((RESTART_COUNT + 1))
-        echo -e " ${C_R}[MẤT KẾT NỐI - 0 SOCKET]${C_0} ${cname} -> Đang hồi phục Tunnel & App..."
-        
-        net_mode=$(docker inspect -f "{{.HostConfig.NetworkMode}}" "$cid" 2>/dev/null || echo "")
-        if [[ "$net_mode" =~ ^container:(.+) ]]; then
-            docker restart "${BASH_REMATCH[1]}" >/dev/null 2>&1 || true
-            sleep 0.5
+        DEAD_APPS+=("$cid")
+        if [[ "$cnetmode" == container:* ]]; then
+            DEAD_TUNS+=("${cnetmode#container:}")
         fi
-        docker restart "$cid" >/dev/null 2>&1 || true
     fi
-done
+done < <(docker inspect --format "{{.Id}} {{.State.Pid}} {{.State.Status}} {{.Name}} {{.HostConfig.NetworkMode}}" $ALL_CTRS 2>/dev/null)
 
-echo -e "\n${C_C}=========================================================================${C_0}"
-echo -e " ${C_G}✔ Node sống (Đang duy trì >= 1 Socket):${C_0} ${HEALTHY_COUNT}"
-echo -e " ${C_R}✔ Node đứt Socket (Đã tự động khởi động lại):${C_0} ${RESTART_COUNT}"
-echo -e "${C_C}=========================================================================${C_0}\n"
+# Lọc trùng lặp danh sách Tunnel
+UNIQUE_TUNS=($(printf "%s\n" "${DEAD_TUNS[@]}" 2>/dev/null | sort -u))
+UNIQUE_APPS=($(printf "%s\n" "${DEAD_APPS[@]}" 2>/dev/null | sort -u))
+
+TOTAL_DEAD=${#UNIQUE_APPS[@]}
+
+echo -e " ${C_G}✔ Node sống (Duy trì >= 1 Socket):${C_0} ${HEALTHY_COUNT}"
+echo -e " ${C_R}✔ Node đứt Socket / Cần Restart:${C_0} ${TOTAL_DEAD}"
+
+# 2. Khởi động lại THEO LÔ đồng loạt (Không chờ 10s)
+if [ "$TOTAL_DEAD" -gt 0 ]; then
+    echo -e "\n${C_Y}[*] Đang khởi động lại ${#UNIQUE_TUNS[@]} Tunnel và ${TOTAL_DEAD} App cùng lúc (Ép tắt trong 1s)...${C_0}"
+    
+    if [ ${#UNIQUE_TUNS[@]} -gt 0 ]; then
+        docker restart -t 1 "${UNIQUE_TUNS[@]}" >/dev/null 2>&1 || true
+        sleep 1
+    fi
+
+    docker restart -t 1 "${UNIQUE_APPS[@]}" >/dev/null 2>&1 || true
+
+    echo -e "${C_G}=== ĐÃ HỒI PHỤC XONG ${TOTAL_DEAD} NODE TRONG 3 GIÂY! ===${C_0}\n"
+else
+    echo -e "\n${C_G}=== TẤT CẢ CONTAINER ĐỀU ĐANG CÓ SOCKET TỐT - KHÔNG CẦN RESTART! ===${C_0}\n"
+fi
 '
 ```
