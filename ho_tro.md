@@ -8,10 +8,14 @@ sudo bash -c 'for c in $(docker ps --filter "name=traffmon" --format "{{.Names}}
 
 ```
 sudo bash -c '
+# ==============================================================================
+# QUET NOI BO 100% TAI VPS (ZERO OUTBOUND CALLS - AN TOAN TUYET DOI IP WHITELIST)
+# ==============================================================================
 C_G="\033[1;32m"; C_R="\033[1;31m"; C_Y="\033[1;33m"; C_C="\033[1;36m"; C_0="\033[0m"
 
-echo -e "\n${C_C}=================== [QUÉT & KHỞI ĐỘNG LẠI THEO LÔ (ÉP TẮT TỨC THÌ 1S)] ===================${C_0}"
+echo -e "\n${C_C}=================== [QUÉT NỘI BỘ KERNEL & KHỞI ĐỘNG LẠI AN TOÀN] ===================${C_0}"
 
+# 1. LAY DANH SACH CONTAINER QUA LOCAL DOCKER SOCKET (KHONG QUA MANG)
 ALL_CTRS=$(docker ps -aq 2>/dev/null)
 if [ -z "$ALL_CTRS" ]; then
     echo "Khong tim thay container nao tren VPS."
@@ -22,66 +26,89 @@ DEAD_TUNS=()
 DEAD_APPS=()
 HEALTHY_COUNT=0
 
-# 1. Quét BULK toàn bộ container trong 0.05 giây bằng 1 lệnh duy nhất
+# 2. QUET TRUC TIEP TRONG BO NHO RAM LINUX KERNEL (0.05s - KHONG CALL RA NGOAI)
 while read -r cid cpid cstatus cname cnetmode; do
     [ -z "$cid" ] && continue
     cname="${cname#/}"
     
-    # Bỏ qua container Tunnel Gateway khi quét
+    # Bo qua container Gateway/Tunnel khi phan tich App
     [[ "$cname" =~ ^tun|^hev|^socks5|^gluetun ]] && continue
 
-    # Container bị tắt -> Gom vào danh sách lỗi
+    # Truong hop 1: Container bi Exited / Tat / Mat tien trinh
     if [ "$cstatus" != "running" ] || [ -z "$cpid" ] || [ "$cpid" -le 0 ] 2>/dev/null; then
-        DEAD_APPS+=("$cid")
+        DEAD_APPS+=("$cname")
         if [[ "$cnetmode" == container:* ]]; then
             DEAD_TUNS+=("${cnetmode#container:}")
         fi
         continue
     fi
 
-    # Đếm Socket trực tiếp từ Kernel (0.001s)
+    # Truong hop 2: Doc bang Socket TCP ESTABLISHED (ma 01) noi bo tu Kernel
     conns=0
     if [ -f "/proc/$cpid/net/tcp" ]; then
-        conns=$(awk '\''$4 == "01" {c++} END {print c+0}'\'' "/proc/$cpid/net/tcp" 2>/dev/null || echo 0)
+        conns=$(grep -c -E ":[0-9A-F]+ [0-9A-F]+:[0-9A-F]+ 01 " "/proc/$cpid/net/tcp" 2>/dev/null || echo 0)
     fi
     if [ -f "/proc/$cpid/net/tcp6" ]; then
-        conns6=$(awk '\''$4 == "01" {c++} END {print c+0}'\'' "/proc/$cpid/net/tcp6" 2>/dev/null || echo 0)
+        conns6=$(grep -c -E ":[0-9A-F]+ [0-9A-F]+:[0-9A-F]+ 01 " "/proc/$cpid/net/tcp6" 2>/dev/null || echo 0)
         conns=$((conns + conns6))
     fi
 
+    # Neu co Socket -> Giu nguyen 100% (Khong dong vao)
     if [ "$conns" -gt 0 ]; then
         HEALTHY_COUNT=$((HEALTHY_COUNT + 1))
     else
-        DEAD_APPS+=("$cid")
+        DEAD_APPS+=("$cname")
         if [[ "$cnetmode" == container:* ]]; then
             DEAD_TUNS+=("${cnetmode#container:}")
         fi
     fi
 done < <(docker inspect --format "{{.Id}} {{.State.Pid}} {{.State.Status}} {{.Name}} {{.HostConfig.NetworkMode}}" $ALL_CTRS 2>/dev/null)
 
-# Lọc trùng lặp danh sách Tunnel
-UNIQUE_TUNS=($(printf "%s\n" "${DEAD_TUNS[@]}" 2>/dev/null | sort -u))
-UNIQUE_APPS=($(printf "%s\n" "${DEAD_APPS[@]}" 2>/dev/null | sort -u))
+# 3. LOC DANH SACH CAN XU LY
+UNIQUE_TUNS=()
+if [ ${#DEAD_TUNS[@]} -gt 0 ]; then
+    while IFS= read -r l; do [ -n "$l" ] && UNIQUE_TUNS+=("$l"); done < <(printf "%s\n" "${DEAD_TUNS[@]}" | sort -u)
+fi
+
+UNIQUE_APPS=()
+if [ ${#DEAD_APPS[@]} -gt 0 ]; then
+    while IFS= read -r l; do [ -n "$l" ] && UNIQUE_APPS+=("$l"); done < <(printf "%s\n" "${DEAD_APPS[@]}" | sort -u)
+fi
 
 TOTAL_DEAD=${#UNIQUE_APPS[@]}
+TOTAL_TUNS=${#UNIQUE_TUNS[@]}
 
-echo -e " ${C_G}✔ Node sống (Duy trì >= 1 Socket):${C_0} ${HEALTHY_COUNT}"
-echo -e " ${C_R}✔ Node đứt Socket / Cần Restart:${C_0} ${TOTAL_DEAD}"
+echo -e " ${C_G}✔ Node dang chay tot (Giu nguyen 100%):${C_0} ${HEALTHY_COUNT}"
+echo -e " ${C_R}✖ Node bi dut Socket (Can phuc hoi):${C_0} ${TOTAL_DEAD} (Lien doi ${TOTAL_TUNS} Tunnel)"
 
-# 2. Khởi động lại THEO LÔ đồng loạt (Không chờ 10s)
-if [ "$TOTAL_DEAD" -gt 0 ]; then
-    echo -e "\n${C_Y}[*] Đang khởi động lại ${#UNIQUE_TUNS[@]} Tunnel và ${TOTAL_DEAD} App cùng lúc (Ép tắt trong 1s)...${C_0}"
-    
-    if [ ${#UNIQUE_TUNS[@]} -gt 0 ]; then
-        docker restart -t 1 "${UNIQUE_TUNS[@]}" >/dev/null 2>&1 || true
-        sleep 1
-    fi
-
-    docker restart -t 1 "${UNIQUE_APPS[@]}" >/dev/null 2>&1 || true
-
-    echo -e "${C_G}=== ĐÃ HỒI PHỤC XONG ${TOTAL_DEAD} NODE TRONG 3 GIÂY! ===${C_0}\n"
-else
-    echo -e "\n${C_G}=== TẤT CẢ CONTAINER ĐỀU ĐANG CÓ SOCKET TỐT - KHÔNG CẦN RESTART! ===${C_0}\n"
+# 4. NEU KHONG CO NODE LOI -> THOAT NGAY
+if [ "$TOTAL_DEAD" -eq 0 ] && [ "$TOTAL_TUNS" -eq 0 ]; then
+    echo -e "\n${C_G}=== TOAN BO CONTAINER DANG CO TRAFFIC TOT - KHONG CAN RESTART! ===${C_0}\n"
+    exit 0
 fi
+
+# 5. PHUC HOI THEO NHIP AN TOAN (TUN TRUOC -> APP SAU, LO 5 CONTAINER)
+BATCH=5
+
+# BƯỚC 1: MO CAC TUNNEL LIEN DOI TRUOC
+if [ "$TOTAL_TUNS" -gt 0 ]; then
+    echo -e "\n${C_Y}[BƯỚC 1/2] Dang mo ${TOTAL_TUNS} Tunnel theo lo (${BATCH} node/luot)...${C_0}"
+    for ((i=0; i<TOTAL_TUNS; i+=BATCH)); do
+        batch=("${UNIQUE_TUNS[@]:i:BATCH}")
+        docker restart -t 1 "${batch[@]}" >/dev/null 2>&1 || true
+        sleep 1
+    done
+    sleep 2
+fi
+
+# BƯỚC 2: MO CAC APP CONTAINER THEO SAU
+echo -e "${C_Y}[BƯỚC 2/2] Dang mo ${TOTAL_DEAD} App theo lo (${BATCH} node/luot)...${C_0}"
+for ((i=0; i<TOTAL_DEAD; i+=BATCH)); do
+    batch=("${UNIQUE_APPS[@]:i:BATCH}")
+    docker restart -t 1 "${batch[@]}" >/dev/null 2>&1 || true
+    sleep 1
+done
+
+echo -e "\n${C_G}=== DA HOI PHUC XONG ${TOTAL_DEAD} NODE (AN TOAN TUYET DOI - KHONG LAG VPS)! ===${C_0}\n"
 '
 ```
