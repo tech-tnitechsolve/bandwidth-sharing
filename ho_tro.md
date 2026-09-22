@@ -9,13 +9,13 @@ sudo bash -c 'for c in $(docker ps --filter "name=traffmon" --format "{{.Names}}
 ```
 sudo bash -c '
 # ==============================================================================
-# QUET NOI BO 100% TAI VPS (ZERO OUTBOUND CALLS - AN TOAN TUYET DOI IP WHITELIST)
+# QUET NOI BO 100% TAI VPS (FIX TRIET DE SYNTAX ERROR & ZERO OUTBOUND CALLS)
 # ==============================================================================
 C_G="\033[1;32m"; C_R="\033[1;31m"; C_Y="\033[1;33m"; C_C="\033[1;36m"; C_0="\033[0m"
 
 echo -e "\n${C_C}=================== [QUÉT NỘI BỘ KERNEL & KHỞI ĐỘNG LẠI AN TOÀN] ===================${C_0}"
 
-# 1. LAY DANH SACH CONTAINER QUA LOCAL DOCKER SOCKET (KHONG QUA MANG)
+# 1. LAY DANH SACH CONTAINER QUA LOCAL DOCKER SOCKET
 ALL_CTRS=$(docker ps -aq 2>/dev/null)
 if [ -z "$ALL_CTRS" ]; then
     echo "Khong tim thay container nao tren VPS."
@@ -26,12 +26,12 @@ DEAD_TUNS=()
 DEAD_APPS=()
 HEALTHY_COUNT=0
 
-# 2. QUET TRUC TIEP TRONG BO NHO RAM LINUX KERNEL (0.05s - KHONG CALL RA NGOAI)
+# 2. QUET TRUC TIEP TRONG BO NHO RAM LINUX KERNEL
 while read -r cid cpid cstatus cname cnetmode; do
     [ -z "$cid" ] && continue
     cname="${cname#/}"
     
-    # Bo qua container Gateway/Tunnel khi phan tich App
+    # Bo qua container Gateway/Tunnel khi loc danh sach App
     [[ "$cname" =~ ^tun|^hev|^socks5|^gluetun ]] && continue
 
     # Truong hop 1: Container bi Exited / Tat / Mat tien trinh
@@ -43,17 +43,18 @@ while read -r cid cpid cstatus cname cnetmode; do
         continue
     fi
 
-    # Truong hop 2: Doc bang Socket TCP ESTABLISHED (ma 01) noi bo tu Kernel
+    # Truong hop 2: Doc bang Socket TCP ESTABLISHED (ma 01) tu Kernel (Da fix bien dem)
     conns=0
     if [ -f "/proc/$cpid/net/tcp" ]; then
-        conns=$(grep -c -E ":[0-9A-F]+ [0-9A-F]+:[0-9A-F]+ 01 " "/proc/$cpid/net/tcp" 2>/dev/null || echo 0)
+        c_v4=$(grep -c -E ":[0-9A-F]+ [0-9A-F]+:[0-9A-F]+ 01 " "/proc/$cpid/net/tcp" 2>/dev/null) || true
+        [ -n "$c_v4" ] && conns=$((conns + c_v4))
     fi
     if [ -f "/proc/$cpid/net/tcp6" ]; then
-        conns6=$(grep -c -E ":[0-9A-F]+ [0-9A-F]+:[0-9A-F]+ 01 " "/proc/$cpid/net/tcp6" 2>/dev/null || echo 0)
-        conns=$((conns + conns6))
+        c_v6=$(grep -c -E ":[0-9A-F]+ [0-9A-F]+:[0-9A-F]+ 01 " "/proc/$cpid/net/tcp6" 2>/dev/null) || true
+        [ -n "$c_v6" ] && conns=$((conns + c_v6))
     fi
 
-    # Neu co Socket -> Giu nguyen 100% (Khong dong vao)
+    # Neu co Socket -> Giu nguyen 100%
     if [ "$conns" -gt 0 ]; then
         HEALTHY_COUNT=$((HEALTHY_COUNT + 1))
     else
