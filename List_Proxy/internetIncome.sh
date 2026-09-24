@@ -104,8 +104,8 @@ second_octet=168
 third_octet=32
 
 # Versions
-ALPINE_VERSION="3.20"
-DNSCRYPT_VERSION="2.1.5"
+ALPINE_VERSION="3.24"
+DNSCRYPT_VERSION="2.1.18"
 GLUETUN_VERSION="v3.37.0"
 HEVSOCKS_VERSION="2.17.1"
 TUN2PROXY_VERSION="v0.8.3"
@@ -570,11 +570,11 @@ download_hickory_dns() {
     *) echo -e "${RED}Unsupported architecture: $CPU_ARCH${NOCOLOUR}"; exit 1 ;;
   esac
 
-  curl -4 -sSL -A "Mozilla/5.0" -o "$libgcc_apk_file" "https://mirrors.aliyun.com/alpine/v3.20/main/${HICKORY_ARCH}/libgcc-13.2.1_git20240309-r1.apk" || \
-  curl -4 -sSL -A "Mozilla/5.0" -o "$libgcc_apk_file" "https://dl-cdn.alpinelinux.org/alpine/v3.20/main/${HICKORY_ARCH}/libgcc-13.2.1_git20240309-r1.apk"
+  curl -4 -sSL -A "Mozilla/5.0" -o "$libgcc_apk_file" "https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/main/${HICKORY_ARCH}/libgcc-15.2.0-r5.apk" || \
+  curl -4 -sSL -A "Mozilla/5.0" -o "$libgcc_apk_file" "https://mirrors.aliyun.com/alpine/v${ALPINE_VERSION}/main/${HICKORY_ARCH}/libgcc-15.2.0-r5.apk"
 
-  curl -4 -sSL -A "Mozilla/5.0" -o "$hickory_dns_apk_file" "https://mirrors.aliyun.com/alpine/v3.20/community/${HICKORY_ARCH}/hickory-dns-0.24.1-r3.apk" || \
-  curl -4 -sSL -A "Mozilla/5.0" -o "$hickory_dns_apk_file" "https://dl-cdn.alpinelinux.org/alpine/v3.20/community/${HICKORY_ARCH}/hickory-dns-0.24.1-r3.apk"
+  curl -4 -sSL -A "Mozilla/5.0" -o "$hickory_dns_apk_file" "https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/community/${HICKORY_ARCH}/hickory-dns-0.26.1-r0.apk" || \
+  curl -4 -sSL -A "Mozilla/5.0" -o "$hickory_dns_apk_file" "https://mirrors.aliyun.com/alpine/v${ALPINE_VERSION}/community/${HICKORY_ARCH}/hickory-dns-0.26.1-r0.apk"
 }
 
 # Download IPtables file (Vá lỗi mirror & auto fallback)
@@ -587,14 +587,14 @@ download_iptables() {
     *) echo -e "${RED}Unsupported architecture: $CPU_ARCH${NOCOLOUR}"; exit 1 ;;
   esac
 
-  curl -4 -sSL -A "Mozilla/5.0" -o "$libmnl_apk_file" "https://mirrors.aliyun.com/alpine/v3.20/main/${IPTABLES_ARCH}/libmnl-1.0.5-r2.apk" || \
-  curl -4 -sSL -A "Mozilla/5.0" -o "$libmnl_apk_file" "https://dl-cdn.alpinelinux.org/alpine/v3.20/main/${IPTABLES_ARCH}/libmnl-1.0.5-r2.apk"
+  curl -4 -sSL -A "Mozilla/5.0" -o "$libmnl_apk_file" "https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/main/${IPTABLES_ARCH}/libmnl-1.0.5-r2.apk" || \
+  curl -4 -sSL -A "Mozilla/5.0" -o "$libmnl_apk_file" "https://mirrors.aliyun.com/alpine/v${ALPINE_VERSION}/main/${IPTABLES_ARCH}/libmnl-1.0.5-r2.apk"
 
-  curl -4 -sSL -A "Mozilla/5.0" -o "$libnftnl_apk_file" "https://mirrors.aliyun.com/alpine/v3.20/main/${IPTABLES_ARCH}/libnftnl-1.2.6-r0.apk" || \
-  curl -4 -sSL -A "Mozilla/5.0" -o "$libnftnl_apk_file" "https://dl-cdn.alpinelinux.org/alpine/v3.20/main/${IPTABLES_ARCH}/libnftnl-1.2.6-r0.apk"
+  curl -4 -sSL -A "Mozilla/5.0" -o "$libnftnl_apk_file" "https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/main/${IPTABLES_ARCH}/libnftnl-1.3.1-r0.apk" || \
+  curl -4 -sSL -A "Mozilla/5.0" -o "$libnftnl_apk_file" "https://mirrors.aliyun.com/alpine/v${ALPINE_VERSION}/main/${IPTABLES_ARCH}/libnftnl-1.3.1-r0.apk"
 
-  curl -4 -sSL -A "Mozilla/5.0" -o "$iptables_apk_file" "https://mirrors.aliyun.com/alpine/v3.20/main/${IPTABLES_ARCH}/iptables-1.8.10-r1.apk" || \
-  curl -4 -sSL -A "Mozilla/5.0" -o "$iptables_apk_file" "https://dl-cdn.alpinelinux.org/alpine/v3.20/main/${IPTABLES_ARCH}/iptables-1.8.10-r1.apk"
+  curl -4 -sSL -A "Mozilla/5.0" -o "$iptables_apk_file" "https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/main/${IPTABLES_ARCH}/iptables-1.8.13-r0.apk" || \
+  curl -4 -sSL -A "Mozilla/5.0" -o "$iptables_apk_file" "https://mirrors.aliyun.com/alpine/v${ALPINE_VERSION}/main/${IPTABLES_ARCH}/iptables-1.8.13-r0.apk"
 }
 
 # Execute docker command
@@ -1394,7 +1394,7 @@ start_containers() {
     # Create bitping folder
     mkdir -p $PWD/$bitping_data_folder/data$i/.bitpingd
     sudo chmod -R 777 $PWD/$bitping_data_folder/data$i/.bitpingd
-    docker_parameters=($LOGS_PARAM $DNS_VOLUME $MAX_MEMORY_PARAM $MEMORY_RESERVATION_PARAM $MEMORY_SWAP_PARAM $CPU_PARAM $NETWORK_TUN --mount type=bind,source=$PWD/$bitping_data_folder/data$i/.bitpingd,target=/root/.bitpingd -e BITPING_EMAIL=$BITPING_EMAIL -e BITPING_PASSWORD=$BITPING_PASSWORD bitping/bitpingd:latest)
+    docker_parameters=($LOGS_PARAM $DNS_VOLUME $MAX_MEMORY_PARAM $MEMORY_RESERVATION_PARAM $MEMORY_SWAP_PARAM $CPU_PARAM $NETWORK_TUN --mount type=bind,source=$PWD/$bitping_data_folder/data$i/.bitpingd,target=/root/.bitpingd -e BITPING_EMAIL="$BITPING_EMAIL" -e BITPING_PASSWORD="$BITPING_PASSWORD" bitping/bitpingd:latest)
     execute_docker_command "BitPing" "bitping$UNIQUE_ID$i" "${docker_parameters[@]}"
   else
     if [[ "$container_pulled" == false && "$ENABLE_LOGS" == true ]]; then
@@ -1407,7 +1407,7 @@ start_containers() {
     if [ "$container_pulled" = false ]; then
       sudo docker pull repocket/repocket:latest
     fi
-    docker_parameters=($LOGS_PARAM $DNS_VOLUME $MAX_MEMORY_PARAM $MEMORY_RESERVATION_PARAM $MEMORY_SWAP_PARAM $CPU_PARAM $NETWORK_TUN -e RP_EMAIL=$REPOCKET_EMAIL -e RP_API_KEY=$REPOCKET_API repocket/repocket:latest)
+    docker_parameters=($LOGS_PARAM $DNS_VOLUME $MAX_MEMORY_PARAM $MEMORY_RESERVATION_PARAM $MEMORY_SWAP_PARAM $CPU_PARAM $NETWORK_TUN -e RP_EMAIL="$REPOCKET_EMAIL" -e RP_API_KEY="$REPOCKET_API" repocket/repocket:latest)
     execute_docker_command "Repocket" "repocket$UNIQUE_ID$i" "${docker_parameters[@]}"
   else
     if [[ "$container_pulled" == false && "$ENABLE_LOGS" == true ]]; then
@@ -1430,7 +1430,7 @@ start_containers() {
     mkdir -p $PWD/$traffmonetizer_data_folder/data$i
     sudo chmod -R 777 $PWD/$traffmonetizer_data_folder/data$i
     traffmonetizer_volume="--mount type=bind,source=$PWD/$traffmonetizer_data_folder/data$i,target=/.config/traffmonetizer"
-    docker_parameters=($LOGS_PARAM $DNS_VOLUME $MAX_MEMORY_PARAM $MEMORY_RESERVATION_PARAM $MEMORY_SWAP_PARAM $CPU_PARAM $NETWORK_TUN $traffmonetizer_volume $traffmonetizer_image start accept --device-name $DEVICE_NAME$i --token $TRAFFMONETIZER_TOKEN)
+    docker_parameters=($LOGS_PARAM $DNS_VOLUME $MAX_MEMORY_PARAM $MEMORY_RESERVATION_PARAM $MEMORY_SWAP_PARAM $CPU_PARAM $NETWORK_TUN $traffmonetizer_volume $traffmonetizer_image start accept --device-name "$DEVICE_NAME$i" --token "$TRAFFMONETIZER_TOKEN")
     execute_docker_command "Traffmonetizer" "traffmon$UNIQUE_ID$i" "${docker_parameters[@]}"
   else
     if [[ "$container_pulled" == false && "$ENABLE_LOGS" == true ]]; then
@@ -1525,7 +1525,7 @@ start_containers() {
     if [ "$container_pulled" = false ]; then
       sudo docker pull $ps_platform packetshare/packetshare:latest
     fi
-    docker_parameters=($ps_platform $LOGS_PARAM $DNS_VOLUME $MAX_MEMORY_PARAM $MEMORY_RESERVATION_PARAM $MEMORY_SWAP_PARAM $CPU_PARAM $NETWORK_TUN packetshare/packetshare:latest -accept-tos -email=$PACKETSHARE_EMAIL -password=$PACKETSHARE_PASSWORD)
+    docker_parameters=($ps_platform $LOGS_PARAM $DNS_VOLUME $MAX_MEMORY_PARAM $MEMORY_RESERVATION_PARAM $MEMORY_SWAP_PARAM $CPU_PARAM $NETWORK_TUN packetshare/packetshare:latest -accept-tos -email="$PACKETSHARE_EMAIL" -password="$PACKETSHARE_PASSWORD")
     execute_docker_command "PacketShare" "packetshare$UNIQUE_ID$i" "${docker_parameters[@]}"
   else
     if [[ "$container_pulled" == false && "$ENABLE_LOGS" == true ]]; then
@@ -1557,7 +1557,7 @@ start_containers() {
     if [ "$container_pulled" = false ]; then
       sudo docker pull earnfm/earnfm-client:latest
     fi
-    docker_parameters=($LOGS_PARAM $DNS_VOLUME $MAX_MEMORY_PARAM $MEMORY_RESERVATION_PARAM $MEMORY_SWAP_PARAM $CPU_PARAM $NETWORK_TUN -e EARNFM_TOKEN=$EARN_FM_API earnfm/earnfm-client:latest)
+    docker_parameters=($LOGS_PARAM $DNS_VOLUME $MAX_MEMORY_PARAM $MEMORY_RESERVATION_PARAM $MEMORY_SWAP_PARAM $CPU_PARAM $NETWORK_TUN -e EARNFM_TOKEN="$EARN_FM_API" earnfm/earnfm-client:latest)
     execute_docker_command "EarnFM" "earnfm$UNIQUE_ID$i" "${docker_parameters[@]}"
   else
     if [[ "$container_pulled" == false && "$ENABLE_LOGS" == true ]]; then
@@ -1623,7 +1623,7 @@ start_containers() {
     if [ "$container_pulled" = false ]; then
       sudo docker pull packetsdk/packetsdk:latest
     fi
-    docker_parameters=($LOGS_PARAM $DNS_VOLUME $MAX_MEMORY_PARAM $MEMORY_RESERVATION_PARAM $MEMORY_SWAP_PARAM $CPU_PARAM $NETWORK_TUN packetsdk/packetsdk:latest -appkey=$PACKET_SDK_APP_KEY)
+    docker_parameters=($LOGS_PARAM $DNS_VOLUME $MAX_MEMORY_PARAM $MEMORY_RESERVATION_PARAM $MEMORY_SWAP_PARAM $CPU_PARAM $NETWORK_TUN packetsdk/packetsdk:latest -appkey="$PACKET_SDK_APP_KEY")
     execute_docker_command "PacketSDK" "packetsdk$UNIQUE_ID$i" "${docker_parameters[@]}"
   else
     if [[ "$container_pulled" == false && "$ENABLE_LOGS" == true ]]; then
@@ -1671,7 +1671,7 @@ start_containers() {
       proxyrack_uuid=$RANDOM_ID
       printf "%s\n" "$proxyrack_uuid" | tee -a $proxyrack_file
     fi
-    docker_parameters=($LOGS_PARAM $DNS_VOLUME $MAX_MEMORY_PARAM $MEMORY_RESERVATION_PARAM $MEMORY_SWAP_PARAM $CPU_PARAM --platform=linux/amd64 $NETWORK_TUN -e UUID=$proxyrack_uuid -e DEVICE_NAME=$DEVICE_NAME$i -e API_KEY=$PROXYRACK_API proxyrack/pop:latest)
+    docker_parameters=($LOGS_PARAM $DNS_VOLUME $MAX_MEMORY_PARAM $MEMORY_RESERVATION_PARAM $MEMORY_SWAP_PARAM $CPU_PARAM --platform=linux/amd64 $NETWORK_TUN -e UUID="$proxyrack_uuid" -e DEVICE_NAME="$DEVICE_NAME$i" -e API_KEY="$PROXYRACK_API" proxyrack/pop:latest)
     execute_docker_command "ProxyRack" "proxyrack$UNIQUE_ID$i" "${docker_parameters[@]}"
     echo -e "${GREEN}Device is automatically addded to your proxyrack dashboard after 5 minutes${NOCOLOUR}"
     echo -e "${GREEN}You will find the uuids in the file $proxyrack_file in the same folder${NOCOLOUR}"
@@ -1686,7 +1686,7 @@ start_containers() {
     if [ "$container_pulled" = false ]; then
       sudo docker pull ghcr.io/proxybaseorg/peer-cli:latest
     fi
-    docker_parameters=($LOGS_PARAM $DNS_VOLUME $MAX_MEMORY_PARAM $MEMORY_RESERVATION_PARAM $MEMORY_SWAP_PARAM $CPU_PARAM $NETWORK_TUN ghcr.io/proxybaseorg/peer-cli:latest $PROXYBASE_ACCOUNT_ID $DEVICE_NAME$i)
+    docker_parameters=($LOGS_PARAM $DNS_VOLUME $MAX_MEMORY_PARAM $MEMORY_RESERVATION_PARAM $MEMORY_SWAP_PARAM $CPU_PARAM $NETWORK_TUN ghcr.io/proxybaseorg/peer-cli:latest "$PROXYBASE_ACCOUNT_ID" "$DEVICE_NAME$i")
     execute_docker_command "ProxyBase" "proxybase$UNIQUE_ID$i" "${docker_parameters[@]}"
   else
     if [[ "$container_pulled" == false && "$ENABLE_LOGS" == true ]]; then
@@ -1699,7 +1699,7 @@ start_containers() {
     if [ "$container_pulled" = false ]; then
       sudo docker pull iproyal/pawns-cli:latest
     fi
-    docker_parameters=($LOGS_PARAM $DNS_VOLUME $MAX_MEMORY_PARAM $MEMORY_RESERVATION_PARAM $MEMORY_SWAP_PARAM $CPU_PARAM $NETWORK_TUN iproyal/pawns-cli:latest -email=$IPROYALS_EMAIL -password=$IPROYALS_PASSWORD -device-name=$DEVICE_NAME$i -device-id=$DEVICE_NAME$i -accept-tos)
+    docker_parameters=($LOGS_PARAM $DNS_VOLUME $MAX_MEMORY_PARAM $MEMORY_RESERVATION_PARAM $MEMORY_SWAP_PARAM $CPU_PARAM $NETWORK_TUN iproyal/pawns-cli:latest -email="$IPROYALS_EMAIL" -password="$IPROYALS_PASSWORD" -device-name="$DEVICE_NAME$i" -device-id="$DEVICE_NAME$i" -accept-tos)
     execute_docker_command "IPRoyals" "pawns$UNIQUE_ID$i" "${docker_parameters[@]}"
   else
     if [[ "$container_pulled" == false && "$ENABLE_LOGS" == true ]]; then
@@ -1715,7 +1715,7 @@ start_containers() {
     if [[ "$NETWORK_TUN" == --network=multi* || -z "$proxy" ]]; then
       WIPTER_HOST_NAME="--hostname $DEVICE_NAME$i"
     fi
-    docker_parameters=($WIPTER_HOST_NAME $LOGS_PARAM $DNS_VOLUME $MAX_MEMORY_PARAM $MEMORY_RESERVATION_PARAM $MEMORY_SWAP_PARAM $CPU_PARAM $NETWORK_TUN -e WIPTER_EMAIL=$WIPTER_EMAIL -e WIPTER_PASSWORD=$WIPTER_PASSWORD ghcr.io/techroy23/docker-wipter:latest)
+    docker_parameters=($WIPTER_HOST_NAME $LOGS_PARAM $DNS_VOLUME $MAX_MEMORY_PARAM $MEMORY_RESERVATION_PARAM $MEMORY_SWAP_PARAM $CPU_PARAM $NETWORK_TUN -e WIPTER_EMAIL="$WIPTER_EMAIL" -e WIPTER_PASSWORD="$WIPTER_PASSWORD" ghcr.io/techroy23/docker-wipter:latest)
     execute_docker_command "Wipter" "wipter$UNIQUE_ID$i" "${docker_parameters[@]}"
   else
     if [[ "$container_pulled" == false && "$ENABLE_LOGS" == true ]]; then
@@ -1734,7 +1734,7 @@ start_containers() {
     if [ "$container_pulled" = false ]; then
       sudo docker pull $honeygain_image
     fi
-    docker_parameters=($LOGS_PARAM $DNS_VOLUME $MAX_MEMORY_PARAM $MEMORY_RESERVATION_PARAM $MEMORY_SWAP_PARAM $CPU_PARAM $NETWORK_TUN $honeygain_image -tou-accept -email $HONEYGAIN_EMAIL -pass $HONEYGAIN_PASSWORD -device $DEVICE_NAME$i)
+    docker_parameters=($LOGS_PARAM $DNS_VOLUME $MAX_MEMORY_PARAM $MEMORY_RESERVATION_PARAM $MEMORY_SWAP_PARAM $CPU_PARAM $NETWORK_TUN $honeygain_image -tou-accept -email "$HONEYGAIN_EMAIL" -pass "$HONEYGAIN_PASSWORD" -device "$DEVICE_NAME$i")
     execute_docker_command "Honeygain" "honey$UNIQUE_ID$i" "${docker_parameters[@]}"
   else
     if [[ "$container_pulled" == false && "$ENABLE_LOGS" == true ]]; then
@@ -1837,7 +1837,7 @@ start_containers() {
     if [ "$container_pulled" = false ]; then
       sudo docker pull --platform=linux/amd64 enwaiax/peer2profit:latest
     fi
-    docker_parameters=(--platform=linux/amd64 $LOGS_PARAM $DNS_VOLUME $MAX_MEMORY_PARAM $MEMORY_RESERVATION_PARAM $MEMORY_SWAP_PARAM $CPU_PARAM $NETWORK_TUN -e email=$PEER2PROFIT_EMAIL enwaiax/peer2profit:latest)
+    docker_parameters=(--platform=linux/amd64 $LOGS_PARAM $DNS_VOLUME $MAX_MEMORY_PARAM $MEMORY_RESERVATION_PARAM $MEMORY_SWAP_PARAM $CPU_PARAM $NETWORK_TUN -e email="$PEER2PROFIT_EMAIL" enwaiax/peer2profit:latest)
     execute_docker_command "Peer2Profit" "peer2profit$UNIQUE_ID$i" "${docker_parameters[@]}"
   else
     if [[ "$container_pulled" == false && "$ENABLE_LOGS" == true ]]; then
@@ -1850,7 +1850,7 @@ start_containers() {
     if [ "$container_pulled" = false ]; then
       sudo docker pull wizardgain/worker:latest
     fi
-    docker_parameters=($LOGS_PARAM $DNS_VOLUME $MAX_MEMORY_PARAM $MEMORY_RESERVATION_PARAM $MEMORY_SWAP_PARAM $CPU_PARAM $NETWORK_TUN -e EMAIL=$WIZARD_GAIN_EMAIL wizardgain/worker:latest)
+    docker_parameters=($LOGS_PARAM $DNS_VOLUME $MAX_MEMORY_PARAM $MEMORY_RESERVATION_PARAM $MEMORY_SWAP_PARAM $CPU_PARAM $NETWORK_TUN -e EMAIL="$WIZARD_GAIN_EMAIL" wizardgain/worker:latest)
     execute_docker_command "WizardGain" "wizardgain$UNIQUE_ID$i" "${docker_parameters[@]}"
   else
     if [[ "$container_pulled" == false && "$ENABLE_LOGS" == true ]]; then
@@ -1867,7 +1867,7 @@ start_containers() {
     if [ "$container_pulled" = false ]; then
       sudo docker pull $np_platform kellphy/nodepay:latest
     fi
-    docker_parameters=($np_platform $LOGS_PARAM $DNS_VOLUME $MAX_MEMORY_PARAM $MEMORY_RESERVATION_PARAM $MEMORY_SWAP_PARAM $CPU_PARAM $NETWORK_TUN -e NP_COOKIE=$NP_COOKIE kellphy/nodepay:latest)
+    docker_parameters=($np_platform $LOGS_PARAM $DNS_VOLUME $MAX_MEMORY_PARAM $MEMORY_RESERVATION_PARAM $MEMORY_SWAP_PARAM $CPU_PARAM $NETWORK_TUN -e NP_COOKIE="$NP_COOKIE" kellphy/nodepay:latest)
     execute_docker_command "Nodepay" "nodepay$UNIQUE_ID$i" "${docker_parameters[@]}"
   else
     if [[ "$container_pulled" == false && "$ENABLE_LOGS" == true ]]; then
@@ -1880,7 +1880,7 @@ start_containers() {
     if [ "$container_pulled" = false ]; then
       sudo docker pull ghcr.io/bhavishyadahiya/castarsdk-docker/castarsdk@sha256:82a07de860b970a66cbb5cdcd6d169cfd113aafcd997d8d16fbda5a69424ae8f
     fi
-    docker_parameters=($LOGS_PARAM $DNS_VOLUME $MAX_MEMORY_PARAM $MEMORY_RESERVATION_PARAM $MEMORY_SWAP_PARAM $CPU_PARAM $NETWORK_TUN -e KEY=$CASTAR_SDK_KEY ghcr.io/bhavishyadahiya/castarsdk-docker/castarsdk@sha256:82a07de860b970a66cbb5cdcd6d169cfd113aafcd997d8d16fbda5a69424ae8f)
+    docker_parameters=($LOGS_PARAM $DNS_VOLUME $MAX_MEMORY_PARAM $MEMORY_RESERVATION_PARAM $MEMORY_SWAP_PARAM $CPU_PARAM $NETWORK_TUN -e KEY="$CASTAR_SDK_KEY" ghcr.io/bhavishyadahiya/castarsdk-docker/castarsdk@sha256:82a07de860b970a66cbb5cdcd6d169cfd113aafcd997d8d16fbda5a69424ae8f)
     execute_docker_command "CastarSDK" "castarsdk$UNIQUE_ID$i" "${docker_parameters[@]}"
   else
     if [[ "$container_pulled" == false && "$ENABLE_LOGS" == true ]]; then
@@ -1893,7 +1893,7 @@ start_containers() {
     if [ "$container_pulled" = false ]; then
       sudo docker pull packetstream/psclient:latest
     fi
-    docker_parameters=($LOGS_PARAM $DNS_VOLUME $MAX_MEMORY_PARAM $MEMORY_RESERVATION_PARAM $MEMORY_SWAP_PARAM $CPU_PARAM $NETWORK_TUN -e CID=$PACKETSTREAM_CID packetstream/psclient:latest)
+    docker_parameters=($LOGS_PARAM $DNS_VOLUME $MAX_MEMORY_PARAM $MEMORY_RESERVATION_PARAM $MEMORY_SWAP_PARAM $CPU_PARAM $NETWORK_TUN -e CID="$PACKETSTREAM_CID" packetstream/psclient:latest)
     execute_docker_command "PacketStream" "packetstream$UNIQUE_ID$i" "${docker_parameters[@]}"
   else
     if [[ "$container_pulled" == false && "$ENABLE_LOGS" == true ]]; then
@@ -1908,7 +1908,7 @@ start_containers() {
       docker_parameters=($LOGS_PARAM $DNS_VOLUME $MAX_MEMORY_PARAM $MEMORY_RESERVATION_PARAM $MEMORY_SWAP_PARAM $CPU_PARAM --mount type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock --mount type=bind,source=$PWD,target=/proxylite --network none docker:cli /bin/sh -c 'cd /proxylite && chmod +x /proxylite/restart.sh && while true; do sleep 86400; /proxylite/restart.sh --restartProxylite; done')
       execute_docker_command "Proxylite Restart" "dindproxylite$UNIQUE_ID$i" "${docker_parameters[@]}"
     fi
-    docker_parameters=($LOGS_PARAM $DNS_VOLUME $MAX_MEMORY_PARAM $MEMORY_RESERVATION_PARAM $MEMORY_SWAP_PARAM $CPU_PARAM --platform=linux/amd64 $NETWORK_TUN -e USER_ID=$PROXYLITE_USER_ID proxylite/proxyservice:latest)
+    docker_parameters=($LOGS_PARAM $DNS_VOLUME $MAX_MEMORY_PARAM $MEMORY_RESERVATION_PARAM $MEMORY_SWAP_PARAM $CPU_PARAM --platform=linux/amd64 $NETWORK_TUN -e USER_ID="$PROXYLITE_USER_ID" proxylite/proxyservice:latest)
     execute_docker_command "Proxylite" "proxylite$UNIQUE_ID$i" "${docker_parameters[@]}"
   else
     if [[ "$container_pulled" == false && "$ENABLE_LOGS" == true ]]; then
@@ -2110,7 +2110,7 @@ if [[ "$1" == "--startOnly" ]]; then
     i=`expr $i + 1`
     start_containers "$i" "$container"
   done
-  exit 1
+  exit 0
 fi
 
 # Start the containers
