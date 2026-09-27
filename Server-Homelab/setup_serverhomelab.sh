@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 #============================================================================
-#  setup_serverhomelab.sh (2026 MASTER ALL-IN-ONE ZERO-TOUCH HOMELAB ENGINE)
-#  Optimized for: Dell Wyse, Intel NUC, ThinkCentre Tiny, HP Thin Client
-#  All-in-One: Auto-Tailscale, Auto-Clone, Auto-Docker, ZRAM, Watchdogs & Start
+#  setup_serverhomelab.sh (2026 ZERO-TOUCH HOMELAB INFRASTRUCTURE ENGINE)
+#  Optimized for: Mini PCs, Thin Clients (Dell Wyse, NUC, ThinkCentre, HP)
+#  Pure Platform: Auto-Tailscale, Docker Engine, ZRAM ZSTD, Thermal Schedutil,
+#                 UFW Security, Dynamic Watchdogs. (No hardcoded folders)
 #============================================================================
 set -Eeuo pipefail
 
@@ -28,20 +29,11 @@ command -v apt-get >/dev/null 2>&1 || die "Script ho tro Debian/Ubuntu (apt-get)
 has_systemd() { command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; }
 
 REAL_USER="${SUDO_USER:-$USER}"
-USER_HOME=$(eval echo "~$REAL_USER")
-REPO_DIR="$USER_HOME/bandwidth-sharing"
 
 # 1. TỰ ĐỘNG CÀI ĐẶT & KÍCH HOẠT TAILSCALE NẾU CHƯA CÓ
 if ! command -v tailscale >/dev/null 2>&1 || ! tailscale ip -4 >/dev/null 2>&1; then
   log "Chua co Tailscale -> Dang tu dong cai dat va ket noi..."
   curl -fsSL https://raw.githubusercontent.com/tech-tnitechsolve/bandwidth-sharing/main/Server-Homelab/setup_tailscale.sh | bash || true
-fi
-
-# 2. TỰ ĐỘNG CLONE HOẶC CẬP NHẬT MÃ NGUỒN
-if [[ ! -d "$REPO_DIR" ]]; then
-  log "Tu dong clone source code bandwidth-sharing vao $REPO_DIR..."
-  git clone https://github.com/tech-tnitechsolve/bandwidth-sharing.git "$REPO_DIR"
-  chown -R "$REAL_USER:$REAL_USER" "$REPO_DIR" 2>/dev/null || true
 fi
 
 MEM_MB=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
@@ -78,7 +70,6 @@ clear_apt_locks() {
     systemctl stop apt-daily.service apt-daily-upgrade.service unattended-upgrades.service 2>/dev/null || true
     systemctl disable apt-daily.service apt-daily-upgrade.service unattended-upgrades.service 2>/dev/null || true
   fi
-  # Dùng -x để chỉ diệt đúng ứng dụng apt, không diệt nhầm script
   pkill -9 -x "apt|apt-get|dpkg|unattended-upgrade" 2>/dev/null || true
   rm -f /var/lib/apt/lists/lock /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend /var/cache/apt/archives/lock 2>/dev/null || true
   dpkg --configure -a 2>/dev/null || true
@@ -200,6 +191,7 @@ EOF_ZRAM_SVC
 fi
 /usr/local/bin/ii-init-zram.sh
 
+# Cài Docker & Cấp quyền Non-Root
 if ! command -v docker >/dev/null 2>&1; then
   log "Dang tu dong cai dat Docker official..."
   curl -fsSL https://get.docker.com | sh || apt-get install -y -qq docker.io
@@ -241,7 +233,7 @@ EOF_DOCKER_SVC
   fi
 fi
 
-# Tối ưu nhiệt độ CPU Schedutil/Powersave
+# Tối ưu nhiệt độ CPU Schedutil/Powersave (Mát 42C-48C)
 for g in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
   echo schedutil > "$g" 2>/dev/null || echo powersave > "$g" 2>/dev/null || true
 done
@@ -255,20 +247,11 @@ SWAPPINESS=100
 sysctl -w vm.swappiness=100 >/dev/null 2>&1 || true
 
 if (( CPU <= 2 )); then
-  SYN_BACKLOG=8192
-  NETDEV_BUDGET=300
-  NETDEV_USECS=2000
-  TIMER_MIG=1
+  SYN_BACKLOG=8192; NETDEV_BUDGET=300; NETDEV_USECS=2000; TIMER_MIG=1
 elif (( CPU <= 4 )); then
-  SYN_BACKLOG=16384
-  NETDEV_BUDGET=600
-  NETDEV_USECS=4000
-  TIMER_MIG=0
+  SYN_BACKLOG=16384; NETDEV_BUDGET=600; NETDEV_USECS=4000; TIMER_MIG=0
 else
-  SYN_BACKLOG=32768
-  NETDEV_BUDGET=1000
-  NETDEV_USECS=4000
-  TIMER_MIG=0
+  SYN_BACKLOG=32768; NETDEV_BUDGET=1000; NETDEV_USECS=4000; TIMER_MIG=0
 fi
 
 CURR_DISK_SWAP_MB=$(swapon --show=NAME,SIZE --bytes 2>/dev/null | awk '/swapfile/{print int($2/1024/1024)}' || echo 0)
@@ -461,9 +444,10 @@ EOF_PROFILES
 chmod 644 /usr/local/lib/ii-app-profiles.sh
 . /usr/local/lib/ii-app-profiles.sh
 
-auto_patch_engageub_repo() {
-  log "Tu dong format list proxy & patch properties.conf..."
-  ROOTS=(/opt /root /home /srv "$REPO_DIR")
+# Quét động và định dạng file proxy cho BẤT KỲ folder nào bạn tự tạo
+auto_patch_custom_folders() {
+  log "Tu dong quet & dinh dang file proxy trong cac folder ban tao..."
+  ROOTS=(/opt /root /home /srv "$USER_HOME")
   while IFS= read -r pf; do
     [[ -f "$pf" ]] && sed -i 's/\r$//' "$pf" 2>/dev/null || true
   done < <(find "${ROOTS[@]}" -maxdepth 5 -type f \( -name "*.txt" -o -name "*.list" \) 2>/dev/null | sort -u)
@@ -493,10 +477,9 @@ auto_patch_engageub_repo() {
     set_kv USE_CUSTOM_NETWORK false
     set_kv AUTO_UPDATE_CONTAINERS false
     set_kv ENABLE_LOGS false
-    log "Da patch: $(dirname "$f")/properties.conf"
   done < <(find "${ROOTS[@]}" -maxdepth 5 -name properties.conf -type f 2>/dev/null | sort -u)
 }
-auto_patch_engageub_repo
+auto_patch_custom_folders
 
 cat > /usr/local/bin/ii-flapguard.sh <<'EOF_FLAPGUARD'
 #!/usr/bin/env bash
@@ -900,13 +883,18 @@ EOF_STATUS
 chmod +x /usr/local/bin/ii-status.sh
 ln -sf /usr/local/bin/ii-status.sh /usr/bin/ii-status 2>/dev/null || true
 
-# TỰ ĐỘNG KHỞI CHẠY TẤT CẢ CÁC CỤM NODE TRONG THƯ MỤC
-log "Tu dong tim kiem & khoi chay toan bo cum node InternetIncome..."
-find /home /root /opt "$REPO_DIR" -maxdepth 4 -name "internetIncome.sh" 2>/dev/null | while read -r script; do
+# TỰ ĐỘNG KHỞI CHẠY NẾU BẠN ĐÃ TẠO SẴN FOLDER (NẾU CHƯA THÌ BỎ QUA ĐỂ BẠN UPLOAD QUA WINSCP)
+NODE_COUNT=0
+while IFS= read -r script; do
   dir=$(dirname "$script")
   log "Kich hoat node tai: $dir"
   (cd "$dir" && bash internetIncome.sh --start >/dev/null 2>&1 || true)
-done
+  NODE_COUNT=$((NODE_COUNT + 1))
+done < <(find /home /root /opt "$USER_HOME" -maxdepth 4 -name "internetIncome.sh" 2>/dev/null || true)
+
+if (( NODE_COUNT == 0 )); then
+  log "Chua co folder node nao -> He thong san sang de ban upload cac folder qua WinSCP!"
+fi
 
 echo "============================= SETUP XONG (2026 HOMELAB MASTER) =============================="
 /usr/local/bin/ii-status.sh || true
