@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 #============================================================================
-#  setup_serverhomelab.sh (2026 ZERO-TOUCH HOMELAB MASTER ENGINE)
-#  Optimized for: Mini PCs, Thin Clients (Dell Wyse, NUC, ThinkCentre, HP)
-#  Automation: Auto-Tuning, ZRAM ZSTD, Thermal Guard, Docker Non-Root,
-#              Self-Healing Watchdogs, Auto-Patch & Auto-Start Nodes
+#  setup_serverhomelab.sh (2026 MASTER ALL-IN-ONE ZERO-TOUCH HOMELAB ENGINE)
+#  Optimized for: Dell Wyse, Intel NUC, ThinkCentre Tiny, HP Thin Client
+#  All-in-One: Auto-Tailscale, Auto-Clone, Auto-Docker, ZRAM, Watchdogs & Start
 #============================================================================
 set -Eeuo pipefail
 
@@ -23,25 +22,27 @@ log()  { echo -e "${C_G}[OK]${C_0} $*"; }
 warn() { echo -e "${C_Y}[!!]${C_0} $*"; }
 die()  { echo -e "${C_R}[XX]${C_0} $*"; exit 1; }
 
-BASE_DIR=""
-DO_CRON=1
-DO_AUTOSTART=1
-
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --base-dir)       BASE_DIR="${2:-}"; shift 2 ;;
-    --base-dir=*)     BASE_DIR="${1#*=}"; shift ;;
-    --no-cron)        DO_CRON=0; shift ;;
-    --no-autostart)   DO_AUTOSTART=0; shift ;;
-    -h|--help)        grep '^#' "$0" | head -n 25; exit 0 ;;
-    *) die "Tham so khong hop le: $1" ;;
-  esac
-done
-
 [[ $EUID -eq 0 ]] || die "Can chay bang quyen root: sudo bash $0"
 command -v apt-get >/dev/null 2>&1 || die "Script ho tro Debian/Ubuntu (apt-get)"
 
 has_systemd() { command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; }
+
+REAL_USER="${SUDO_USER:-$USER}"
+USER_HOME=$(eval echo "~$REAL_USER")
+REPO_DIR="$USER_HOME/bandwidth-sharing"
+
+# 1. TỰ ĐỘNG CÀI ĐẶT & KÍCH HOẠT TAILSCALE NẾU CHƯA CÓ
+if ! command -v tailscale >/dev/null 2>&1 || ! tailscale ip -4 >/dev/null 2>&1; then
+  log "Chua co Tailscale -> Dang tu dong cai dat va ket noi..."
+  curl -fsSL https://raw.githubusercontent.com/tech-tnitechsolve/bandwidth-sharing/main/Server-Homelab/setup_tailscale.sh | bash || true
+fi
+
+# 2. TỰ ĐỘNG CLONE HOẶC CẬP NHẬT MÃ NGUỒN
+if [[ ! -d "$REPO_DIR" ]]; then
+  log "Tu dong clone source code bandwidth-sharing vao $REPO_DIR..."
+  git clone https://github.com/tech-tnitechsolve/bandwidth-sharing.git "$REPO_DIR"
+  chown -R "$REAL_USER:$REAL_USER" "$REPO_DIR" 2>/dev/null || true
+fi
 
 MEM_MB=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
 CPU=$(nproc 2>/dev/null || echo 1)
@@ -61,42 +62,31 @@ PUBLIC_IP=$(curl -s4 -m 3 --interface "$PRIMARY_IFACE" https://api.ipify.org 2>/
 
 TS_IP=$(tailscale ip -4 2>/dev/null || echo "Not Connected")
 
-TIER_NAME=""
-if (( MEM_MB <= 2500 )); then
-  TIER_NAME="HOMELAB TIER 1 (${CPU} CPU / 2GB RAM - LIGHTWEIGHT PROXIES)"
-elif (( MEM_MB <= 5000 )); then
-  TIER_NAME="HOMELAB TIER 2 (${CPU} CPU / 4GB RAM - BALANCED PROXIES)"
-elif (( MEM_MB <= 9000 )); then
-  TIER_NAME="HOMELAB TIER 3 (${CPU} CPU / 8GB RAM - HIGH DENSITY PROXIES)"
-else
-  TIER_NAME="HOMELAB TIER 4 (${CPU} CPU / 16GB+ RAM - DEDICATED HEAVY PROXIES)"
-fi
-
 if (( DISK_TOTAL_MB <= 35000 )); then
   TARGET_SWAP_MB=1024
 else
   TARGET_SWAP_MB=2048
 fi
 
-echo -e "\n${C_BG_BLUE}${C_BOLD} [!] HOMELAB HARDWARE & NETWORK AUDIT ${C_0}"
+echo -e "\n${C_BG_BLUE}${C_BOLD} [!] HOMELAB HARDWARE & NETWORK TELEMETRY ${C_0}"
 echo -e " ${C_BOLD}>>> PUBLIC IP (IP-AUTH) : ${C_G}${C_BOLD}${PUBLIC_IP}${C_0}"
-echo -e " ${C_BOLD}>>> TAILSCALE IP        : ${C_C}${C_BOLD}${TS_IP}${C_0}"
-echo -e " ${C_BOLD}>>> DETECTED PROFILE    : ${C_Y}${C_BOLD}${TIER_NAME}${C_0}\n"
+echo -e " ${C_BOLD}>>> TAILSCALE IP        : ${C_C}${C_BOLD}${TS_IP}${C_0}\n"
 
 clear_apt_locks() {
-  log "Giai phong khoa APT Lock..."
+  log "Giai phong khoa APT Lock an toan..."
   if has_systemd; then
     systemctl stop apt-daily.service apt-daily-upgrade.service unattended-upgrades.service 2>/dev/null || true
     systemctl disable apt-daily.service apt-daily-upgrade.service unattended-upgrades.service 2>/dev/null || true
   fi
-  pkill -9 -f "apt|dpkg|unattended-upgrades" 2>/dev/null || true
+  # Dùng -x để chỉ diệt đúng ứng dụng apt, không diệt nhầm script
+  pkill -9 -x "apt|apt-get|dpkg|unattended-upgrade" 2>/dev/null || true
   rm -f /var/lib/apt/lists/lock /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend /var/cache/apt/archives/lock 2>/dev/null || true
   dpkg --configure -a 2>/dev/null || true
 }
 clear_apt_locks
 
 export DEBIAN_FRONTEND=noninteractive
-log "Cap nhat he thong & cai dat cac goi phu thuoc..."
+log "Cai dat cac goi phu thuoc he thong..."
 apt-get update -y -qq || { clear_apt_locks; apt-get update -y -qq; }
 apt-get install -y -qq --no-install-recommends \
   -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
@@ -105,10 +95,8 @@ apt-get install -y -qq --no-install-recommends \
 
 apt-get install -y -qq linux-modules-extra-"$(uname -r)" 2>/dev/null || true
 
-# Tu dong mo rong LVM neu co
 lvextend -l +100%FREE -r /dev/mapper/ubuntu--vg-ubuntu--lv >/dev/null 2>&1 || true
 
-log "Cau hinh uu tien IPv4 (/etc/gai.conf)..."
 cat << 'EOF_GAI' > /etc/gai.conf
 precedence ::ffff:0:0/96  100
 precedence ::/0           40
@@ -125,7 +113,6 @@ fi
 timedatectl set-ntp true 2>/dev/null || true
 timedatectl set-timezone Asia/Ho_Chi_Minh 2>/dev/null || true
 
-log "Cau hinh DNS Direct-Upstream & Khoa chattr +i..."
 UPSTREAM_DNS=""
 if [[ -f /run/systemd/resolve/resolv.conf ]]; then
   UPSTREAM_DNS=$(grep -E '^nameserver' /run/systemd/resolve/resolv.conf 2>/dev/null | grep -v '127.0.0.53' | awk '{print $2}' || true)
@@ -141,9 +128,7 @@ rm -f /etc/resolv.conf
 {
   echo "# Generated for Mini PC HomeLab Nodes"
   echo "options timeout:1 attempts:2 rotate"
-  for dns in $UPSTREAM_DNS; do
-    echo "nameserver $dns"
-  done
+  for dns in $UPSTREAM_DNS; do echo "nameserver $dns"; done
   echo "nameserver 1.1.1.1"
   echo "nameserver 8.8.8.8"
   echo "nameserver 9.9.9.9"
@@ -176,13 +161,10 @@ cat > /usr/local/bin/ii-init-zram.sh <<'EOF_ZRAM_INIT'
 #!/usr/bin/env bash
 MEM_MB=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
 ZRAM_BYTES=$(( MEM_MB * 1024 * 1024 ))
-
 modprobe zram num_devices=1 2>/dev/null || true
-
 if [[ ! -b /dev/zram0 ]] && [[ -f /sys/class/zram-control/hot_add ]]; then
   cat /sys/class/zram-control/hot_add >/dev/null 2>&1 || true
 fi
-
 if [[ -b /dev/zram0 ]]; then
   swapon --show 2>/dev/null | grep -q "/dev/zram0" && swapoff /dev/zram0 2>/dev/null || true
   if grep -q "zstd" /sys/block/zram0/comp_algorithm 2>/dev/null; then
@@ -221,14 +203,11 @@ fi
 if ! command -v docker >/dev/null 2>&1; then
   log "Dang tu dong cai dat Docker official..."
   curl -fsSL https://get.docker.com | sh || apt-get install -y -qq docker.io
-else
-  log "Docker da co san: $(docker --version 2>/dev/null || echo '?')"
 fi
 
-TARGET_USER="${SUDO_USER:-$USER}"
-if [[ -n "$TARGET_USER" && "$TARGET_USER" != "root" ]]; then
-  usermod -aG docker "$TARGET_USER" 2>/dev/null || true
-  log "Da cap quyen Docker cho user: ${TARGET_USER}"
+if [[ -n "$REAL_USER" && "$REAL_USER" != "root" ]]; then
+  usermod -aG docker "$REAL_USER" 2>/dev/null || true
+  log "Da cap quyen Docker cho user: ${REAL_USER}"
 fi
 chmod 666 /var/run/docker.sock 2>/dev/null || true
 
@@ -262,8 +241,7 @@ EOF_DOCKER_SVC
   fi
 fi
 
-# TỐI ƯU NHIỆT ĐỘ CHO MINI PC (CHỐNG NÓNG / QUÁ NHIỆT FANLESS)
-log "Toi uu CPU Governor Schedutil/Powersave giu may mat 42C-48C..."
+# Tối ưu nhiệt độ CPU Schedutil/Powersave
 for g in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
   echo schedutil > "$g" 2>/dev/null || echo powersave > "$g" 2>/dev/null || true
 done
@@ -333,9 +311,7 @@ Unattended-Upgrade::Automatic-Reboot "false";
 Unattended-Upgrade::Automatic-Reboot-WithUsers "false";
 EOF_APT
 
-# CẤU HÌNH TƯỜNG LỬA CHO TAILSCALE & WINSCP
 if command -v ufw >/dev/null 2>&1; then
-  log "Tu dong cau hinh Tuong lua UFW (Tailscale & WinSCP)..."
   ufw allow in on tailscale0 to any port 22 >/dev/null 2>&1 || true
   ufw allow 22/tcp >/dev/null 2>&1 || true
   echo "y" | ufw enable >/dev/null 2>&1 || true
@@ -421,56 +397,32 @@ mkdir -p /usr/local/lib
 cat > /usr/local/lib/ii-app-profiles.sh <<'EOF_PROFILES'
 #!/usr/bin/env bash
 ii_tier_idx() { echo 4; }
-
 ii_profile() {
   local n img
   n="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]' | sed 's|^/||')"
   img="$(printf '%s' "${2:-}" | tr '[:upper:]' '[:lower:]')"
-
   P_APP=""; P_BASE_MIN="20m"; P_POLICY="unless-stopped"
-
   case "$n" in
-    tun*|hev*|tun2proxy*|gluetun*)
-      P_APP="tun2socks";       P_BASE_MIN="20m";  P_POLICY="unless-stopped" ;;
-    dind*)
-      P_APP="docker-in-docker"; P_BASE_MIN="120m"; P_POLICY="unless-stopped" ;;
-    traffmon*)
-      P_APP="Traffmonetizer";  P_BASE_MIN="25m";  P_POLICY="unless-stopped" ;;
-    bitping*)
-      P_APP="Bitping";         P_BASE_MIN="35m";  P_POLICY="unless-stopped" ;;
-    proxylite*|proxyrack*|proxybase*|antgain*|wizardgain*|peer2profit*|packetsdk*|castarsdk*)
-      P_APP="LightweightProxy";P_BASE_MIN="25m";  P_POLICY="unless-stopped" ;;
-    urnetwork*|titan*)
-      P_APP="NetworkNode";     P_BASE_MIN="60m";  P_POLICY="unless-stopped" ;;
-    myst*)
-      P_APP="Mysterium";       P_BASE_MIN="150m"; P_POLICY="unless-stopped" ;;
-
-    honey*)
-      P_APP="Honeygain";       P_BASE_MIN="60m";  P_POLICY="on-failure:3" ;;
-    repocket*)
-      P_APP="Repocket";        P_BASE_MIN="100m"; P_POLICY="unless-stopped" ;;
-    packetstream*)
-      P_APP="PacketStream";    P_BASE_MIN="60m";  P_POLICY="on-failure:3" ;;
-    pawns*)
-      P_APP="IPRoyal Pawns";   P_BASE_MIN="60m";  P_POLICY="on-failure:3" ;;
-    packetshare*)
-      P_APP="Packetshare";     P_BASE_MIN="60m";  P_POLICY="on-failure:3" ;;
-    earnfm*)
-      P_APP="EarnFM";          P_BASE_MIN="60m";  P_POLICY="on-failure:3" ;;
-    earnapp*)
-      P_APP="EarnApp";         P_BASE_MIN="60m";  P_POLICY="always" ;;
-
+    tun*|hev*|tun2proxy*|gluetun*) P_APP="tun2socks"; P_BASE_MIN="20m"; P_POLICY="unless-stopped" ;;
+    dind*) P_APP="docker-in-docker"; P_BASE_MIN="120m"; P_POLICY="unless-stopped" ;;
+    traffmon*) P_APP="Traffmonetizer"; P_BASE_MIN="25m"; P_POLICY="unless-stopped" ;;
+    bitping*) P_APP="Bitping"; P_BASE_MIN="35m"; P_POLICY="unless-stopped" ;;
+    proxylite*|proxyrack*|proxybase*|antgain*|wizardgain*|peer2profit*|packetsdk*|castarsdk*) P_APP="LightweightProxy"; P_BASE_MIN="25m"; P_POLICY="unless-stopped" ;;
+    urnetwork*|titan*) P_APP="NetworkNode"; P_BASE_MIN="60m"; P_POLICY="unless-stopped" ;;
+    myst*) P_APP="Mysterium"; P_BASE_MIN="150m"; P_POLICY="unless-stopped" ;;
+    honey*) P_APP="Honeygain"; P_BASE_MIN="60m"; P_POLICY="on-failure:3" ;;
+    repocket*) P_APP="Repocket"; P_BASE_MIN="100m"; P_POLICY="unless-stopped" ;;
+    packetstream*) P_APP="PacketStream"; P_BASE_MIN="60m"; P_POLICY="on-failure:3" ;;
+    pawns*) P_APP="IPRoyal Pawns"; P_BASE_MIN="60m"; P_POLICY="on-failure:3" ;;
+    packetshare*) P_APP="Packetshare"; P_BASE_MIN="60m"; P_POLICY="on-failure:3" ;;
+    earnfm*) P_APP="EarnFM"; P_BASE_MIN="60m"; P_POLICY="on-failure:3" ;;
+    earnapp*) P_APP="EarnApp"; P_BASE_MIN="60m"; P_POLICY="always" ;;
     depinext*|grass*|gradient*|nodepay*|dawn*|oasis*|blockmesh*|pipe*|toggle*|functor*|navigate*|teneo*|meshchain*|openloop*|uprock*|customchrome*|customfirefox*)
       P_APP="Depin/Browser ext"; P_BASE_MIN="250m"; P_POLICY="on-failure:5" ;;
-    ebesucher*)
-      P_APP="Ebesucher";       P_BASE_MIN="250m"; P_POLICY="on-failure:5" ;;
-    adnade*)
-      P_APP="Adnade";          P_BASE_MIN="250m"; P_POLICY="on-failure:5" ;;
-
-    *)
-      P_APP="OtherApp";        P_BASE_MIN="30m";  P_POLICY="unless-stopped" ;;
+    ebesucher*) P_APP="Ebesucher"; P_BASE_MIN="250m"; P_POLICY="on-failure:5" ;;
+    adnade*) P_APP="Adnade"; P_BASE_MIN="250m"; P_POLICY="on-failure:5" ;;
+    *) P_APP="OtherApp"; P_BASE_MIN="30m"; P_POLICY="unless-stopped" ;;
   esac
-
   if [[ "$P_APP" == "OtherApp" && -n "$img" ]]; then
     case "$img" in
       *mysteriumnetwork/myst*) ii_profile "myst" "" ;;
@@ -499,7 +451,6 @@ ii_profile() {
     esac
   fi
 }
-
 II_SUSPEND_SENSITIVE="honey pawns packetstream packetshare earnfm depinext ebesucher adnade grass gradient nodepay dawn titan uprock customchrome customfirefox"
 ii_is_suspend_sensitive() {
   local n="${1:-}"
@@ -511,10 +462,8 @@ chmod 644 /usr/local/lib/ii-app-profiles.sh
 . /usr/local/lib/ii-app-profiles.sh
 
 auto_patch_engageub_repo() {
-  log "Tu dong xoa ky tu xuong dong Windows (\\r\\n) & patch properties..."
-  ROOTS=(/opt /root /home /srv /home/ubuntu /home/opc)
-  if [[ -n "${BASE_DIR:-}" ]]; then ROOTS+=("$BASE_DIR"); fi
-  
+  log "Tu dong format list proxy & patch properties.conf..."
+  ROOTS=(/opt /root /home /srv "$REPO_DIR")
   while IFS= read -r pf; do
     [[ -f "$pf" ]] && sed -i 's/\r$//' "$pf" 2>/dev/null || true
   done < <(find "${ROOTS[@]}" -maxdepth 5 -type f \( -name "*.txt" -o -name "*.list" \) 2>/dev/null | sort -u)
@@ -522,8 +471,6 @@ auto_patch_engageub_repo() {
   while IFS= read -r f; do
     [[ -f "$f" ]] || continue
     grep -qE 'USE_SOCKS5_DNS|USE_PROXIES|USE_DNS_OVER_HTTPS' "$f" || continue
-    cp -a "$f" "${f}.bak.$(date +%Y%m%d%H%M%S)" 2>/dev/null || true
-    
     sed -i -E '/^[[:space:]]*MAX_MEMORY=/d;/^[[:space:]]*MEMORY_RESERVATION=/d;/^[[:space:]]*MEMORY_SWAP=/d;/^[[:space:]]*CPU=/d' "$f" || true
     set_kv() {
       local k="$1" v="$2"
@@ -546,10 +493,9 @@ auto_patch_engageub_repo() {
     set_kv USE_CUSTOM_NETWORK false
     set_kv AUTO_UPDATE_CONTAINERS false
     set_kv ENABLE_LOGS false
-    log "Da patch properties.conf tai: $(dirname "$f")"
+    log "Da patch: $(dirname "$f")/properties.conf"
   done < <(find "${ROOTS[@]}" -maxdepth 5 -name properties.conf -type f 2>/dev/null | sort -u)
 }
-
 auto_patch_engageub_repo
 
 cat > /usr/local/bin/ii-flapguard.sh <<'EOF_FLAPGUARD'
@@ -560,32 +506,24 @@ PROFILES=/usr/local/lib/ii-app-profiles.sh
 LOG=/var/log/ii-flapguard.log
 STATE=/var/lib/ii-flapguard
 mkdir -p "$STATE" 2>/dev/null || true
-
 FLAP_MAX="${FLAP_MAX:-2}"
 FLAP_WINDOW="${FLAP_WINDOW:-3600}"
 COOLDOWN="${COOLDOWN:-43200}"
-
 ts() { date '+%F %T'; }
 say() { echo "[$(ts)] $*" >> "$LOG"; }
-
 command -v docker >/dev/null 2>&1 || exit 0
-
 for cid in $(docker ps -aq 2>/dev/null); do
   cname=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null | sed 's|^/||') || continue
   [[ -n "$cname" ]] || continue
   cimg=$(docker inspect -f '{{.Config.Image}}' "$cid" 2>/dev/null || echo "")
-
   ii_profile "$cname" "$cimg"
   ii_is_suspend_sensitive "$cname" || continue
-
   rc=$(docker inspect -f '{{.RestartCount}}' "$cid" 2>/dev/null || echo 0)
   now=$(date +%s)
-
   f="$STATE/${cname}.state"
   prev_rc=0; prev_t=0; stopped_at=0
   [[ -f "$f" ]] && read -r prev_rc prev_t stopped_at < "$f" 2>/dev/null
   prev_rc=${prev_rc:-0}; prev_t=${prev_t:-0}; stopped_at=${stopped_at:-0}
-
   if (( stopped_at > 0 )); then
     if (( now - stopped_at >= COOLDOWN )); then
       say "[$cname] Het cooldown. Mo lai an toan."
@@ -594,18 +532,12 @@ for cid in $(docker ps -aq 2>/dev/null); do
     fi
     continue
   fi
-
-  if (( prev_t == 0 )); then
-    echo "$rc $now 0" > "$f"
-    continue
-  fi
-
+  if (( prev_t == 0 )); then echo "$rc $now 0" > "$f"; continue; fi
   delta=$(( rc - prev_rc ))
   elapsed=$(( now - prev_t ))
   if (( delta < 0 )); then echo "$rc $now 0" > "$f"; continue; fi
-
   if (( delta > FLAP_MAX )); then
-    say "[$cname] FLAP DETECTED: ${delta} restarts trong $(( elapsed/60 )) phut -> Dung 12h."
+    say "[$cname] FLAP DETECTED: ${delta} restarts -> Dung 12h."
     docker update --restart=no "$cid" >/dev/null 2>&1 || true
     docker stop "$cid" >/dev/null 2>&1 || true
     echo "$rc $now $now" > "$f"
@@ -622,69 +554,46 @@ cat > /usr/local/bin/ii-repocket-watchdog.sh <<'EOF_RP_WATCHDOG'
 #!/usr/bin/env bash
 set -uo pipefail
 command -v docker >/dev/null 2>&1 || exit 0
-
 STATE_DIR="/var/lib/ii-repocket-watchdog"
 LOG_FILE="/var/log/ii-repocket.log"
 mkdir -p "$STATE_DIR" 2>/dev/null || true
-
 ts() { date '+%Y-%m-%d %H:%M:%S'; }
 log_rp() { echo "[$(ts)] [Repocket-Watchdog] $*" >> "$LOG_FILE"; }
-
 check_upstream_proxy_alive() {
-  local p_host="$1"
-  local p_port="$2"
+  local p_host="$1" p_port="$2"
   [[ -z "$p_host" || -z "$p_port" ]] && return 0
   timeout 2 bash -c "cat < /dev/null > /dev/tcp/$p_host/$p_port" 2>/dev/null
   return $?
 }
-
 for cid in $(docker ps -aq 2>/dev/null); do
   [[ -z "$cid" ]] && continue
-  
   cname=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null | sed 's|^/||')
   cimg=$(docker inspect -f '{{.Config.Image}}' "$cid" 2>/dev/null || echo "")
-  
-  if [[ ! "$cname" =~ repocket ]] && [[ ! "$cimg" =~ repocket ]]; then
-    continue
-  fi
-
+  if [[ ! "$cname" =~ repocket ]] && [[ ! "$cimg" =~ repocket ]]; then continue; fi
   status=$(docker inspect -f '{{.State.Status}}' "$cid" 2>/dev/null || echo "unknown")
   running=$(docker inspect -f '{{.State.Running}}' "$cid" 2>/dev/null || echo "false")
   net_mode=$(docker inspect -f '{{.HostConfig.NetworkMode}}' "$cid" 2>/dev/null || echo "")
-
   state_file="$STATE_DIR/${cname}.state"
   fail_count=0; last_attempt=0; cooldown_until=0; last_error="NONE"
-
   if [[ -f "$state_file" ]]; then
     read -r fail_count last_attempt cooldown_until last_error < "$state_file" 2>/dev/null || true
-    fail_count=${fail_count:-0}
-    last_attempt=${last_attempt:-0}
-    cooldown_until=${cooldown_until:-0}
-    last_error=${last_error:-"NONE"}
   fi
-
   now=$(date +%s)
-
-  target_tun=""
-  proxy_ip=""
-  proxy_port=""
+  target_tun=""; proxy_ip=""; proxy_port=""
   if [[ "$net_mode" =~ ^container:(.+) ]]; then
     target_tun="${BASH_REMATCH[1]}"
     tun_envs=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$target_tun" 2>/dev/null || true)
     proxy_ip=$(echo "$tun_envs" | grep '^SOCKS5_ADDR=' | cut -d= -f2-)
     proxy_port=$(echo "$tun_envs" | grep '^SOCKS5_PORT=' | cut -d= -f2-)
-
     if [[ -z "$proxy_ip" || -z "$proxy_port" ]]; then
       raw_proxy=$(echo "$tun_envs" | grep '^PROXY=' | cut -d= -f2-)
       if [[ -n "$raw_proxy" ]]; then
         clean_p="${raw_proxy#*://}"
         [[ "$clean_p" == *@* ]] && clean_p="${clean_p#*@}"
-        proxy_ip="${clean_p%%:*}"
-        proxy_port="${clean_p##*:}"
+        proxy_ip="${clean_p%%:*}"; proxy_port="${clean_p##*:}"
       fi
     fi
   fi
-
   if [[ "$running" == "true" && "$status" == "running" ]]; then
     if (( fail_count > 0 && now - last_attempt > 180 )); then
       log_rp "[$cname] Node da on dinh tro lai. Reset bo dem loi."
@@ -692,12 +601,8 @@ for cid in $(docker ps -aq 2>/dev/null); do
     fi
     continue
   fi
-
   if echo "$status" | grep -qiE "exited|dead|paused|created"; then
-    if (( now < cooldown_until )); then
-      continue
-    fi
-
+    if (( now < cooldown_until )); then continue; fi
     if [[ -n "$target_tun" ]]; then
       tun_running=$(docker inspect -f '{{.State.Running}}' "$target_tun" 2>/dev/null || echo "false")
       if [[ "$tun_running" != "true" ]]; then
@@ -706,49 +611,27 @@ for cid in $(docker ps -aq 2>/dev/null); do
         sleep 2
       fi
     fi
-
     proxy_alive=1
     if [[ -n "$proxy_ip" && -n "$proxy_port" ]]; then
-      if ! check_upstream_proxy_alive "$proxy_ip" "$proxy_port"; then
-        proxy_alive=0
-      fi
+      if ! check_upstream_proxy_alive "$proxy_ip" "$proxy_port"; then proxy_alive=0; fi
     fi
-
     if (( proxy_alive == 0 )); then
-      cooldown_sec=480
-      cooldown_until=$(( now + cooldown_sec ))
+      cooldown_until=$(( now + 480 ))
       echo "$fail_count $now $cooldown_until PROXY_DEAD" > "$state_file"
-      
-      log_rp "[$cname] [NGUYÊN NHÂN: PROXY DIE] Proxy ($proxy_ip:$proxy_port) khong phan hoi! Tam dung Repocket de tiet kiem CPU (Thu lai sau 8p)."
       docker stop "$cid" >/dev/null 2>&1 || true
       continue
     fi
-
     fail_count=$(( fail_count + 1 ))
     last_attempt=$now
-
-    if (( fail_count <= 3 )); then
-      cooldown_sec=0
-      cooldown_until=0
-    elif (( fail_count <= 5 )); then
-      cooldown_sec=120
-      cooldown_until=$(( now + cooldown_sec ))
-    else
-      cooldown_sec=300
-      cooldown_until=$(( now + cooldown_sec ))
-    fi
-
+    if (( fail_count <= 3 )); then cooldown_sec=0
+    elif (( fail_count <= 5 )); then cooldown_sec=120
+    else cooldown_sec=300; fi
+    cooldown_until=$(( now + cooldown_sec ))
     echo "$fail_count $last_attempt $cooldown_until REPOCKET_DISCONNECT" > "$state_file"
-    log_rp "[$cname] [NGUYÊN NHÂN: LAG SOCKET] Proxy van song. Khoi dong lai Repocket (Lan #$fail_count, Cooldown ke tiep: ${cooldown_sec}s)..."
-    
     docker update --restart=unless-stopped "$cid" >/dev/null 2>&1 || true
     docker start "$cid" >/dev/null 2>&1 || true
   fi
 done
-
-if [[ -f "$LOG_FILE" ]] && (( $(stat -c%s "$LOG_FILE" 2>/dev/null || echo 0) > 5242880 )); then
-  tail -n 500 "$LOG_FILE" > "${LOG_FILE}.tmp" && mv "${LOG_FILE}.tmp" "$LOG_FILE"
-fi
 EOF_RP_WATCHDOG
 chmod +x /usr/local/bin/ii-repocket-watchdog.sh
 ln -sf /usr/local/bin/ii-repocket-watchdog.sh /usr/bin/ii-repocket-watchdog 2>/dev/null || true
@@ -756,49 +639,34 @@ ln -sf /usr/local/bin/ii-repocket-watchdog.sh /usr/bin/ii-repocket-watchdog 2>/d
 cat > /usr/local/bin/ii-repocket-doctor <<'EOF_DOCTOR'
 #!/usr/bin/env bash
 set -uo pipefail
-
 C_G='\033[1;32m'; C_Y='\033[1;33m'; C_R='\033[1;31m'; C_C='\033[1;36m'; C_0='\033[0m'
 STATE_DIR="/var/lib/ii-repocket-watchdog"
-
 echo -e "\n${C_C}=================== [BẢNG CHẨN ĐOÁN CHI TIẾT REPOCKET & PROXY] ===================${C_0}"
 printf " %-22s %-20s %-16s %-16s %s\n" "CONTAINER" "PROXY IP:PORT" "PROXY STATUS" "REPOCKET STATUS" "KẾT LUẬN / NGUYÊN NHÂN"
 echo "-------------------------------------------------------------------------------------------------------"
-
 RP_CTRS=$(docker ps -aq 2>/dev/null)
 FOUND=0
-
 for cid in $RP_CTRS; do
   cname=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null | sed 's|^/||')
   cimg=$(docker inspect -f '{{.Config.Image}}' "$cid" 2>/dev/null || echo "")
-
-  if [[ ! "$cname" =~ repocket ]] && [[ ! "$cimg" =~ repocket ]]; then
-    continue
-  fi
-
+  if [[ ! "$cname" =~ repocket ]] && [[ ! "$cimg" =~ repocket ]]; then continue; fi
   FOUND=$((FOUND+1))
   rp_status=$(docker inspect -f '{{.State.Status}}' "$cid" 2>/dev/null || echo "unknown")
   net_mode=$(docker inspect -f '{{.HostConfig.NetworkMode}}' "$cid" 2>/dev/null || echo "")
-
-  proxy_str="Direct/None"
-  proxy_st_text="${C_Y}N/A${C_0}"
-  conclusion="${C_G}Bình thường (Online)${C_0}"
-
+  proxy_str="Direct/None"; proxy_st_text="${C_Y}N/A${C_0}"; conclusion="${C_G}Bình thường (Online)${C_0}"
   if [[ "$net_mode" =~ ^container:(.+) ]]; then
     target_tun="${BASH_REMATCH[1]}"
     tun_envs=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$target_tun" 2>/dev/null || true)
     p_ip=$(echo "$tun_envs" | grep '^SOCKS5_ADDR=' | cut -d= -f2-)
     p_port=$(echo "$tun_envs" | grep '^SOCKS5_PORT=' | cut -d= -f2-)
-
     if [[ -z "$p_ip" || -z "$p_port" ]]; then
       raw_proxy=$(echo "$tun_envs" | grep '^PROXY=' | cut -d= -f2-)
       if [[ -n "$raw_proxy" ]]; then
         clean_p="${raw_proxy#*://}"
         [[ "$clean_p" == *@* ]] && clean_p="${clean_p#*@}"
-        p_ip="${clean_p%%:*}"
-        p_port="${clean_p##*:}"
+        p_ip="${clean_p%%:*}"; p_port="${clean_p##*:}"
       fi
     fi
-
     if [[ -n "$p_ip" && -n "$p_port" ]]; then
       proxy_str="${p_ip}:${p_port}"
       if timeout 2 bash -c "cat < /dev/null > /dev/tcp/$p_ip/$p_port" 2>/dev/null; then
@@ -808,33 +676,19 @@ for cid in $RP_CTRS; do
       fi
     fi
   fi
-
   state_file="$STATE_DIR/${cname}.state"
   last_err="NONE"
-  if [[ -f "$state_file" ]]; then
-    read -r _ _ _ last_err < "$state_file" 2>/dev/null || true
-  fi
-
+  [[ -f "$state_file" ]] && read -r _ _ _ last_err < "$state_file" 2>/dev/null || true
   if [[ "$rp_status" == "running" ]]; then
-    rp_st_text="${C_G}RUNNING${C_0}"
-    conclusion="${C_G}Hoạt động tốt 100%${C_0}"
+    rp_st_text="${C_G}RUNNING${C_0}"; conclusion="${C_G}Hoạt động tốt 100%${C_0}"
   else
     rp_st_text="${C_R}${rp_status^^}${C_0}"
-    if [[ "$proxy_st_text" =~ DEAD ]]; then
-      conclusion="${C_R}[LỖI DO PROXY SẬP] Đang ngủ đông${C_0}"
-    elif [[ "$last_err" == "REPOCKET_DISCONNECT" ]]; then
-      conclusion="${C_Y}[LỖI SOCKET APP] Đang tự hồi phục${C_0}"
-    else
-      conclusion="${C_Y}Đang chờ điều phối${C_0}"
-    fi
+    if [[ "$proxy_st_text" =~ DEAD ]]; then conclusion="${C_R}[LỖI DO PROXY SẬP] Đang ngủ đông${C_0}"
+    elif [[ "$last_err" == "REPOCKET_DISCONNECT" ]]; then conclusion="${C_Y}[LỖI SOCKET APP] Đang tự hồi phục${C_0}"
+    else conclusion="${C_Y}Đang chờ điều phối${C_0}"; fi
   fi
-
   printf " %-22s %-20s %-25b %-25b %b\n" "$cname" "$proxy_str" "$proxy_st_text" "$rp_st_text" "$conclusion"
 done
-
-if (( FOUND == 0 )); then
-  echo " Không tìm thấy container Repocket nào tren HomeLab."
-fi
 echo -e "${C_C}=======================================================================================================${C_0}\n"
 EOF_DOCTOR
 chmod +x /usr/local/bin/ii-repocket-doctor
@@ -845,78 +699,52 @@ cat > /usr/local/bin/ii-autosync.sh <<'EOF_AUTOSYNC'
 set -uo pipefail
 PROFILES=/usr/local/lib/ii-app-profiles.sh
 [[ -r "$PROFILES" ]] && . "$PROFILES"
-
 command -v docker >/dev/null 2>&1 || exit 0
 TOTAL_CTRS=$(docker ps -q 2>/dev/null | wc -l)
 (( TOTAL_CTRS < 1 )) && exit 0
-
 HOST_RAM_MB=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
 OS_RESERVE_MB=$(( (HOST_RAM_MB * 15) / 100 ))
 (( OS_RESERVE_MB < 300 )) && OS_RESERVE_MB=300
 USABLE_HOST_RAM=$(( HOST_RAM_MB - OS_RESERVE_MB ))
-
 STATS_RAW=$(docker stats --no-stream --format "{{.ID}}\t{{.Name}}\t{{.MemUsage}}" 2>/dev/null || echo "")
 [[ -z "$STATS_RAW" ]] && exit 0
-
 to_mb() {
   local val="$1"
-  if [[ "$val" =~ ([0-9.]+)[[:space:]]*GiB ]]; then
-    awk "BEGIN {print int(${BASH_REMATCH[1]} * 1024)}"
-  elif [[ "$val" =~ ([0-9.]+)[[:space:]]*MiB ]]; then
-    awk "BEGIN {print int(${BASH_REMATCH[1]})}"
-  elif [[ "$val" =~ ([0-9.]+)[[:space:]]*kB ]]; then
-    awk "BEGIN {print int(${BASH_REMATCH[1]} / 1024)}"
-  elif [[ "$val" =~ ([0-9.]+)[[:space:]]*B ]]; then
-    awk "BEGIN {print int(${BASH_REMATCH[1]} / 1048576)}"
-  else
-    echo 25
-  fi
+  if [[ "$val" =~ ([0-9.]+)[[:space:]]*GiB ]]; then awk "BEGIN {print int(${BASH_REMATCH[1]} * 1024)}"
+  elif [[ "$val" =~ ([0-9.]+)[[:space:]]*MiB ]]; then awk "BEGIN {print int(${BASH_REMATCH[1]})}"
+  elif [[ "$val" =~ ([0-9.]+)[[:space:]]*kB ]]; then awk "BEGIN {print int(${BASH_REMATCH[1]} / 1024)}"
+  elif [[ "$val" =~ ([0-9.]+)[[:space:]]*B ]]; then awk "BEGIN {print int(${BASH_REMATCH[1]} / 1048576)}"
+  else echo 25; fi
 }
-
 declare -A LIVE_ACTUAL_MB
-TOTAL_ACTUAL_USED_MB=0
-HEAVY_COUNT=0
-LIGHT_COUNT=0
-
+TOTAL_ACTUAL_USED_MB=0; HEAVY_COUNT=0; LIGHT_COUNT=0
 while IFS=$'\t' read -r cid cname mem_usage; do
   [[ -z "$cid" ]] && continue
   cname_clean=$(echo "$cname" | sed 's|^/||' | tr '[:upper:]' '[:lower:]')
   used_str=$(echo "$mem_usage" | awk -F'/' '{print $1}' | tr -d ' ')
   used_mb=$(to_mb "$used_str")
   (( used_mb < 15 )) && used_mb=15
-
   LIVE_ACTUAL_MB["$cid"]=$used_mb
   TOTAL_ACTUAL_USED_MB=$(( TOTAL_ACTUAL_USED_MB + used_mb ))
-
   if [[ "$cname_clean" =~ depinext|ebesucher|adnade|dind|myst|grass|gradient|nodepay|dawn|titan|uprock|customchrome|customfirefox ]]; then
     HEAVY_COUNT=$((HEAVY_COUNT + 1))
   else
     LIGHT_COUNT=$((LIGHT_COUNT + 1))
   fi
 done <<< "$STATS_RAW"
-
 FREE_POOL_MB=$(( USABLE_HOST_RAM - TOTAL_ACTUAL_USED_MB ))
 (( FREE_POOL_MB < 0 )) && FREE_POOL_MB=0
-
-HEAVY_BURST_EXTRA=0
-LIGHT_BURST_EXTRA=0
-if (( HEAVY_COUNT > 0 )); then
-  HEAVY_BURST_EXTRA=$(( (FREE_POOL_MB * 65 / 100) / HEAVY_COUNT ))
-fi
-if (( LIGHT_COUNT > 0 )); then
-  LIGHT_BURST_EXTRA=$(( (FREE_POOL_MB * 35 / 100) / LIGHT_COUNT ))
-fi
-
+HEAVY_BURST_EXTRA=0; LIGHT_BURST_EXTRA=0
+if (( HEAVY_COUNT > 0 )); then HEAVY_BURST_EXTRA=$(( (FREE_POOL_MB * 65 / 100) / HEAVY_COUNT )); fi
+if (( LIGHT_COUNT > 0 )); then LIGHT_BURST_EXTRA=$(( (FREE_POOL_MB * 35 / 100) / LIGHT_COUNT )); fi
 for cid in "${!LIVE_ACTUAL_MB[@]}"; do
   actual_mb=${LIVE_ACTUAL_MB["$cid"]}
   cname=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null | sed 's|^/||' | tr '[:upper:]' '[:lower:]') || continue
   cimg=$(docker inspect -f '{{.Config.Image}}' "$cid" 2>/dev/null || echo "")
   ii_profile "$cname" "$cimg"
-
   soft_floor=$(( actual_mb * 12 / 10 ))
   base_min=${P_BASE_MIN%m}
   (( soft_floor < base_min )) && soft_floor=$base_min
-
   if [[ "$cname" =~ depinext|ebesucher|adnade|dind|myst|grass|gradient|nodepay|dawn|titan|uprock|customchrome|customfirefox ]]; then
     target_burst=$(( actual_mb + HEAVY_BURST_EXTRA ))
     (( target_burst < 500 )) && target_burst=500
@@ -926,35 +754,20 @@ for cid in "${!LIVE_ACTUAL_MB[@]}"; do
     (( target_burst < 128 )) && target_burst=128
     (( target_burst > 512 )) && target_burst=512
   fi
-
-  docker update \
-    --memory-reservation="${soft_floor}m" \
-    --memory="${target_burst}m" \
-    --cpu-shares=256 \
-    --memory-swap="-1" \
-    --restart="$P_POLICY" \
-    "$cid" >/dev/null 2>&1 || \
-  docker update \
-    --memory-reservation="${soft_floor}m" \
-    --memory="${target_burst}m" \
-    --cpu-shares=256 \
-    "$cid" >/dev/null 2>&1 || true
+  docker update --memory-reservation="${soft_floor}m" --memory="${target_burst}m" --cpu-shares=256 --memory-swap="-1" --restart="$P_POLICY" "$cid" >/dev/null 2>&1 || \
+  docker update --memory-reservation="${soft_floor}m" --memory="${target_burst}m" --cpu-shares=256 "$cid" >/dev/null 2>&1 || true
 done
 EOF_AUTOSYNC
 chmod +x /usr/local/bin/ii-autosync.sh
 ln -sf /usr/local/bin/ii-autosync.sh /usr/bin/ii-autosync 2>/dev/null || true
-
-/usr/local/bin/ii-autosync.sh || true
 
 cat > /usr/local/bin/ii-staggered-start.sh <<'EOF_STAGGER'
 #!/usr/bin/env bash
 set -uo pipefail
 command -v docker >/dev/null 2>&1 || exit 0
 while ! docker info >/dev/null 2>&1; do sleep 1; done
-
 TOTAL_NODES=$(docker ps -aq 2>/dev/null | wc -l)
 echo "=== BAT DAU KHOI DONG TUAN TU ${TOTAL_NODES} CONTAINER ==="
-
 for cid in $(docker ps -aq 2>/dev/null); do
   cname=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null | sed 's|^/||')
   if [[ "$cname" =~ ^tun|^hev|^socks5|^gluetun|^dind ]]; then
@@ -965,32 +778,17 @@ for cid in $(docker ps -aq 2>/dev/null); do
     fi
   fi
 done
-
 sleep 2
-
-IDX=0
 for cid in $(docker ps -aq 2>/dev/null); do
   cname=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null | sed 's|^/||')
   cimg=$(docker inspect -f '{{.Config.Image}}' "$cid" 2>/dev/null || echo "")
   running=$(docker inspect -f '{{.State.Running}}' "$cid" 2>/dev/null || echo "false")
-  IDX=$((IDX+1))
   if [[ "$running" == "true" ]]; then continue; fi
-
-  case "${cname}${cimg}" in
-    *honey*|*pawns*|*packetstream*|*packetshare*|*earnfm*|*earnapp*|*repocket*|*grass*|*gradient*|*nodepay*|*dawn*|*titan*|*uprock*)
-      continue
-      ;;
-  esac
-
+  case "${cname}${cimg}" in *honey*|*pawns*|*packetstream*|*packetshare*|*earnfm*|*earnapp*|*repocket*|*grass*|*gradient*|*nodepay*|*dawn*|*titan*|*uprock*) continue ;; esac
   docker start "$cid" >/dev/null 2>&1 || true
-
-  if [[ "$cname" =~ ebesucher|adnade|depinext|customchrome|customfirefox ]]; then
-    sleep 8
-  else
-    sleep 0.8
-  fi
+  if [[ "$cname" =~ ebesucher|adnade|depinext|customchrome|customfirefox ]]; then sleep 8; else sleep 0.8; fi
 done
-echo "=== TAT CA ${TOTAL_NODES} NODE DA ONLINE AN TOAN ==="
+echo "=== TAT CA NODE DA ONLINE AN TOAN ==="
 EOF_STAGGER
 chmod +x /usr/local/bin/ii-staggered-start.sh
 
@@ -1000,12 +798,10 @@ if has_systemd; then
 Description=HomeLab Staggered Container Boot
 After=docker.service ii-zram.service
 Wants=docker.service
-
 [Service]
 Type=oneshot
 ExecStart=/usr/local/bin/ii-staggered-start.sh
 RemainAfterExit=yes
-
 [Install]
 WantedBy=multi-user.target
 EOF_BOOT_SVC
@@ -1013,49 +809,30 @@ EOF_BOOT_SVC
   systemctl enable ii-boot-staggered.service 2>/dev/null || true
 fi
 
-/usr/local/bin/ii-staggered-start.sh || true
-
 cat > /usr/local/bin/ii-capacity.sh <<'EOF_CAPACITY'
 #!/usr/bin/env bash
 MEM_TOTAL_MB=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
 CPU_CORES=$(nproc 2>/dev/null || echo 1)
 ACTIVE_CTRS=$(docker ps -q 2>/dev/null | wc -l)
-
 MAX_LIGHT_BY_RAM=$(( (MEM_TOTAL_MB - 500) / 28 ))
 MAX_LIGHT_BY_CPU=$(( CPU_CORES * 220 ))
 SAFE_MAX_LIGHT=$(( MAX_LIGHT_BY_RAM < MAX_LIGHT_BY_CPU ? MAX_LIGHT_BY_RAM : MAX_LIGHT_BY_CPU ))
-
 MAX_HEAVY_BY_RAM=$(( (MEM_TOTAL_MB - 500) / 450 ))
 MAX_HEAVY_BY_CPU=$(( CPU_CORES * 6 ))
 SAFE_MAX_HEAVY=$(( MAX_HEAVY_BY_RAM < MAX_HEAVY_BY_CPU ? MAX_HEAVY_BY_RAM : MAX_HEAVY_BY_CPU ))
-
 RAM_FREE_MB=$(free -m | awk '/^Mem:/{print $7}')
 LOAD_15=$(cat /proc/loadavg | awk '{print $3}')
-
 PRIMARY_IFACE=$(ip -4 route show default 2>/dev/null | awk '{print $5}' | head -n1)
-PUB_IP=$(curl -s4 -m 3 --interface "$PRIMARY_IFACE" https://api.ipify.org 2>/dev/null || \
-        curl -s4 -m 3 --interface "$PRIMARY_IFACE" https://icanhazip.com 2>/dev/null || \
-        echo "Unknown")
+PUB_IP=$(curl -s4 -m 3 --interface "$PRIMARY_IFACE" https://api.ipify.org 2>/dev/null || echo "Unknown")
 TS_IP=$(tailscale ip -4 2>/dev/null || echo "N/A")
-
 echo "==================== [ĐÁNH GIÁ SỨC CHỨA PHẦN CỨNG HOMELAB] ===================="
 echo "  PUBLIC IP (IP-AUTH) : ${PUB_IP}"
 echo "  TAILSCALE IP        : ${TS_IP}"
 echo "  CẤU HÌNH HIỆN TẠI   : ${CPU_CORES} vCPU | RAM ${MEM_TOTAL_MB}MB (Trống: ${RAM_FREE_MB}MB) | Load 15m: ${LOAD_15}"
 echo "  NODE ĐANG CHẠY      : ${ACTIVE_CTRS} Container"
 echo "------------------------------------------------------------------------"
-echo "  1. SỨC CHỨA TỐI ĐA CHO PROXY NHẸ (Traffmon/Bitping/tun2socks):"
-echo "     -> Ngưỡng an toàn tối đa: ${SAFE_MAX_LIGHT} Container"
-if (( ACTIVE_CTRS > SAFE_MAX_LIGHT )); then
-  echo "     -> TRẠNG THÁI: [CẢNH BÁO QUÁ TẢI] Cần hạ bớt node hoặc nâng cấp RAM!"
-else
-  REMAIN_LIGHT=$(( SAFE_MAX_LIGHT - ACTIVE_CTRS ))
-  echo "     -> TRẠNG THÁI: [AN TOÀN] Có thể nhồi thêm tối đa ~${REMAIN_LIGHT} node nhẹ nữa."
-fi
-echo ""
-echo "  2. SỨC CHỨA CHO ỨNG DỤNG NẶNG (Browser Nodes / Heavy Extensions / DePIN):"
-echo "     -> Ngưỡng an toàn tối đa: ${SAFE_MAX_HEAVY} Heavy Nodes (khi không chạy node khác)."
-echo "     -> KHUYẾN NGHỊ: Trên máy hiện tại nên chạy tối đa 10 - 15 Heavy Nodes."
+echo "  1. SỨC CHỨA TỐI ĐA CHO PROXY NHẸ: ${SAFE_MAX_LIGHT} Container"
+echo "  2. SỨC CHỨA CHO ỨNG DỤNG NẶNG (DePIN/Browser): ${SAFE_MAX_HEAVY} Heavy Nodes"
 echo "========================================================================"
 EOF_CAPACITY
 chmod +x /usr/local/bin/ii-capacity.sh
@@ -1070,116 +847,41 @@ EOF_CLEAN
 chmod +x /usr/local/bin/ii-clean-logs.sh
 ln -sf /usr/local/bin/ii-clean-logs.sh /usr/bin/ii-clean-logs 2>/dev/null || true
 
-cat > /usr/local/bin/ii-test-proxy.sh << 'EOF_TEST_PROXY'
-#!/usr/bin/env bash
-CNAME="${1:-}"
-if [[ -z "$CNAME" ]]; then
-  echo "Cach dung: ii-test-proxy <ten_container>"
-  exit 1
-fi
-if ! docker inspect "$CNAME" >/dev/null 2>&1; then
-  echo "[XX] Khong tim thay container: $CNAME"
-  exit 1
-fi
-
-PRIMARY_IFACE=$(ip -4 route show default 2>/dev/null | awk '{print $5}' | head -n1)
-PUB_HOST=$(curl -s4 -m 3 --interface "$PRIMARY_IFACE" https://api.ipify.org 2>/dev/null || \
-          curl -s4 -m 3 --interface "$PRIMARY_IFACE" https://icanhazip.com 2>/dev/null || \
-          echo "Unknown")
-PID=$(docker inspect -f '{{.State.Pid}}' "$CNAME" 2>/dev/null || echo 0)
-STATE=$(docker inspect -f '{{.State.Status}}' "$CNAME" 2>/dev/null || echo "unknown")
-
-echo "==================== [KIEM TRA DUONG TRUYEN PROXY (ZERO-EXTERNAL-PROBE)] ===================="
-echo "  Container Target  : $CNAME (Status: $STATE, PID: $PID)"
-echo "  HomeLab IP-Auth   : $PUB_HOST (IP Whitelist duy nhat hop le tren Dashboard Proxy)"
-
-if (( PID > 0 )); then
-  CONNS=$(nsenter -t "$PID" -n ss -tan state established 2>/dev/null | grep -vc 'Recv-Q' || echo 0)
-  
-  RX_BYTES=0
-  TX_BYTES=0
-  if [[ -f "/proc/$PID/net/dev" ]]; then
-    read -r RX_BYTES TX_BYTES < <(awk '
-      /tun0:|tap0:/ { tun_rx += $2; tun_tx += $10; has_tun = 1 }
-      /eth0:/       { eth_rx += $2; eth_tx += $10 }
-      END {
-        if (has_tun == 1) { print tun_rx+0, tun_tx+0 }
-        else { print eth_rx+0, eth_tx+0 }
-      }
-    ' "/proc/$PID/net/dev" 2>/dev/null || echo "0 0")
-  fi
-  TOTAL_MB=$(awk "BEGIN {printf \"%.2f\", ($RX_BYTES + $TX_BYTES)/1048576}")
-
-  echo "  Active Sockets    : $CONNS connections dang truyen du lieu"
-  echo "  Accumulated Data  : $TOTAL_MB MB da truyen tai thanh cong qua Proxy"
-  if (( CONNS > 0 )) || (( RX_BYTES > 10000 )); then
-    echo -e "  Trang Thai Node   : \033[1;32m[HOAT DONG HOAN HAO] Proxy IP-Auth da thong tuyen 100%\033[0m"
-  else
-    echo -e "  Trang Thai Node   : \033[1;33m[IDLE / STANDBY] Dang cho phan phoi task tu he thong\033[0m"
-  fi
-else
-  echo -e "  Trang Thai Node   : \033[1;31m[LỖI] Container khong chay\033[0m"
-fi
-echo "=========================================================================================="
-EOF_TEST_PROXY
-chmod +x /usr/local/bin/ii-test-proxy.sh
-ln -sf /usr/local/bin/ii-test-proxy.sh /usr/bin/ii-test-proxy 2>/dev/null || true
-
-install_cron_stack() {
-  cat > /usr/local/bin/ii-restart-all.sh <<'EOF_RESTART'
-#!/usr/bin/env bash
-/usr/local/bin/ii-staggered-start.sh >/dev/null 2>&1
-/usr/local/bin/ii-autosync.sh >/dev/null 2>&1
-EOF_RESTART
-  chmod +x /usr/local/bin/ii-restart-all.sh
-
-  cat > /etc/cron.d/internetincome <<'EOF_CRON'
+cat > /etc/cron.d/internetincome <<'EOF_CRON'
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 */30 * * * * root /usr/local/bin/ii-autosync.sh >/dev/null 2>&1
-15 4 * * 0 root /usr/local/bin/ii-restart-all.sh >/dev/null 2>&1
+15 4 * * 0 root /usr/local/bin/ii-staggered-start.sh >/dev/null 2>&1
 */15 * * * * root /usr/local/bin/ii-flapguard.sh >/dev/null 2>&1
 */2 * * * * root /usr/local/bin/ii-repocket-watchdog.sh >/dev/null 2>&1
 0 2 * * 0 root /usr/local/bin/ii-clean-logs.sh >/dev/null 2>&1
-*/15 * * * * root for c in $(docker ps -aq -f status=exited 2>/dev/null); do n=$(docker inspect -f '{{.Name}}{{.Config.Image}}' "$c" 2>/dev/null); case "$n" in *honey*|*pawns*|*packetstream*|*packetshare*|*earnfm*|*depinext*|*ebesucher*|*adnade*|*earnapp*|*repocket*|*grass*|*gradient*|*nodepay*|*dawn*|*titan*|*uprock*|*customchrome*|*customfirefox*) ;; *) docker start "$c" >/dev/null 2>&1 ;; esac; done
 0 3 * * 0 root /usr/bin/docker network prune -f >/dev/null 2>&1
 15 3 * * 0 root /usr/bin/docker volume prune -f >/dev/null 2>&1
 30 5 * * 0 root /usr/bin/docker image prune -f >/dev/null 2>&1
 EOF_CRON
-  chmod 644 /etc/cron.d/internetincome
-
-  if has_systemd; then systemctl enable --now cron 2>/dev/null || true; fi
-}
-
-if (( DO_CRON == 1 )); then install_cron_stack; fi
+chmod 644 /etc/cron.d/internetincome
+if has_systemd; then systemctl enable --now cron 2>/dev/null || true; fi
 
 cat > /usr/local/bin/ii-status.sh <<'EOF_STATUS'
 #!/usr/bin/env bash
 set +u
-
 if [[ -t 1 ]]; then
   C_G='\033[1;32m'; C_Y='\033[1;33m'; C_R='\033[1;31m'; C_B='\033[1;34m'; C_C='\033[1;36m'; C_0='\033[0m'
 else
   C_G=''; C_Y=''; C_R=''; C_B=''; C_C=''; C_0=''
 fi
-
 PRIMARY_IFACE=$(ip -4 route show default 2>/dev/null | awk '{print $5}' | head -n1)
-PUB_IP=$(curl -s4 -m 3 --interface "$PRIMARY_IFACE" https://api.ipify.org 2>/dev/null || \
-        curl -s4 -m 3 --interface "$PRIMARY_IFACE" https://icanhazip.com 2>/dev/null || \
-        echo "Unknown")
-
+PUB_IP=$(curl -s4 -m 3 --interface "$PRIMARY_IFACE" https://api.ipify.org 2>/dev/null || echo "Unknown")
 TS_IP=$(tailscale ip -4 2>/dev/null || echo "Not Connected")
 IP_INFO=$(curl -s -m 2 "http://ip-api.com/json/${PUB_IP}?fields=country,city,isp,as" 2>/dev/null || echo "{}")
 IP_LOC=$(echo "$IP_INFO" | jq -r '"\(.city), \(.country)"' 2>/dev/null || echo "Unknown")
 IP_ISP=$(echo "$IP_INFO" | jq -r '"\(.as) - \(.isp)"' 2>/dev/null || echo "Unknown")
-
 TEMP_STR="N/A"
 if [[ -f /sys/class/thermal/thermal_zone0/temp ]]; then
   RAW_TEMP=$(cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null || echo 0)
   TEMP_C=$(( RAW_TEMP / 1000 ))
   TEMP_STR="${TEMP_C}°C"
 fi
-
 echo -e "${C_B}==================== [INTERNETINCOME 24/7 HOMELAB TELEMETRY] ====================${C_0}"
 echo "TIMESTAMP    : $(date '+%Y-%m-%d %H:%M:%S %Z')"
 echo "HOSTNAME     : $(hostname)"
@@ -1188,127 +890,23 @@ echo -e "TAILSCALE IP : ${C_C}${TS_IP}${C_0} (Remote SSH / WinSCP Target)"
 echo "LOCATION/ISP : ${IP_LOC} | ${IP_ISP}"
 echo "UPTIME       : $(uptime -p 2>/dev/null || uptime)"
 echo -e "TEMPERATURE  : ${C_G}${TEMP_STR}${C_0} (Fanless Safe Range: < 65°C)"
-
 MEM_MB=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
 CPU_CORES=$(nproc 2>/dev/null || echo 1)
-
-if (( MEM_MB <= 2500 )); then
-  echo -e "HARDWARE TIER: ${C_B}[TIER 1: ${CPU_CORES} CPU / 2GB RAM - LIGHTWEIGHT PROXIES]${C_0}"
-elif (( MEM_MB <= 5000 )); then
-  echo -e "HARDWARE TIER: ${C_B}[TIER 2: ${CPU_CORES} CPU / 4GB RAM - BALANCED PROXIES]${C_0}"
-elif (( MEM_MB <= 9000 )); then
-  echo -e "HARDWARE TIER: ${C_B}[TIER 3: ${CPU_CORES} CPU / 8GB RAM - HIGH DENSITY PROXIES]${C_0}"
-else
-  echo -e "HARDWARE TIER: ${C_B}[TIER 4: ${CPU_CORES} CPU / 16GB+ RAM - DEDICATED HEAVY / ENTERPRISE]${C_0}"
-fi
-
-ISSUES_COUNT=0
-WARNINGS_COUNT=0
-
-echo -e "\n${C_C}--- [1. CONTAINER CLUSTERS & ACTIVE SUMMARY] ---${C_0}"
-ROOTS=("$@")
-if (( ${#ROOTS[@]} == 0 )); then ROOTS=(/opt /root /home /srv /home/ubuntu /home/opc); fi
-
 RUNNING_CTRS=$(docker ps -q 2>/dev/null | wc -l)
 TOTAL_CTRS=$(docker ps -aq 2>/dev/null | wc -l)
-EXITED_CTRS=$(docker ps -aq -f status=exited 2>/dev/null | wc -l)
-
-while IFS= read -r cn; do
-  d=$(dirname "$cn")
-  [[ -f "${d}/internetIncome.sh" ]] || continue
-  total_in_dir=$(grep -c . "$cn" 2>/dev/null || echo 0)
-  printf "  %-42s %3s nodes cluster  %b\n" "$d" "$total_in_dir" "${C_G}[100% HEALTHY]${C_0}"
-done < <(find "${ROOTS[@]}" -maxdepth 4 -name containernames.txt -type f 2>/dev/null | sort -u)
-
-echo -e "  TOTAL SUMMARY: ${C_G}${RUNNING_CTRS} running${C_0} / ${TOTAL_CTRS} total (Exited: ${EXITED_CTRS})"
-
-echo -e "\n${C_C}--- [2. PLATFORMS DYNAMIC MEMORY AUDIT] ---${C_0}"
-TUN_COUNT=$(docker ps -q --filter "name=^tun" --filter "name=^hev" --filter "name=^socks5" --filter "name=^gluetun" 2>/dev/null | sort -u | wc -l)
-APP_COUNT=$(( RUNNING_CTRS - TUN_COUNT ))
-(( APP_COUNT < 0 )) && APP_COUNT=0
-
-printf "  %-18s %-7s %-12s %-12s %-16s %s\n" "PLATFORM" "NODES" "RESERVE(SÀN)" "BURST(TRẦN)" "POLICY" "STATUS"
-if (( TUN_COUNT > 0 )); then
-  printf "  ${C_G}%-18s %-7s %-12s %-12s %-16s %s${C_0}\n" "tun2socks" "$TUN_COUNT" "20MB" "128MB" "unless-stopped" "[100% HEALTHY]"
-fi
-if (( APP_COUNT > 0 )); then
-  printf "  ${C_G}%-18s %-7s %-12s %-12s %-16s %s${C_0}\n" "Income Workers" "$APP_COUNT" "30MB" "128MB" "unless-stopped" "[100% HEALTHY]"
-fi
-
-echo -e "\n${C_C}--- [3. SYSTEM RAM, ZRAM & CONCURRENCY] ---${C_0}"
-RAM_TOTAL=$(free -m | awk '/^Mem:/{print $2}')
-RAM_USED=$(free -m | awk '/^Mem:/{print $3}')
-RAM_AVAIL=$(free -m | awk '/^Mem:/{print $7}')
-SWAP_TOTAL=$(free -m | awk '/^Swap:/{print $2}')
-SWAP_USED=$(free -m | awk '/^Swap:/{print $3}')
-
-echo "  RAM  : Total ${RAM_TOTAL}MB | Used ${RAM_USED}MB | Avail ${RAM_AVAIL}MB"
-echo "  Swap : Total ${SWAP_TOTAL}MB | Used ${SWAP_USED}MB (Swappiness: $(cat /proc/sys/vm/swappiness 2>/dev/null || echo 100))"
-
-if swapon --show 2>/dev/null | grep -q "/dev/zram0"; then
-  ZRAM_SIZE=$(swapon --show 2>/dev/null | grep "/dev/zram0" | awk '{print $3}')
-  echo -e "  ZRAM : ${C_G}ACTIVE (${ZRAM_SIZE} ZSTD Priority 10)${C_0}"
-else
-  echo -e "  ZRAM : ${C_Y}NOT ACTIVE${C_0}"; WARNINGS_COUNT=$((WARNINGS_COUNT+1))
-fi
-
-CONN_COUNT=$(cat /proc/sys/net/netfilter/nf_conntrack_count 2>/dev/null || echo 0)
-CONN_MAX=$(cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null || echo 524288)
-echo -e "  Conntrack Streams       : ${C_G}${CONN_COUNT} / ${CONN_MAX} (0% used)${C_0}"
-
-echo -e "\n${C_C}--- [4. CPU LOAD & DISK / FILESYSTEM HEALTH] ---${C_0}"
-LOAD_AVG=$(cat /proc/loadavg 2>/dev/null | awk '{print $1, $2, $3}')
-echo "  CPU Cores: ${CPU_CORES} | Load Avg (1m, 5m, 15m): ${LOAD_AVG}"
-
-RO_CHECK=$(grep -w '/' /proc/mounts | awk '{print $4}' | grep -o 'ro' || echo "rw")
-if [[ "$RO_CHECK" == "ro" ]]; then
-  echo -e "  Filesystem Write Mode  : ${C_R}READ-ONLY (CRITICAL DISK ERROR!)${C_0}"
-  ISSUES_COUNT=$((ISSUES_COUNT+1))
-else
-  echo -e "  Filesystem Write Mode  : ${C_G}READ-WRITE (Normal)${C_0}"
-fi
-
-DISK_USAGE=$(df -h / | awk 'NR==2 {print $5}')
-INODE_USAGE=$(df -i / | awk 'NR==2 {print $5}')
-echo "  Disk Storage Usage     : ${DISK_USAGE} used | Inode Usage: ${INODE_USAGE} used"
-
-echo -e "\n${C_B}---------------- [24/7 INCOME QUALITY DIAGNOSTIC SUMMARY] ----------------${C_0}"
-SCORE=100
-SCORE=$(( SCORE - (ISSUES_COUNT * 20) - (WARNINGS_COUNT * 5) ))
-(( SCORE < 0 )) && SCORE=0
-
-if (( ISSUES_COUNT == 0 && WARNINGS_COUNT == 0 )); then
-  echo -e "  OVERALL SCORE : ${C_G}100% PERFECT${C_0} - He thong Mini PC & ZRAM toi uu tuyet doi cho thu nhap cao!"
-  echo -e "  STATUS        : ${C_G}[HEALTHY_SMOOTH_24_7]${C_0} Khong phat sinh loi OOM hay qua tai."
-elif (( ISSUES_COUNT == 0 )); then
-  echo -e "  OVERALL SCORE : ${C_Y}${SCORE}% GOOD${C_0} - He thong on dinh kha, ZRAM dang hoat dong tot."
-  echo -e "  STATUS        : ${C_Y}[STABLE_WITH_WARNINGS]${C_0} He thong tu dieu tiet bu dap tai."
-else
-  echo -e "  OVERALL SCORE : ${C_R}${SCORE}% UNSTABLE (${ISSUES_COUNT} Canh bao loi phan cung / OOM!)${C_0}"
-  echo -e "  STATUS        : ${C_R}[HARDWARE_RISK_DETECTED]${C_0} Can kiem tra lai RAM hoac so luong Container."
-fi
+echo -e "TOTAL NODES  : ${C_G}${RUNNING_CTRS} running${C_0} / ${TOTAL_CTRS} total"
 echo -e "${C_B}==========================================================================${C_0}"
 EOF_STATUS
 chmod +x /usr/local/bin/ii-status.sh
 ln -sf /usr/local/bin/ii-status.sh /usr/bin/ii-status 2>/dev/null || true
 
-if [[ -f "./check_network_proxy.sh" ]]; then
-  cp ./check_network_proxy.sh /usr/local/bin/check-proxy 2>/dev/null || true
-  chmod +x /usr/local/bin/check-proxy 2>/dev/null || true
-fi
-
-cp -f "$0" /root/setup_serverhomelab.sh 2>/dev/null || true
-cp -f "$0" /home/ubuntu/setup_serverhomelab.sh 2>/dev/null || true
-
-# TỰ ĐỘNG KHỞI CHẠY CONTAINER (ZERO-TOUCH AUTO-START)
-if (( DO_AUTOSTART == 1 )); then
-  log "Tu dong tim kiem va khoi chay cac cum node InternetIncome..."
-  find /home /root /opt /srv -maxdepth 4 -name "internetIncome.sh" 2>/dev/null | while read -r script; do
-    dir=$(dirname "$script")
-    log "Kich hoat cum node tai: $dir"
-    (cd "$dir" && bash internetIncome.sh --start >/dev/null 2>&1 || bash internetIncome.sh >/dev/null 2>&1 || true)
-  done
-fi
+# TỰ ĐỘNG KHỞI CHẠY TẤT CẢ CÁC CỤM NODE TRONG THƯ MỤC
+log "Tu dong tim kiem & khoi chay toan bo cum node InternetIncome..."
+find /home /root /opt "$REPO_DIR" -maxdepth 4 -name "internetIncome.sh" 2>/dev/null | while read -r script; do
+  dir=$(dirname "$script")
+  log "Kich hoat node tai: $dir"
+  (cd "$dir" && bash internetIncome.sh --start >/dev/null 2>&1 || true)
+done
 
 echo "============================= SETUP XONG (2026 HOMELAB MASTER) =============================="
 /usr/local/bin/ii-status.sh || true
