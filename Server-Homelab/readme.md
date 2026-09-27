@@ -86,3 +86,122 @@ Mở CMD / PowerShell trên máy tính Windows, SSH vào IP mạng LAN của má
 
 ```bash
 sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/tech-tnitechsolve/bandwidth-sharing/main/Server-Homelab/setup_serverhomelab.sh)"
+```
+
+---
+
+### ⚙️ Toàn bộ quy trình hệ thống tự động xử lý:
+1. **Tailscale:** Tự động cài đặt & kích hoạt mạng riêng ảo (hiển thị link xác nhận hoặc tự đăng nhập nếu dùng Auth-Key).
+2. **Tản nhiệt CPU Fanless:** Tự động chuyển CPU Governor sang `schedutil/powersave`, giữ máy không quạt luôn mát ở **`36°C – 45°C`**.
+3. **ZRAM ZSTD:** Tự động nén RAM tỉ lệ 1:1 (mở rộng 8GB thành ~14GB RAM ảo, chống tràn RAM OOM).
+4. **Bảo vệ Ổ SSD 32GB:** Khóa cứng dung lượng log Docker tối đa **`2MB/container`** và systemd log **`10MB`**.
+5. **DNS & Network Hardening:** Tự động khóa DNS Direct `1.1.1.1/8.8.8.8` chống lộ IP gốc và tối ưu TCP BBR, buffer 524.288 streams.
+6. **Docker Engine:** Cài đặt Docker 29.x mới nhất và tự động phân quyền non-root cho user `ubuntu`.
+7. **Tường lửa UFW:** Tự động mở cổng `22` cho card mạng ảo `tailscale0` và cổng mạng LAN.
+8. **Bộ Watchdogs 24/7:** Tự động kích hoạt FlapGuard (chống ban IP), Repocket Doctor (tự cứu proxy sập), AutoSync RAM và Staggered Boot (khởi động tuần tự chống nghẽn CPU sau cúp điện).
+
+---
+
+### 🔒 CÀI ĐẶT TAILSCALE VĨNH VIỄN (KHÔNG BAO GIỜ HẾT HẠN):
+1. Mở trình duyệt web vào: [https://login.tailscale.com/admin/machines](https://login.tailscale.com/admin/machines)
+2. Tìm máy **`wyse-node`** $\rightarrow$ Bấm vào dấu **`...`** ở góc phải $\rightarrow$ Chọn **`Disable key expiry`**.
+3. Lưu lại địa chỉ **`TAILSCALE IP : 100.x.y.z`** (Ví dụ: `100.95.126.50`) để dùng quản trị từ xa mãi mãi!
+
+---
+
+## 4. QUẢN LÝ THƯ MỤC & PROXY QUA WINSCP (TỰ DO TẠO FOLDER)
+
+Hệ thống sử dụng cơ chế **Quét động (Dynamic Discovery)**. Bạn có thể tự do dùng WinSCP tạo bao nhiêu thư mục proxy tùy ý mà không bị gò bó cấu trúc:
+
+1. **Kết nối WinSCP từ PC Windows:**
+   * **File protocol:** `SFTP`
+   * **Host name:** Điền **IP Tailscale `100.x.y.z`** *(ví dụ: `100.95.126.50`)*.
+   * **User name:** `ubuntu` | **Password:** *(Mật khẩu của bạn)*.
+   * Bấm **Login**.
+2. **Tự do tạo thư mục & Cấu hình:**
+   * Vào thư mục `/home/ubuntu` $\rightarrow$ Tự tạo các folder theo ý bạn (Ví dụ: `Proxy_VN_50`, `Proxy_US_100`, `Spide_Group`...).
+   * Copy file `internetIncome.sh`, file cấu hình `properties.conf` và danh sách proxy `.txt` vào các thư mục đó.
+   * Chỉnh sửa Token / Email trong `properties.conf` $\rightarrow$ Bấm `Ctrl + S` lưu lại.
+3. **Khởi chạy cụm node kiếm tiền:**
+   Mở CMD / Terminal gõ:
+   ```bash
+   cd /home/ubuntu/TÊN_FOLDER_CỦA_BẠN
+   bash internetIncome.sh --start
+   ```
+   *(Toàn bộ các Watchdog và lịch Cronjob ngầm sẽ **tự động quét ra và tự động bảo vệ 24/7 cho tất cả các folder bạn tự tạo** mà không cần cấu hình thêm)*.
+
+---
+
+## 5. TỐI ƯU HÓA MODEM / ROUTER NHÀ MẠNG (TÙY CHỌN NÂNG CAO)
+
+*(Lưu ý: DNS và Tường lửa hệ điều hành đã được file `setup_serverhomelab.sh` tự động cấu hình tối ưu 100%. Bạn chỉ cần chỉnh thêm 2 mục phần cứng này trên Modem nếu muốn đạt hiệu suất cao nhất)*:
+
+1. **Bật `Full Cone NAT` (Tăng thu nhập P2P +30% – 50%):**
+   * Đăng nhập trang quản trị Modem (`192.168.1.1`) $\rightarrow$ Vào mục `NAT` hoặc `Forwarding` $\rightarrow$ Chuyển chế độ từ *Symmetric* sang **`Full Cone NAT`** (giúp Honeygain, Pawns, EarnApp tối ưu luồng dữ liệu).
+2. **Cố định IP cục bộ cho Dell Wyse (DHCP Static Lease):**
+   * Vào `DHCP Server` $\rightarrow$ `Static Lease / IP & MAC Binding` $\rightarrow$ Gán MAC của Dell Wyse (`c0:25:a5:10:b4:94`) cố định vào 1 IP (ví dụ: `192.168.1.50`).
+
+---
+
+## 6. QUẢN TRỊ MẬT KHẨU & CỨU HỘ KHẨN CẤP
+
+### 6.1. Đổi mật khẩu tài khoản đang dùng
+```bash
+passwd ubuntu
+```
+*(Nhập mật khẩu cũ $\rightarrow$ Nhập mật khẩu mới 2 lần)*.
+
+### 6.2. Cứu hộ mật khẩu nếu lỡ quên (Khôi phục quyền Root qua GRUB trong 30 giây)
+1. Cắm màn hình + bàn phím vào máy $\rightarrow$ Khởi động lại máy $\rightarrow$ Nhấn giữ phím **`Shift`** khi màn hình vừa bật sáng để hiện menu GRUB.
+2. Tại dòng `*Ubuntu`, bấm phím chữ **`e`**.
+3. Dùng phím mũi tên $\downarrow$ tìm dòng bắt đầu bằng chữ `linux /boot/vmlinuz...`, di chuyển con trỏ về cuối dòng đó, bấm dấu cách và gõ thêm:  
+   `rw init=/bin/bash`
+4. Bấm tổ hợp phím **`Ctrl + X`** (hoặc `F10`) để boot vào dòng lệnh Root:
+   ```bash
+   passwd ubuntu     # Nhập mật khẩu mới 2 lần
+   reboot -f         # Khởi động lại máy
+   ```
+
+---
+
+## 7. BẢNG TRA CỨU LỆNH VẬN HÀNH 24/7 (CHEAT SHEET)
+
+Bất kể bạn ở đâu, chỉ cần mở CMD / PowerShell gõ `ssh ubuntu@100.x.y.z`:
+
+| Tác vụ | Câu lệnh thực thi |
+| :--- | :--- |
+| **Bật cụm node kiếm tiền** | `cd /home/ubuntu/TÊN_FOLDER && bash internetIncome.sh --start` |
+| **Dừng cụm node kiếm tiền** | `cd /home/ubuntu/TÊN_FOLDER && bash internetIncome.sh --stop` |
+| **Khởi động lại tuần tự chống nghẽn CPU** | `ii-restart-all.sh` |
+| **Xem các container đang chạy** | `docker ps` |
+| **Xem mức tiêu hao RAM/CPU thời gian thực** | `docker stats` |
+| **Xem log trực tiếp của 1 container** | `docker logs -f <tên_container>` *(Bấm Ctrl+C để thoát)* |
+| **Bảng đo kiểm sức khỏe & ZRAM 24/7** | `ii-status` |
+| **Chẩn đoán & Tự cứu lỗi Proxy / Repocket** | `ii-repocket-doctor` |
+| **Kiểm tra lưu lượng 1 proxy cụ thể** | `ii-test-proxy <tên_container>` |
+| **Đánh giá sức chứa phần cứng (Số node tối đa)** | `ii-capacity` |
+| **Dọn rác Docker & Thu nhỏ Log khẩn cấp** | `ii-clean-logs` |
+| **Khởi động lại máy từ xa** | `sudo reboot` |
+| **Tắt máy an toàn từ xa** | `sudo shutdown -h now` |
+
+---
+
+## 8. QUY TRÌNH DI CHUYỂN SANG CĂN NHÀ MỚI (ZERO-TOUCH CHECKLIST)
+
+Khi bạn muốn mang Mini PC sang đặt ở một căn nhà hoặc văn phòng khác:
+
+1. **Tại nhà cũ:** Đứng ở SSH gõ lệnh tắt máy an toàn:
+   ```bash
+   sudo shutdown -h now
+   ```
+   *(Đợi đèn nút nguồn tắt hẳn $\rightarrow$ Rút phích cắm nguồn và dây LAN mang đi)*.
+2. **Tại địa điểm mới (Chỉ mất 30 giây):**
+   * Lắp chân đế đứng (Vertical Stand) cho máy, đặt ở nơi cao ráo, thông thoáng gió.
+   * Cắm **dây mạng LAN từ Router nhà mới** vào đít máy Dell Wyse.
+   * Cắm **dây nguồn** vào ổ điện *(Máy sẽ tự động bật nguồn nhờ tính năng AC Recovery)*.
+3. **Kết nối & Vận hành từ xa:**
+   * Ngồi ở bất kỳ đâu, mở PC / Laptop / Điện thoại bật Tailscale lên $\rightarrow$ Mở CMD `ssh ubuntu@100.x.y.z` hoặc mở WinSCP quản lý bình thường!
+4. *(Tùy chọn)* **Cập nhật Whitelist (Nếu dùng Proxy IP-Auth):**
+   * Trong SSH gõ: `curl ifconfig.me` để lấy IP Public của căn nhà mới.
+   * Lấy IP này dán vào mục Whitelist trên trang web bán Proxy của bạn.
+```
