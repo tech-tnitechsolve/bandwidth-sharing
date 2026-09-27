@@ -6,9 +6,9 @@
 ## 📋 MỤC LỤC
 1. [Chuẩn bị & Cài đặt Hệ điều hành (Ubuntu Server 22.04 LTS)](#1-chuẩn-bị--cài-đặt-hệ-điều-hành-ubuntu-server-2204-lts)
 2. [Thiết lập BIOS Phần Cứng (Chạy 24/7 Headless)](#2-thiết-lập-bios-phần-cứng-chạy-247-headless)
-3. [Kích hoạt Hệ thống bằng "1 Dòng Lệnh Duy Nhất" (Zero-Touch)](#3-kích-hoạt-hệ-thống-bằng-1-dòng-lệnh-duy-nhất-zero-touch)
-4. [Quản lý Thư mục & Proxy qua WinSCP (Tự do tạo Folder)](#4-quản-lý-thư-mục--proxy-qua-winscp-tự-do-tạo-folder)
-5. [Tối ưu hóa Modem / Router Nhà Mạng (Tùy chọn nâng cao)](#5-tối-ưu-hóa-modem--router-nhà-mạng-tùy-chọn-nâng-cao)
+3. [Tối ưu hóa Toàn diện Modem / Router Wi-Fi Nhà Mạng](#3-tối-ưu-hóa-toàn-diện-modem--router-wi-fi-nhà-mạng)
+4. [Kích hoạt Hệ thống bằng "1 Dòng Lệnh Duy Nhất" (Zero-Touch)](#4-kích-hoạt-hệ-thống-bằng-1-dòng-lệnh-duy-nhất-zero-touch)
+5. [Quản lý Thư mục & Proxy qua WinSCP (Tự do tạo Folder)](#5-quản-lý-thư-mục--proxy-qua-winscp-tự-do-tạo-folder)
 6. [Quản trị Mật khẩu & Cứu Hộ Khẩn Cấp](#6-quản-trị-mật-khẩu--cứu-hộ-khẩn-cấp)
 7. [Bảng Tra Cứu Lệnh Vận Hành 24/7 (Cheat Sheet)](#7-bảng-tra-cứu-lệnh-vận-hành-247-cheat-sheet)
 8. [Quy trình Di chuyển sang Căn Nhà Mới (Zero-Touch Checklist)](#8-quy-trình-di-chuyển-sang-căn-nhà-mới-zero-touch-checklist)
@@ -80,7 +80,54 @@
 
 ---
 
-## 3. KÍCH HOẠT HỆ THỐNG BẰNG "1 DÒNG LỆNH DUY NHẤT" (ZERO-TOUCH)
+## 3. TỐI ƯU HÓA TOÀN DIỆN MODEM / ROUTER WI-FI NHÀ MẠNG
+
+Chạy cụm 50–100+ proxy node tạo ra hàng ngàn kết nối TCP/UDP cùng lúc. Hãy đăng nhập vào trang quản trị Modem (`http://192.168.1.1` hoặc `192.168.0.1` với tài khoản/mật khẩu in dưới đít modem) và cấu hình 8 bước mở khóa công suất mạng:
+
+### 3.1. Hạ mức Tường lửa của Modem (Set Firewall to Low)
+* **Vị trí:** `Security` $\rightarrow$ `Firewall` $\rightarrow$ `Firewall Level`.
+* **Thao tác:** Chuyển từ *High / Medium* sang **`Low`** (hoặc *Off* nếu là modem phụ).
+* *Mục đích:* Ngăn modem tự động chặn và drop các gói tin SOCKS5/Proxy truyền tải với mật độ dày đặc.
+
+### 3.2. TẮT BỎ tính năng Anti-DoS / Flood Attack Detection
+* **Vị trí:** `Security` $\rightarrow$ `Firewall` $\rightarrow$ `Anti-DoS / Attack Protection / SPI Firewall`.
+* **Thao tác:** Chuyển sang **`Disable / Off`** (Bỏ tích toàn bộ các ô SYN Flood, UDP Flood, ICMP Flood).
+* *Mục đích:* Thuật toán Anti-DoS trên modem nhà mạng thường giới hạn 100 kết nối/3 giây. Khi chạy nhiều node, modem sẽ tưởng nhầm máy Dell Wyse đang tấn công mạng và tự động khóa IP của Dell Wyse!
+
+### 3.3. MỞ KHÓA Giới hạn Session (Session Limit $\rightarrow$ Max/Off)
+* **Vị trí:** `Security` $\rightarrow$ `NAT` $\rightarrow$ `Session Limit` (hoặc `Connection Limit`).
+* **Thao tác:** Chuyển sang **`Disable / Off`** hoặc nâng số lượng Session tối đa lên **`16384`** (hoặc `65535`).
+* *Mục đích:* Cho phép máy Dell Wyse duy trì hàng ngàn luồng socket kiếm tiền đồng thời mà không bị bóp nghẽn.
+
+### 3.4. BẬT DMZ (Demilitarized Zone) trỏ vào IP của Dell Wyse
+* **Vị trí:** `Forwarding` / `Advanced NAT` $\rightarrow$ `DMZ`.
+* **Thao tác:** Gạt sang **`Enable`** $\rightarrow$ Điền địa chỉ IP mạng LAN của máy Dell Wyse (Ví dụ: **`192.168.1.50`** hoặc IP thực tế) $\rightarrow$ Bấm **Apply**.
+* *Mục đích:* Mở thông toàn bộ các cổng mạng từ Internet vào Dell Wyse, giúp các node nhận task với tốc độ nhanh nhất.
+
+### 3.5. Kích hoạt `Full Cone NAT` (Tăng thu nhập P2P +30% – 50%)
+* **Vị trí:** `NAT` $\rightarrow$ `NAT Type` (hoặc `NAT Mode`).
+* **Thao tác:** Chuyển từ *Symmetric* sang **`Full Cone NAT`** (hoặc *Restricted Cone*).
+* *Mục đích:* Giúp các nền tảng P2P (Honeygain, Pawns, EarnApp, Mysterium...) giao tiếp ngang hàng trực tiếp, tối ưu hóa điểm số và gia tăng thu nhập tối đa.
+
+### 3.6. Cố định địa chỉ IP cho Dell Wyse theo MAC (DHCP Static Binding)
+* **Vị trí:** `Network` $\rightarrow$ `LAN` $\rightarrow$ `DHCP Server` $\rightarrow$ `Static Lease / IP & MAC Binding`.
+* **Thao tác:** Bấm **Add (Thêm mới)**:
+  * **MAC Address:** Điền MAC của card mạng Dell Wyse: **`c0:25:a5:10:b4:94`**
+  * **IP Address:** Đặt IP cố định mong muốn (ví dụ: **`192.168.1.50`**).
+* *Mục đích:* Giúp máy Dell Wyse luôn giữ đúng 1 địa chỉ IP duy nhất trong mạng nội bộ, không bị nhảy IP khi khởi động lại.
+
+### 3.7. Bật UPnP & Tắt Client Isolation
+* **UPnP:** Vào `Forwarding` $\rightarrow$ `UPnP` $\rightarrow$ Chọn **`Enable`** (Tự động ánh xạ cổng P2P).
+* **Client Isolation:** Vào `Wireless / LAN` $\rightarrow$ `AP Isolation / Client Isolation` $\rightarrow$ Chọn **`Disable (Tắt)`** (Cho phép các máy trong mạng LAN giao tiếp nội bộ thông suốt).
+
+### 3.8. Đặt lịch Tự động Khởi động lại Modem (Auto-Reboot Schedule)
+* **Vị trí:** `System Tools` $\rightarrow$ `Reboot Schedule` (hoặc `Auto Maintenance`).
+* **Thao tác:** Chọn tự động Reboot vào lúc **`04:00 AM Chủ Nhật hàng tuần`**.
+* *Mục đích:* Tự động giải phóng RAM và xóa các session rác tồn đọng trên Modem nhà mạng định kỳ.
+
+---
+
+## 4. KÍCH HOẠT HỆ THỐNG BẰNG "1 DÒNG LỆNH DUY NHẤT" (ZERO-TOUCH)
 
 Mở CMD / PowerShell trên máy tính Windows, SSH vào IP mạng LAN của máy (ví dụ: `ssh ubuntu@192.168.1.xxx` với mật khẩu `123456`) và dán **đúng 1 dòng lệnh duy nhất**:
 
@@ -109,7 +156,7 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/tech-tnitechsolve/b
 
 ---
 
-## 4. QUẢN LÝ THƯ MỤC & PROXY QUA WINSCP (TỰ DO TẠO FOLDER)
+## 5. QUẢN LÝ THƯ MỤC & PROXY QUA WINSCP (TỰ DO TẠO FOLDER)
 
 Hệ thống sử dụng cơ chế **Quét động (Dynamic Discovery)**. Bạn có thể tự do dùng WinSCP tạo bao nhiêu thư mục proxy tùy ý mà không bị gò bó cấu trúc:
 
@@ -129,17 +176,6 @@ Hệ thống sử dụng cơ chế **Quét động (Dynamic Discovery)**. Bạn 
    bash internetIncome.sh --start
    ```
    *(Toàn bộ các Watchdog và lịch Cronjob ngầm sẽ **tự động quét ra và tự động bảo vệ 24/7 cho tất cả các folder bạn tự tạo** mà không cần cấu hình thêm)*.
-
----
-
-## 5. TỐI ƯU HÓA MODEM / ROUTER NHÀ MẠNG (TÙY CHỌN NÂNG CAO)
-
-*(Lưu ý: DNS và Tường lửa hệ điều hành đã được file `setup_serverhomelab.sh` tự động cấu hình tối ưu 100%. Bạn chỉ cần chỉnh thêm 2 mục phần cứng này trên Modem nếu muốn đạt hiệu suất cao nhất)*:
-
-1. **Bật `Full Cone NAT` (Tăng thu nhập P2P +30% – 50%):**
-   * Đăng nhập trang quản trị Modem (`192.168.1.1`) $\rightarrow$ Vào mục `NAT` hoặc `Forwarding` $\rightarrow$ Chuyển chế độ từ *Symmetric* sang **`Full Cone NAT`** (giúp Honeygain, Pawns, EarnApp tối ưu luồng dữ liệu).
-2. **Cố định IP cục bộ cho Dell Wyse (DHCP Static Lease):**
-   * Vào `DHCP Server` $\rightarrow$ `Static Lease / IP & MAC Binding` $\rightarrow$ Gán MAC của Dell Wyse (`c0:25:a5:10:b4:94`) cố định vào 1 IP (ví dụ: `192.168.1.50`).
 
 ---
 
@@ -204,4 +240,3 @@ Khi bạn muốn mang Mini PC sang đặt ở một căn nhà hoặc văn phòng
 4. *(Tùy chọn)* **Cập nhật Whitelist (Nếu dùng Proxy IP-Auth):**
    * Trong SSH gõ: `curl ifconfig.me` để lấy IP Public của căn nhà mới.
    * Lấy IP này dán vào mục Whitelist trên trang web bán Proxy của bạn.
-```
