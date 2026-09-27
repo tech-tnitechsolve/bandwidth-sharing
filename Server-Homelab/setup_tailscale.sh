@@ -5,13 +5,14 @@
 #============================================================================
 set -Eeuo pipefail
 
-if [[ -t 1 ]]; then
-  C_G='\033[1;32m'; C_Y='\033[1;33m'; C_R='\033[1;31m'; C_B='\033[1;34m'; C_C='\033[1;36m'; C_0='\033[0m'
-  C_BOLD='\033[1m'
-else
-  C_G=''; C_Y=''; C_R=''; C_B=''; C_C=''; C_0=''
-  C_BOLD=''
-fi
+C_G='\033[1;32m'
+C_Y='\033[1;33m'
+C_R='\033[1;31m'
+C_B='\033[1;34m'
+C_C='\033[1;36m'
+C_0='\033[0m'
+C_BOLD='\033[1m'
+
 log()  { echo -e "${C_G}[OK]${C_0} $*"; }
 warn() { echo -e "${C_Y}[!!]${C_0} $*"; }
 die()  { echo -e "${C_R}[XX]${C_0} $*"; exit 1; }
@@ -65,6 +66,6 @@ fi
 TS_IP=$(tailscale ip -4 2>/dev/null || echo "Dang cho ket noi...")
 echo ""
 echo -e "${C_C}==================== [TAILSCALE SETUP COMPLETE] ====================${C_0}"
-echo -e "  IP TAILSCALE DUNG CHO WINSCP / SSH : ${C_G}${C_BOLD}${TS_IP}${C_0}"
+echo -e "  IP TAILSCALE DUNG CHO WINSCP / SSH : ${C_G}${TS_IP}${C_0}"
 echo -e "  Luu y: Vao https://login.tailscale.com/admin/machines de 'Disable key expiry'"
 echo -e "${C_C}====================================================================${C_0}"
