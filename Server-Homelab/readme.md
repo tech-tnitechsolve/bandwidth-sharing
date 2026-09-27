@@ -6,9 +6,9 @@
 ## 📋 MỤC LỤC
 1. [Chuẩn bị & Cài đặt Hệ điều hành (Ubuntu Server 22.04 LTS)](#1-chuẩn-bị--cài-đặt-hệ-điều-hành-ubuntu-server-2204-lts)
 2. [Thiết lập BIOS Phần Cứng (Chạy 24/7 Headless)](#2-thiết-lập-bios-phần-cứng-chạy-247-headless)
-3. [Tối ưu hóa Toàn diện Modem / Router Wi-Fi Nhà Mạng](#3-tối-ưu-hóa-toàn-diện-modem--router-wi-fi-nhà-mạng)
-4. [Kích hoạt Hệ thống bằng "1 Dòng Lệnh Duy Nhất" (Zero-Touch)](#4-kích-hoạt-hệ-thống-bằng-1-dòng-lệnh-duy-nhất-zero-touch)
-5. [Quản lý Thư mục & Proxy qua WinSCP (Tự do tạo Folder)](#5-quản-lý-thư-mục--proxy-qua-winscp-tự-do-tạo-folder)
+3. [Kích hoạt Hệ thống bằng "1 Dòng Lệnh Duy Nhất" (Zero-Touch)](#3-kích-hoạt-hệ-thống-bằng-1-dòng-lệnh-duy-nhất-zero-touch)
+4. [Quản lý Thư mục & Proxy qua WinSCP (Tự do tạo Folder)](#4-quản-lý-thư-mục--proxy-qua-winscp-tự-do-tạo-folder)
+5. [Tối ưu hóa Modem / Router Nhà Mạng (Tùy chọn nâng cao)](#5-tối-ưu-hóa-modem--router-nhà-mạng-tùy-chọn-nâng-cao)
 6. [Quản trị Mật khẩu & Cứu Hộ Khẩn Cấp](#6-quản-trị-mật-khẩu--cứu-hộ-khẩn-cấp)
 7. [Bảng Tra Cứu Lệnh Vận Hành 24/7 (Cheat Sheet)](#7-bảng-tra-cứu-lệnh-vận-hành-247-cheat-sheet)
 8. [Quy trình Di chuyển sang Căn Nhà Mới (Zero-Touch Checklist)](#8-quy-trình-di-chuyển-sang-căn-nhà-mới-zero-touch-checklist)
@@ -22,14 +22,13 @@
 2. Cắm USB (hoặc Thẻ nhớ máy ảnh qua đầu đọc USB) vào PC Windows $\rightarrow$ Mở Rufus:
    * **Device:** Chọn đúng USB / Thẻ nhớ của bạn.
    * **Boot selection:** Bấm *SELECT* $\rightarrow$ Chọn file `ubuntu-22.04.5-live-server-amd64.iso`.
-   * **Partition scheme:** Chọn **`GPT`**.
-   * **Target system:** Chọn **`UEFI (non CSM)`**.
+   * **Partition scheme:** Chọn **`GPT`** | **Target system:** **`UEFI (non CSM)`**.
    * Bấm **START** $\rightarrow$ Chọn *Write in ISO Image mode (Recommended)* $\rightarrow$ Bấm **OK**.
 
 ---
 
 ### 1.2. Thao tác Cài đặt trực quan trên máy Dell Wyse / Mini PC
-1. Cắm USB cài đặt vào cổng USB (ưu tiên cổng USB màu đen phía sau máy).
+1. Cắm USB cài đặt vào cổng USB máy Dell Wyse (ưu tiên cổng USB màu đen phía sau máy).
 2. Cắm màn hình vào cổng **`1:DP`** (DisplayPort số 1 trên cùng qua đầu chuyển HDMI), cắm bàn phím và dây mạng LAN vào Router.
 3. Bật nguồn máy $\rightarrow$ Nhấn liên tục phím **`F12`** để mở Boot Menu.
 4. Chọn dòng: **`UEFI: Tên USB / Generic Flash-Disk...`** $\rightarrow$ Bấm **Enter**.
@@ -81,31 +80,9 @@
 
 ---
 
-## 3. TỐI ƯU HÓA TOÀN DIỆN MODEM / ROUTER WI-FI NHÀ MẠNG
+## 3. KÍCH HOẠT HỆ THỐNG BẰNG "1 DÒNG LỆNH DUY NHẤT" (ZERO-TOUCH)
 
-Chạy cụm 50–100+ proxy node tạo ra hàng ngàn kết nối TCP/UDP cùng lúc. Hãy đăng nhập vào trang quản trị Modem (`http://192.168.1.1` hoặc `192.168.0.1`) và tối ưu các mục sau để Modem không bị tràn bộ nhớ hay treo mạng gia đình:
-
-1. **Bật `Full Cone NAT` (Tăng thu nhập P2P +30% – 50%):**
-   * Vào mục `NAT` hoặc `Forwarding` $\rightarrow$ Chuyển chế độ từ *Symmetric* sang **`Full Cone NAT`** (giúp Honeygain, Pawns, EarnApp thông luồng dữ liệu tối đa).
-2. **Cố định IP cục bộ cho Dell Wyse (DHCP Static Lease / Binding):**
-   * Vào `DHCP Server` $\rightarrow$ `Static Lease` $\rightarrow$ Gán địa chỉ MAC của Dell Wyse (`c0:25:a5:10:b4:94`) cố định vào 1 IP (ví dụ: `192.168.1.50`).
-3. **Đổi DNS Quốc tế trên Modem (Chống chặn tên miền):**
-   * Vào mục `LAN/WAN DNS` $\rightarrow$ Đổi sang:
-     * **Primary DNS:** `1.1.1.1` (Cloudflare)
-     * **Secondary DNS:** `8.8.8.8` (Google)
-4. **Mở khóa tường lửa Modem:**
-   * Hạ mức `Firewall Level` của Modem xuống mức **`Low`** hoặc tắt tính năng `Anti-DoS / Flood Attack Detection` (để Modem không chặn nhầm các luồng proxy tốc độ cao).
-5. **Bật UPnP & Tắt Client Isolation:**
-   * Bật **`UPnP: Enable`** để container tự ánh xạ cổng P2P.
-   * Tắt **`AP / Client Isolation: Disable`** để các thiết bị trong mạng LAN giao tiếp thông suốt.
-6. **Đặt lịch Tự khởi động lại Modem (Auto-Reboot Schedule):**
-   * Cài đặt Modem tự động khởi động lại vào lúc **`04:00 AM Chủ Nhật hàng tuần`** để xả sạch RAM và xóa session rác.
-
----
-
-## 4. KÍCH HOẠT HỆ THỐNG BẰNG "1 DÒNG LỆNH DUY NHẤT" (ZERO-TOUCH)
-
-Trên máy tính PC Windows, mở CMD / PowerShell gõ lệnh SSH vào IP mạng LAN của máy (ví dụ: `ssh ubuntu@192.168.1.xxx` với mật khẩu `123456`) và dán **đúng 1 dòng lệnh duy nhất**:
+Mở CMD / PowerShell trên máy tính Windows, SSH vào IP mạng LAN của máy (ví dụ: `ssh ubuntu@192.168.1.xxx` với mật khẩu `123456`) và dán **đúng 1 dòng lệnh duy nhất**:
 
 ```bash
 sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/tech-tnitechsolve/bandwidth-sharing/main/Server-Homelab/setup_serverhomelab.sh)"
