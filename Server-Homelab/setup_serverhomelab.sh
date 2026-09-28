@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 #============================================================================
-#  setup_serverhomelab.sh (2026 ULTIMATE ZERO-TOUCH HOMELAB INFRASTRUCTURE)
-#  Optimized for: Mini PCs, Thin Clients (Dell Wyse, HP, NUC, ThinkCentre)
-#  Features: Auto-Tailscale, Docker Non-Root, ZRAM ZSTD, Thermal Schedutil,
-#            Smart KSM, Zero-Probe Proxy Audit, UFW Guard, Zero-Conflict Patch
+#  setup_serverhomelab.sh (2026 ZERO-TOUCH HOMELAB INFRASTRUCTURE ENGINE)
+#  Architecture: Optimized for Mini PCs & Thin Clients (Wyse, HP, NUC, ThinkCentre)
+#  Synthesis: Full VPS Power + Thermal Schedutil + Tailscale Shield + Zero-Probe
 #============================================================================
 set -Eeuo pipefail
 
@@ -66,7 +65,7 @@ echo -e "\n${C_BG_BLUE}${C_BOLD} [!] HOMELAB HARDWARE & NETWORK TELEMETRY ${C_0}
 echo -e " ${C_BOLD}>>> PUBLIC IP (IP-AUTH) : ${C_G}${C_BOLD}${PUBLIC_IP}${C_0}"
 echo -e " ${C_BOLD}>>> TAILSCALE IP        : ${C_C}${C_BOLD}${TS_IP}${C_0}\n"
 
-# 2. GIẢI PHÓNG APT LOCKS & CÀI ĐẶT CÁC GÓI PHỤ THUỘC
+# 2. GIẢI PHÓNG APT LOCKS & CÀI GÓI HỆ THỐNG
 clear_apt_locks() {
   log "Giải phóng khoá APT Lock an toàn..."
   if has_systemd; then
@@ -86,7 +85,7 @@ apt-get update -y -qq || { clear_apt_locks; apt-get update -y -qq; }
 apt-get install -y -qq --no-install-recommends \
   -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
   curl wget git unzip jq bc ca-certificates uuid-runtime cron logrotate net-tools inotify-tools \
-  iptables-persistent netfilter-persistent ufw systemd-timesyncd vnstat nload dnsutils util-linux e2fsprogs lm-sensors dos2unix || true
+  iptables-persistent netfilter-persistent ufw systemd-timesyncd vnstat nload dnsutils util-linux e2fsprogs lm-sensors dos2unix ethtool || true
 
 apt-get install -y -qq linux-modules-extra-"$(uname -r)" 2>/dev/null || true
 
@@ -108,7 +107,7 @@ fi
 timedatectl set-ntp true 2>/dev/null || true
 timedatectl set-timezone Asia/Ho_Chi_Minh 2>/dev/null || true
 
-# 3. DNS DIRECT UPSTREAM
+# 3. DNS DIRECT UPSTREAM + VIETTEL/VNPT ULTRA-FAST RESOLUTION
 UPSTREAM_DNS=""
 if [[ -f /run/systemd/resolve/resolv.conf ]]; then
   UPSTREAM_DNS=$(grep -E '^nameserver' /run/systemd/resolve/resolv.conf 2>/dev/null | grep -v '127.0.0.53' | awk '{print $2}' || true)
@@ -122,9 +121,11 @@ fi
 chattr -i /etc/resolv.conf 2>/dev/null || true
 rm -f /etc/resolv.conf
 {
-  echo "# Generated for Mini PC HomeLab Nodes"
-  echo "options timeout:1 attempts:2 rotate"
+  echo "# Generated for Mini PC HomeLab Nodes (Direct Low-Latency DNS)"
+  echo "options timeout:1 attempts:2 rotate single-request-reopen"
   for dns in $UPSTREAM_DNS; do echo "nameserver $dns"; done
+  echo "nameserver 203.113.131.1"
+  echo "nameserver 203.113.131.2"
   echo "nameserver 1.1.1.1"
   echo "nameserver 8.8.8.8"
   echo "nameserver 9.9.9.9"
@@ -197,7 +198,7 @@ EOF_ZRAM_SVC
 fi
 /usr/local/bin/ii-init-zram.sh
 
-# 5. DOCKER ENGINE & NON-ROOT PERMISSION
+# 5. DOCKER ENGINE & NON-ROOT ACCESS
 if ! command -v docker >/dev/null 2>&1; then
   log "Đang tự động cài đặt Docker official..."
   curl -fsSL https://get.docker.com | sh || apt-get install -y -qq docker.io
@@ -239,12 +240,12 @@ EOF_DOCKER_SVC
   fi
 fi
 
-# 6. NHIỆT ĐỘ SCHEDUTIL & KSM NHẸ DÀNH CHO HOMELAB
+# 6. NHIỆT ĐỘ SCHEDUTIL & KSM THÔNG MINH CHO HOMELAB
 for g in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
   echo schedutil > "$g" 2>/dev/null || echo powersave > "$g" 2>/dev/null || true
 done
 
-# KSM nhẹ (Chỉ bật khi RAM <= 4GB để tiết kiệm bộ nhớ mà không gây nóng CPU)
+# Điều tiết KSM: Máy <= 4GB RAM thì bật nhẹ để tiết kiệm, Máy > 4GB RAM thì tắt để CPU siêu mát
 if [[ -f /sys/kernel/mm/ksm/run ]]; then
   if (( MEM_MB <= 4096 )); then
     echo 1 > /sys/kernel/mm/ksm/run 2>/dev/null || true
@@ -254,6 +255,10 @@ if [[ -f /sys/kernel/mm/ksm/run ]]; then
     echo 0 > /sys/kernel/mm/ksm/run 2>/dev/null || true
   fi
 fi
+
+# Tối ưu hàng đợi NIC & Offloading
+ip link set dev "$PRIMARY_IFACE" txqueuelen 10000 2>/dev/null || true
+ethtool -C "$PRIMARY_IFACE" adaptive-rx on adaptive-tx on 2>/dev/null || true
 
 RPS_MASK=$(printf "%x" $(( (1 << CPU) - 1 )) 2>/dev/null || echo "f")
 for f in /sys/class/net/*/queues/rx-*/rps_cpus; do
@@ -311,11 +316,15 @@ Unattended-Upgrade::Automatic-Reboot "false";
 Unattended-Upgrade::Automatic-Reboot-WithUsers "false";
 EOF_APT
 
+# Tường lửa bảo vệ LAN gia đình + MSS Clamping chống nghẽn MTU PPPoE 1492
 if command -v ufw >/dev/null 2>&1; then
   ufw allow in on tailscale0 to any port 22 >/dev/null 2>&1 || true
   ufw allow 22/tcp >/dev/null 2>&1 || true
   echo "y" | ufw enable >/dev/null 2>&1 || true
 fi
+
+iptables -t mangle -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || true
+iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || true
 
 echo never > /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || true
 echo never > /sys/kernel/mm/transparent_hugepage/defrag 2>/dev/null || true
@@ -324,6 +333,7 @@ sysctl -w net.ipv6.conf.all.disable_ipv6=0 >/dev/null 2>&1 || true
 sysctl -w net.ipv6.conf.default.disable_ipv6=0 >/dev/null 2>&1 || true
 sysctl -w net.ipv6.conf.lo.disable_ipv6=0 >/dev/null 2>&1 || true
 
+# 7. SYSCTL NETWORK & DOCKER ARP EXPANSION
 SYSCTL_FILE=/etc/sysctl.d/99-internetincome.conf
 cat > "$SYSCTL_FILE" <<EOF_SYSCTL
 net.core.default_qdisc = fq
@@ -367,6 +377,9 @@ net.ipv4.tcp_slow_start_after_idle = 0
 net.netfilter.nf_conntrack_max = 524288
 net.netfilter.nf_conntrack_udp_timeout = 60
 net.netfilter.nf_conntrack_udp_timeout_stream = 180
+net.ipv4.neigh.default.gc_thresh1 = 2048
+net.ipv4.neigh.default.gc_thresh2 = 4096
+net.ipv4.neigh.default.gc_thresh3 = 8192
 EOF_SYSCTL
 
 sed -i '/disable_ipv6/d' "$SYSCTL_FILE" 2>/dev/null || true
@@ -393,7 +406,7 @@ RuntimeMaxUse=5M
 EOF_JOURNAL
 if has_systemd; then systemctl restart systemd-journald 2>/dev/null || true; fi
 
-# 7. APP PROFILES DATABASE
+# 8. APP PROFILES DATABASE
 mkdir -p /usr/local/lib
 cat > /usr/local/lib/ii-app-profiles.sh <<'EOF_PROFILES'
 #!/usr/bin/env bash
@@ -462,22 +475,19 @@ EOF_PROFILES
 chmod 644 /usr/local/lib/ii-app-profiles.sh
 . /usr/local/lib/ii-app-profiles.sh
 
-# 8. QUÉT ĐỘNG VÀ TỐI ƯU HOÁ PROXY MÀ KHÔNG GÂY XUNG ĐỘT
+# 9. QUÉT ĐỘNG VÀ TỐI ƯU HOÁ PROXY KHÔNG XUNG ĐỘT
 auto_patch_custom_folders() {
   log "Tự động quét & định dạng danh sách Proxy / scripts trong mọi thư mục..."
   ROOTS=(/opt /root /home /srv "$USER_HOME")
   
-  # Format dos2unix an toan cho cac file proxy list
   while IFS= read -r pf; do
     [[ -f "$pf" ]] && sed -i 's/\r$//' "$pf" 2>/dev/null || true
   done < <(find "${ROOTS[@]}" -maxdepth 5 -type f \( -name "*.txt" -o -name "*.list" \) 2>/dev/null | sort -u)
 
-  # Cấp quyền thực thi an toàn cho script điều khiển
   while IFS= read -r shf; do
     [[ -f "$shf" ]] && chmod +x "$shf" 2>/dev/null || true
   done < <(find "${ROOTS[@]}" -maxdepth 5 -type f -name "*.sh" 2>/dev/null | sort -u)
 
-  # Tối ưu hoá file properties.conf
   while IFS= read -r f; do
     [[ -f "$f" ]] || continue
     grep -qE 'USE_SOCKS5_DNS|USE_PROXIES|USE_DNS_OVER_HTTPS' "$f" || continue
@@ -507,7 +517,7 @@ auto_patch_custom_folders() {
 }
 auto_patch_custom_folders
 
-# 9. WATCHDOG FLAPGUARD
+# 10. WATCHDOG FLAPGUARD
 cat > /usr/local/bin/ii-flapguard.sh <<'EOF_FLAPGUARD'
 #!/usr/bin/env bash
 set -uo pipefail
@@ -560,7 +570,7 @@ EOF_FLAPGUARD
 chmod +x /usr/local/bin/ii-flapguard.sh
 ln -sf /usr/local/bin/ii-flapguard.sh /usr/bin/ii-flapguard 2>/dev/null || true
 
-# 10. WATCHDOG REPOCKET THÔNG MINH
+# 11. WATCHDOG REPOCKET THÔNG MINH + AUTO LOG TRUNCATE
 cat > /usr/local/bin/ii-repocket-watchdog.sh <<'EOF_RP_WATCHDOG'
 #!/usr/bin/env bash
 set -uo pipefail
@@ -651,7 +661,7 @@ EOF_RP_WATCHDOG
 chmod +x /usr/local/bin/ii-repocket-watchdog.sh
 ln -sf /usr/local/bin/ii-repocket-watchdog.sh /usr/bin/ii-repocket-watchdog 2>/dev/null || true
 
-# 11. BẢNG CHẨN ĐOÁN REPOCKET DOCTOR
+# 12. BẢNG CHẨN ĐOÁN DOCTOR
 cat > /usr/local/bin/ii-repocket-doctor <<'EOF_DOCTOR'
 #!/usr/bin/env bash
 set -uo pipefail
@@ -713,7 +723,7 @@ EOF_DOCTOR
 chmod +x /usr/local/bin/ii-repocket-doctor
 ln -sf /usr/local/bin/ii-repocket-doctor /usr/bin/ii-repocket-doctor 2>/dev/null || true
 
-# 12. CÔNG CỤ ZERO-PROBE TEST PROXY CHO HOMELAB
+# 13. CÔNG CỤ TEST PROXY (ZERO-EXTERNAL-PROBE BẰNG NSENTER)
 cat > /usr/local/bin/ii-test-proxy.sh << 'EOF_TEST_PROXY'
 #!/usr/bin/env bash
 CNAME="${1:-}"
@@ -765,7 +775,7 @@ EOF_TEST_PROXY
 chmod +x /usr/local/bin/ii-test-proxy.sh
 ln -sf /usr/local/bin/ii-test-proxy.sh /usr/bin/ii-test-proxy 2>/dev/null || true
 
-# 13. TỰ ĐỘNG CÂN BẰNG TÀI NGUYÊN (AUTOSYNC)
+# 14. CÂN BẰNG ĐỘNG RAM CHO CONTAINER (AUTOSYNC)
 cat > /usr/local/bin/ii-autosync.sh <<'EOF_AUTOSYNC'
 #!/usr/bin/env bash
 set -uo pipefail
@@ -833,7 +843,7 @@ EOF_AUTOSYNC
 chmod +x /usr/local/bin/ii-autosync.sh
 ln -sf /usr/local/bin/ii-autosync.sh /usr/bin/ii-autosync 2>/dev/null || true
 
-# 14. KHỞI ĐỘNG TUẦN TỰ AN TOÀN (STAGGERED BOOT)
+# 15. KHỞI ĐỘNG TUẦN TỰ (STAGGERED BOOT)
 cat > /usr/local/bin/ii-staggered-start.sh <<'EOF_STAGGER'
 #!/usr/bin/env bash
 set -uo pipefail
@@ -882,7 +892,7 @@ EOF_BOOT_SVC
   systemctl enable ii-boot-staggered.service 2>/dev/null || true
 fi
 
-# 15. ĐÁNH GIÁ SỨC CHỨA HOMELAB
+# 16. ĐÁNH GIÁ SỨC CHỨA HOMELAB
 cat > /usr/local/bin/ii-capacity.sh <<'EOF_CAPACITY'
 #!/usr/bin/env bash
 MEM_TOTAL_MB=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
@@ -912,7 +922,7 @@ EOF_CAPACITY
 chmod +x /usr/local/bin/ii-capacity.sh
 ln -sf /usr/local/bin/ii-capacity.sh /usr/bin/ii-capacity 2>/dev/null || true
 
-# 16. DỌN DẸP LOG ĐỊNH KỲ
+# 17. DỌN DẸP LOG ĐỊNH KỲ
 cat > /usr/local/bin/ii-clean-logs.sh << 'EOF_CLEAN'
 #!/usr/bin/env bash
 find /var/lib/docker/containers/ -name "*-json.log" -size +10M -exec truncate -s 0 {} + 2>/dev/null || true
@@ -922,7 +932,7 @@ EOF_CLEAN
 chmod +x /usr/local/bin/ii-clean-logs.sh
 ln -sf /usr/local/bin/ii-clean-logs.sh /usr/bin/ii-clean-logs 2>/dev/null || true
 
-# 17. CRON JOBS TỰ ĐỘNG
+# 18. CRON JOBS TỰ ĐỘNG
 cat > /etc/cron.d/internetincome <<'EOF_CRON'
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
@@ -939,7 +949,7 @@ EOF_CRON
 chmod 644 /etc/cron.d/internetincome
 if has_systemd; then systemctl enable --now cron 2>/dev/null || true; fi
 
-# 18. BẢNG TELEMETRY TOÀN DIỆN (HOMELAB & ADVANCED 5-TIER AUDIT)
+# 19. BẢNG TELEMETRY 5 PHÂN HỆ CHI TIẾT
 cat > /usr/local/bin/ii-status.sh <<'EOF_STATUS'
 #!/usr/bin/env bash
 set +u
@@ -1028,7 +1038,7 @@ EOF_STATUS
 chmod +x /usr/local/bin/ii-status.sh
 ln -sf /usr/local/bin/ii-status.sh /usr/bin/ii-status 2>/dev/null || true
 
-# 19. TỰ ĐỘNG KHỞI CHẠY CÁC FOLDER SẴN CÓ
+# 20. TỰ ĐỘNG KHỞI CHẠY CÁC FOLDER SẴN CÓ
 NODE_COUNT=0
 while IFS= read -r script; do
   dir=$(dirname "$script")
