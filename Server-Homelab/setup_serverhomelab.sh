@@ -1,16 +1,20 @@
 #!/usr/bin/env bash
 #============================================================================
 #  setup_serverhomelab.sh (2026 ZERO-TOUCH HOMELAB INFRASTRUCTURE ENGINE)
-#  Architecture: Optimized for Mini PCs & Thin Clients (Wyse, HP, NUC, ThinkCentre)
-#  Synthesis: Full VPS Power + Thermal Schedutil + Tailscale Shield + Zero-Probe
+#  Optimized for: Mini PCs, Thin Clients (Dell Wyse 5070, HP, NUC, ThinkCentre)
+#  Target Infrastructure: Viettel / VNPT / FPT Residential PPPoE Fiber
+#  Key Features: Auto-Tailscale, Native MTU 1492, MSS Clamping, Zero-Probe,
+#                ZRAM ZSTD, Flash Wear Guard (noatime), Dynamic AutoSync.
 #============================================================================
 set -Eeuo pipefail
 
+# 0. TỐI ƯU GIỚI HẠN FILE DESCRIPTOR VÀ KERNEL INOTIFY
 ulimit -n 1048576 2>/dev/null || true
 sysctl -w fs.inotify.max_user_watches=2097152 >/dev/null 2>&1 || true
 sysctl -w fs.inotify.max_user_instances=65536 >/dev/null 2>&1 || true
 sysctl -w kernel.pid_max=4194304 >/dev/null 2>&1 || true
 
+# MÀU SẮC GIAO DIỆN TERMINAL
 if [[ -t 1 ]]; then
   C_G='\033[1;32m'; C_Y='\033[1;33m'; C_R='\033[1;31m'; C_B='\033[1;34m'; C_C='\033[1;36m'; C_0='\033[0m'
   C_BG_BLUE='\033[44;37m'; C_BOLD='\033[1m'
@@ -27,11 +31,12 @@ command -v apt-get >/dev/null 2>&1 || die "Script hỗ trợ Debian/Ubuntu (apt-
 
 has_systemd() { command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; }
 
+# NHẬN DIỆN USER & THƯ MỤC HOME THỰC TẾ
 REAL_USER="${SUDO_USER:-$USER}"
 USER_HOME=$(getent passwd "$REAL_USER" 2>/dev/null | cut -d: -f6)
 USER_HOME="${USER_HOME:-$HOME}"
 
-# 1. TỰ ĐỘNG CÀI ĐẶT & KÍCH HOẠT TAILSCALE
+# 1. TỰ ĐỘNG CÀI ĐẶT & KÍCH HOẠT TAILSCALE NẾU CHƯA CÓ
 if ! command -v tailscale >/dev/null 2>&1 || ! tailscale ip -4 >/dev/null 2>&1; then
   log "Chưa có Tailscale -> Đang tự động cài đặt và kết nối..."
   curl -fsSL https://raw.githubusercontent.com/tech-tnitechsolve/bandwidth-sharing/main/Server-Homelab/setup_tailscale.sh | bash || true
@@ -42,6 +47,7 @@ CPU=$(nproc 2>/dev/null || echo 1)
 DISK_TOTAL_MB=$(df -m / | awk 'NR==2 {print $2}')
 DISK_FREE_MB=$(df -m / | awk 'NR==2 {print $4}')
 
+# NHẬN DIỆN CARD MẠNG CHÍNH XÁC (enp1s0 / eth0 / ens3)
 PRIMARY_IFACE=$(ip -4 route show default 2>/dev/null | awk '{print $5}' | head -n1)
 if [[ -z "$PRIMARY_IFACE" ]]; then
   PRIMARY_IFACE=$(ip link show up 2>/dev/null | grep -E '^[0-9]+: (eth|ens|enp|eno|vtnet)' | awk -F': ' '{print $2}' | head -n1)
@@ -62,12 +68,13 @@ else
 fi
 
 echo -e "\n${C_BG_BLUE}${C_BOLD} [!] HOMELAB HARDWARE & NETWORK TELEMETRY ${C_0}"
+echo -e " ${C_BOLD}>>> CARD MẠNG CHÍNH    : ${C_G}${C_BOLD}${PRIMARY_IFACE}${C_0}"
 echo -e " ${C_BOLD}>>> PUBLIC IP (IP-AUTH) : ${C_G}${C_BOLD}${PUBLIC_IP}${C_0}"
 echo -e " ${C_BOLD}>>> TAILSCALE IP        : ${C_C}${C_BOLD}${TS_IP}${C_0}\n"
 
-# 2. GIẢI PHÓNG APT LOCKS & CÀI GÓI HỆ THỐNG
+# 2. GIẢI PHÓNG APT LOCKS & TẮT NEEDRESTART GÂY TREO
 clear_apt_locks() {
-  log "Giải phóng khoá APT Lock an toàn..."
+  log "Giải phóng khoá APT Lock & cấu hình Needrestart ngầm..."
   if has_systemd; then
     systemctl stop apt-daily.service apt-daily-upgrade.service unattended-upgrades.service 2>/dev/null || true
     systemctl disable apt-daily.service apt-daily-upgrade.service unattended-upgrades.service 2>/dev/null || true
@@ -76,11 +83,17 @@ clear_apt_locks() {
   sleep 1
   rm -f /var/lib/apt/lists/lock /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend /var/cache/apt/archives/lock 2>/dev/null || true
   dpkg --configure -a 2>/dev/null || true
+
+  mkdir -p /etc/needrestart/conf.d
+  cat > /etc/needrestart/conf.d/99-silent.conf << 'EOF_NR'
+$nrconf{restart} = "a";
+$nrconf{ui} = "none";
+EOF_NR
 }
 clear_apt_locks
 
 export DEBIAN_FRONTEND=noninteractive
-log "Cài đặt các gói phụ thuộc hệ thống..."
+log "Cài đặt các gói phụ thuộc hệ thống & công cụ mạng..."
 apt-get update -y -qq || { clear_apt_locks; apt-get update -y -qq; }
 apt-get install -y -qq --no-install-recommends \
   -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
@@ -89,8 +102,23 @@ apt-get install -y -qq --no-install-recommends \
 
 apt-get install -y -qq linux-modules-extra-"$(uname -r)" 2>/dev/null || true
 
+# MỞ RỘNG PHÂN VÙNG LVM NẾU CÒN DUNG LƯỢNG TRỐNG
 lvextend -l +100%FREE -r /dev/mapper/ubuntu--vg-ubuntu--lv >/dev/null 2>&1 || true
 
+# 3. BẢO VỆ Ổ CỨNG FLASH/EMMC VỚI NOATIME VÀ I/O SCHEDULER
+log "Tối ưu hoá I/O Mount fstab với noatime (Chống mòn eMMC/SSD)..."
+if ! grep -q "noatime" /etc/fstab 2>/dev/null; then
+  sed -i -E 's/(defaults|errors=remount-ro)/\1,noatime/' /etc/fstab 2>/dev/null || true
+  mount -o remount / 2>/dev/null || true
+fi
+
+for disk in /sys/block/sd*/queue/scheduler /sys/block/mmcblk*/queue/scheduler /sys/block/nvme*n1/queue/scheduler; do
+  if [[ -f "$disk" ]]; then
+    echo mq-deadline > "$disk" 2>/dev/null || echo none > "$disk" 2>/dev/null || true
+  fi
+done
+
+# 4. CẤU HÌNH ƯU TIÊN IPV4 (/etc/gai.conf)
 cat << 'EOF_GAI' > /etc/gai.conf
 precedence ::ffff:0:0/96  100
 precedence ::/0           40
@@ -99,6 +127,7 @@ precedence ::/96          20
 precedence ::1/128        50
 EOF_GAI
 
+# 5. ĐỒNG BỘ THỜI GIAN NTP VIỆT NAM (CHUẨN TIMESTAMP)
 if has_systemd; then
   systemctl unmask systemd-timesyncd 2>/dev/null || true
   systemctl enable --now systemd-timesyncd 2>/dev/null || true
@@ -107,7 +136,7 @@ fi
 timedatectl set-ntp true 2>/dev/null || true
 timedatectl set-timezone Asia/Ho_Chi_Minh 2>/dev/null || true
 
-# 3. DNS DIRECT UPSTREAM + VIETTEL/VNPT ULTRA-FAST RESOLUTION
+# 6. DNS DIRECT UPSTREAM + CỤM DNS NỘI ĐỊA VIETTEL (SUB-3MS)
 UPSTREAM_DNS=""
 if [[ -f /run/systemd/resolve/resolv.conf ]]; then
   UPSTREAM_DNS=$(grep -E '^nameserver' /run/systemd/resolve/resolv.conf 2>/dev/null | grep -v '127.0.0.53' | awk '{print $2}' || true)
@@ -121,7 +150,7 @@ fi
 chattr -i /etc/resolv.conf 2>/dev/null || true
 rm -f /etc/resolv.conf
 {
-  echo "# Generated for Mini PC HomeLab Nodes (Direct Low-Latency DNS)"
+  echo "# Generated for Low-Latency HomeLab Nodes"
   echo "options timeout:1 attempts:2 rotate single-request-reopen"
   for dns in $UPSTREAM_DNS; do echo "nameserver $dns"; done
   echo "nameserver 203.113.131.1"
@@ -133,7 +162,7 @@ rm -f /etc/resolv.conf
 chmod 644 /etc/resolv.conf
 chattr +i /etc/resolv.conf 2>/dev/null || true
 
-# 4. KERNEL MODULES & ZRAM COMPRESSION
+# 7. KERNEL MODULES & ZRAM COMPRESSION
 mkdir -p /etc/modules-load.d
 cat > /etc/modules-load.d/internetincome.conf <<'EOF_MODULES'
 zram
@@ -155,6 +184,7 @@ if [[ ! -c /dev/net/tun ]]; then
   chmod 600 /dev/net/tun 2>/dev/null || true
 fi
 
+# TẠO SERVICE KHỞI TẠO ZRAM ZSTD PRIORITY 10
 cat > /usr/local/bin/ii-init-zram.sh <<'EOF_ZRAM_INIT'
 #!/usr/bin/env bash
 MEM_MB=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
@@ -198,7 +228,7 @@ EOF_ZRAM_SVC
 fi
 /usr/local/bin/ii-init-zram.sh
 
-# 5. DOCKER ENGINE & NON-ROOT ACCESS
+# 8. CÀI ĐẶT DOCKER ENGINE VÀ ĐỒNG BỘ NATIVE MTU 1492
 if ! command -v docker >/dev/null 2>&1; then
   log "Đang tự động cài đặt Docker official..."
   curl -fsSL https://get.docker.com | sh || apt-get install -y -qq docker.io
@@ -219,6 +249,7 @@ cat > /etc/docker/daemon.json <<EOF_DAEMON
   "max-concurrent-downloads": ${CPU},
   "live-restore": true,
   "userland-proxy": false,
+  "mtu": 1492,
   "default-ulimits": {
     "nofile": { "Name": "nofile", "Hard": 65536, "Soft": 65536 }
   }
@@ -240,12 +271,12 @@ EOF_DOCKER_SVC
   fi
 fi
 
-# 6. NHIỆT ĐỘ SCHEDUTIL & KSM THÔNG MINH CHO HOMELAB
+# 9. NHIỆT ĐỘ SCHEDUTIL & TỐI ƯU CARD MẠNG VẬT LÝ (enp1s0)
 for g in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
   echo schedutil > "$g" 2>/dev/null || echo powersave > "$g" 2>/dev/null || true
 done
 
-# Điều tiết KSM: Máy <= 4GB RAM thì bật nhẹ để tiết kiệm, Máy > 4GB RAM thì tắt để CPU siêu mát
+# KSM THÔNG MINH CHO HOMELAB
 if [[ -f /sys/kernel/mm/ksm/run ]]; then
   if (( MEM_MB <= 4096 )); then
     echo 1 > /sys/kernel/mm/ksm/run 2>/dev/null || true
@@ -256,9 +287,10 @@ if [[ -f /sys/kernel/mm/ksm/run ]]; then
   fi
 fi
 
-# Tối ưu hàng đợi NIC & Offloading
+# TỐI ƯU CARD MẠNG OUTBOUND (NIC RING BUFFER & TX-QUEUE)
 ip link set dev "$PRIMARY_IFACE" txqueuelen 10000 2>/dev/null || true
 ethtool -C "$PRIMARY_IFACE" adaptive-rx on adaptive-tx on 2>/dev/null || true
+ethtool -K "$PRIMARY_IFACE" rx on tx on tso on gso on gro on 2>/dev/null || true
 
 RPS_MASK=$(printf "%x" $(( (1 << CPU) - 1 )) 2>/dev/null || echo "f")
 for f in /sys/class/net/*/queues/rx-*/rps_cpus; do
@@ -276,6 +308,7 @@ else
   SYN_BACKLOG=32768; NETDEV_BUDGET=1000; NETDEV_USECS=4000; TIMER_MIG=0
 fi
 
+# KHỞI TẠO SWAPFILE DỰ PHÒNG TRÊN DISK (PRIORITY 0)
 CURR_DISK_SWAP_MB=$(swapon --show=NAME,SIZE --bytes 2>/dev/null | awk '/swapfile/{print int($2/1024/1024)}' || echo 0)
 if (( CURR_DISK_SWAP_MB != TARGET_SWAP_MB )); then
   swapoff /swapfile /swapfile2 2>/dev/null || true
@@ -316,13 +349,14 @@ Unattended-Upgrade::Automatic-Reboot "false";
 Unattended-Upgrade::Automatic-Reboot-WithUsers "false";
 EOF_APT
 
-# Tường lửa bảo vệ LAN gia đình + MSS Clamping chống nghẽn MTU PPPoE 1492
+# TƯỜNG LỬA UFW BẢO VỆ MẠNG LAN GIA ĐÌNH
 if command -v ufw >/dev/null 2>&1; then
   ufw allow in on tailscale0 to any port 22 >/dev/null 2>&1 || true
   ufw allow 22/tcp >/dev/null 2>&1 || true
   echo "y" | ufw enable >/dev/null 2>&1 || true
 fi
 
+# 10. MSS CLAMPING KHẮC PHỤC TRIỆT ĐỂ RETRANSMISSION VÀ NGHẼN PPPOE VIETTEL
 iptables -t mangle -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || true
 iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || true
 
@@ -333,7 +367,7 @@ sysctl -w net.ipv6.conf.all.disable_ipv6=0 >/dev/null 2>&1 || true
 sysctl -w net.ipv6.conf.default.disable_ipv6=0 >/dev/null 2>&1 || true
 sysctl -w net.ipv6.conf.lo.disable_ipv6=0 >/dev/null 2>&1 || true
 
-# 7. SYSCTL NETWORK & DOCKER ARP EXPANSION
+# 11. BẢNG SYSCTL KERNEL FULL TỐI ƯU (BBR + FASTOPEN + ZERO BUFFERBLOAT + ARP)
 SYSCTL_FILE=/etc/sysctl.d/99-internetincome.conf
 cat > "$SYSCTL_FILE" <<EOF_SYSCTL
 net.core.default_qdisc = fq
@@ -374,6 +408,9 @@ net.ipv4.tcp_keepalive_time = 30
 net.ipv4.tcp_keepalive_intvl = 5
 net.ipv4.tcp_keepalive_probes = 3
 net.ipv4.tcp_slow_start_after_idle = 0
+net.ipv4.tcp_fastopen = 3
+net.ipv4.tcp_notsent_lowat = 16384
+net.ipv4.tcp_max_tw_buckets = 262144
 net.netfilter.nf_conntrack_max = 524288
 net.netfilter.nf_conntrack_udp_timeout = 60
 net.netfilter.nf_conntrack_udp_timeout_stream = 180
@@ -406,7 +443,7 @@ RuntimeMaxUse=5M
 EOF_JOURNAL
 if has_systemd; then systemctl restart systemd-journald 2>/dev/null || true; fi
 
-# 8. APP PROFILES DATABASE
+# 12. APP PROFILES DATABASE DÀNH CHO BĂNG THÔNG & DEPIN
 mkdir -p /usr/local/lib
 cat > /usr/local/lib/ii-app-profiles.sh <<'EOF_PROFILES'
 #!/usr/bin/env bash
@@ -475,7 +512,7 @@ EOF_PROFILES
 chmod 644 /usr/local/lib/ii-app-profiles.sh
 . /usr/local/lib/ii-app-profiles.sh
 
-# 9. QUÉT ĐỘNG VÀ TỐI ƯU HOÁ PROXY KHÔNG XUNG ĐỘT
+# 13. QUÉT ĐỘNG VÀ TỐI ƯU DANH SÁCH PROXY / SCRIPT TRONG MỌI FOLDER (ZERO CONFLICT)
 auto_patch_custom_folders() {
   log "Tự động quét & định dạng danh sách Proxy / scripts trong mọi thư mục..."
   ROOTS=(/opt /root /home /srv "$USER_HOME")
@@ -517,7 +554,7 @@ auto_patch_custom_folders() {
 }
 auto_patch_custom_folders
 
-# 10. WATCHDOG FLAPGUARD
+# 14. WATCHDOG FLAPGUARD
 cat > /usr/local/bin/ii-flapguard.sh <<'EOF_FLAPGUARD'
 #!/usr/bin/env bash
 set -uo pipefail
@@ -570,7 +607,7 @@ EOF_FLAPGUARD
 chmod +x /usr/local/bin/ii-flapguard.sh
 ln -sf /usr/local/bin/ii-flapguard.sh /usr/bin/ii-flapguard 2>/dev/null || true
 
-# 11. WATCHDOG REPOCKET THÔNG MINH + AUTO LOG TRUNCATE
+# 15. WATCHDOG REPOCKET THÔNG MINH + AUTO LOG TRUNCATE
 cat > /usr/local/bin/ii-repocket-watchdog.sh <<'EOF_RP_WATCHDOG'
 #!/usr/bin/env bash
 set -uo pipefail
@@ -661,7 +698,7 @@ EOF_RP_WATCHDOG
 chmod +x /usr/local/bin/ii-repocket-watchdog.sh
 ln -sf /usr/local/bin/ii-repocket-watchdog.sh /usr/bin/ii-repocket-watchdog 2>/dev/null || true
 
-# 12. BẢNG CHẨN ĐOÁN DOCTOR
+# 16. BẢNG CHẨN ĐOÁN DOCTOR
 cat > /usr/local/bin/ii-repocket-doctor <<'EOF_DOCTOR'
 #!/usr/bin/env bash
 set -uo pipefail
@@ -723,7 +760,7 @@ EOF_DOCTOR
 chmod +x /usr/local/bin/ii-repocket-doctor
 ln -sf /usr/local/bin/ii-repocket-doctor /usr/bin/ii-repocket-doctor 2>/dev/null || true
 
-# 13. CÔNG CỤ TEST PROXY (ZERO-EXTERNAL-PROBE BẰNG NSENTER)
+# 17. CÔNG CỤ TEST PROXY ZERO-EXTERNAL-PROBE (BẰNG NSENTER TRỰC TIẾP)
 cat > /usr/local/bin/ii-test-proxy.sh << 'EOF_TEST_PROXY'
 #!/usr/bin/env bash
 CNAME="${1:-}"
@@ -775,7 +812,7 @@ EOF_TEST_PROXY
 chmod +x /usr/local/bin/ii-test-proxy.sh
 ln -sf /usr/local/bin/ii-test-proxy.sh /usr/bin/ii-test-proxy 2>/dev/null || true
 
-# 14. CÂN BẰNG ĐỘNG RAM CHO CONTAINER (AUTOSYNC)
+# 18. CÂN BẰNG ĐỘNG RAM CHO CONTAINER (AUTOSYNC)
 cat > /usr/local/bin/ii-autosync.sh <<'EOF_AUTOSYNC'
 #!/usr/bin/env bash
 set -uo pipefail
@@ -843,7 +880,7 @@ EOF_AUTOSYNC
 chmod +x /usr/local/bin/ii-autosync.sh
 ln -sf /usr/local/bin/ii-autosync.sh /usr/bin/ii-autosync 2>/dev/null || true
 
-# 15. KHỞI ĐỘNG TUẦN TỰ (STAGGERED BOOT)
+# 19. KHỞI ĐỘNG TUẦN TỰ (STAGGERED BOOT)
 cat > /usr/local/bin/ii-staggered-start.sh <<'EOF_STAGGER'
 #!/usr/bin/env bash
 set -uo pipefail
@@ -892,7 +929,7 @@ EOF_BOOT_SVC
   systemctl enable ii-boot-staggered.service 2>/dev/null || true
 fi
 
-# 16. ĐÁNH GIÁ SỨC CHỨA HOMELAB
+# 20. ĐÁNH GIÁ SỨC CHỨA HOMELAB
 cat > /usr/local/bin/ii-capacity.sh <<'EOF_CAPACITY'
 #!/usr/bin/env bash
 MEM_TOTAL_MB=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
@@ -922,7 +959,27 @@ EOF_CAPACITY
 chmod +x /usr/local/bin/ii-capacity.sh
 ln -sf /usr/local/bin/ii-capacity.sh /usr/bin/ii-capacity 2>/dev/null || true
 
-# 17. DỌN DẸP LOG ĐỊNH KỲ
+# 21. CÔNG CỤ GIÁM SÁT THAY ĐỔI IP WAN (ii-ipwatch)
+cat > /usr/local/bin/ii-ipwatch << 'EOF_IPW'
+#!/usr/bin/env bash
+PRIMARY_IFACE=$(ip -4 route show default 2>/dev/null | awk '{print $5}' | head -n1 || echo "eth0")
+CURRENT_IP=$(curl -s4 -m 3 --interface "$PRIMARY_IFACE" https://api.ipify.org 2>/dev/null || echo "Unknown")
+IP_FILE="/var/lib/last_public_ip.txt"
+LAST_IP=""
+[[ -f "$IP_FILE" ]] && LAST_IP=$(cat "$IP_FILE" 2>/dev/null || echo "")
+
+if [[ -n "$CURRENT_IP" && "$CURRENT_IP" != "Unknown" ]]; then
+  if [[ "$CURRENT_IP" != "$LAST_IP" ]]; then
+    echo "$CURRENT_IP" > "$IP_FILE"
+    echo "[$(date '+%F %T')] [CẢNH BÁO] IP Public đã đổi: ${LAST_IP:-None} -> ${CURRENT_IP}" >> /var/log/ii-ip-changes.log
+    echo "[CẢNH BÁO] IP Public nhà mạng đã đổi thành: ${CURRENT_IP}"
+  fi
+fi
+EOF_IPW
+chmod +x /usr/local/bin/ii-ipwatch
+ln -sf /usr/local/bin/ii-ipwatch /usr/bin/ii-ipwatch 2>/dev/null || true
+
+# 22. DỌN DẸP LOG ĐỊNH KỲ
 cat > /usr/local/bin/ii-clean-logs.sh << 'EOF_CLEAN'
 #!/usr/bin/env bash
 find /var/lib/docker/containers/ -name "*-json.log" -size +10M -exec truncate -s 0 {} + 2>/dev/null || true
@@ -932,7 +989,7 @@ EOF_CLEAN
 chmod +x /usr/local/bin/ii-clean-logs.sh
 ln -sf /usr/local/bin/ii-clean-logs.sh /usr/bin/ii-clean-logs 2>/dev/null || true
 
-# 18. CRON JOBS TỰ ĐỘNG
+# 23. CRON JOBS TỰ ĐỘNG TOÀN DIỆN
 cat > /etc/cron.d/internetincome <<'EOF_CRON'
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
@@ -940,6 +997,7 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 15 4 * * 0 root /usr/local/bin/ii-staggered-start.sh >/dev/null 2>&1
 */15 * * * * root /usr/local/bin/ii-flapguard.sh >/dev/null 2>&1
 */2 * * * * root /usr/local/bin/ii-repocket-watchdog.sh >/dev/null 2>&1
+*/5 * * * * root /usr/local/bin/ii-ipwatch >/dev/null 2>&1
 0 2 * * 0 root /usr/local/bin/ii-clean-logs.sh >/dev/null 2>&1
 */15 * * * * root for c in $(docker ps -aq -f status=exited 2>/dev/null); do n=$(docker inspect -f '{{.Name}}{{.Config.Image}}' "$c" 2>/dev/null); case "$n" in *honey*|*pawns*|*packetstream*|*packetshare*|*earnfm*|*depinext*|*ebesucher*|*adnade*|*earnapp*|*repocket*|*grass*|*gradient*|*nodepay*|*dawn*|*titan*|*uprock*|*customchrome*|*customfirefox*) ;; *) docker start "$c" >/dev/null 2>&1 ;; esac; done
 0 3 * * 0 root /usr/bin/docker network prune -f >/dev/null 2>&1
@@ -949,7 +1007,7 @@ EOF_CRON
 chmod 644 /etc/cron.d/internetincome
 if has_systemd; then systemctl enable --now cron 2>/dev/null || true; fi
 
-# 19. BẢNG TELEMETRY 5 PHÂN HỆ CHI TIẾT
+# 24. BẢNG TELEMETRY TOÀN DIỆN (HOMELAB & 5-SECTION LIVE AUDIT)
 cat > /usr/local/bin/ii-status.sh <<'EOF_STATUS'
 #!/usr/bin/env bash
 set +u
@@ -981,6 +1039,7 @@ EXITED_CTRS=$(docker ps -aq -f status=exited 2>/dev/null | wc -l)
 echo -e "${C_B}==================== [INTERNETINCOME 24/7 ADVANCED HOMELAB TELEMETRY] ====================${C_0}"
 echo "TIMESTAMP    : $(date '+%Y-%m-%d %H:%M:%S %Z')"
 echo "HOSTNAME     : $(hostname)"
+echo -e "CARD MẠNG    : ${C_G}${PRIMARY_IFACE}${C_0} (MTU 1492 / Adaptive IRQ)"
 echo -e "PUBLIC IP    : ${C_G}${PUB_IP}${C_0} (IP-Auth Whitelist Target)"
 echo -e "TAILSCALE IP : ${C_C}${TS_IP}${C_0} (Remote SSH / WinSCP Target)"
 echo "LOCATION/ISP : ${IP_LOC} | ${IP_ISP}"
@@ -1038,7 +1097,7 @@ EOF_STATUS
 chmod +x /usr/local/bin/ii-status.sh
 ln -sf /usr/local/bin/ii-status.sh /usr/bin/ii-status 2>/dev/null || true
 
-# 20. TỰ ĐỘNG KHỞI CHẠY CÁC FOLDER SẴN CÓ
+# 25. TỰ ĐỘNG KHỞI CHẠY NẾU ĐÃ CÓ SẴN FOLDER NODE
 NODE_COUNT=0
 while IFS= read -r script; do
   dir=$(dirname "$script")
