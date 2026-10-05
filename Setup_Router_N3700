@@ -1,0 +1,42 @@
+# ====================================================================
+# SCRIPT N3700 TINH GỌN (ZERO CONFLICT - ĐỂ SOURCE TỰ XỬ LÝ DNS & PROXY)
+# ====================================================================
+
+# 1. GOM CỔNG LAN (ether2: Wifi loopback, ether3: Dell Wyse, ether4: PC VM)
+/interface bridge add name=bridge-LAN fast-forward=yes
+/interface bridge port
+add bridge=bridge-LAN interface=ether2
+add bridge=bridge-LAN interface=ether3
+add bridge=bridge-LAN interface=ether4
+
+# 2. QUAY PPPOE VIETTEL (Điền pass lấy từ modem Viettel)
+/interface pppoe-client
+add name=pppoe-viettel interface=ether1 user="t008_gftth_nhinth155" password="MẬT_KHẨU_CỦA_BẠN" \
+    add-default-route=yes use-peer-dns=no max-mtu=1492 max-mru=1492 disabled=no
+
+# 3. CẤP IP DẢI 192.168.1.x (DNS trả về thẳng 1.1.1.1 / 8.8.8.8 cho 2 điện thoại)
+/ip address add address=192.168.1.1/24 interface=bridge-LAN network=192.168.1.0
+/ip pool add name=dhcp-pool ranges=192.168.1.10-192.168.1.200
+/ip dhcp-server add address-pool=dhcp-pool interface=bridge-LAN name=dhcp-LAN disabled=no
+/ip dhcp-server network add address=192.168.1.0/24 dns-server=1.1.1.1,8.8.8.8 gateway=192.168.1.1
+
+# 4. GÁN IP TĨNH CỐ ĐỊNH (Khớp với VM 192.168.1.7 của bạn)
+/ip dhcp-server lease
+add address=192.168.1.7 mac-address=00:0C:29:C5:2D:F7 comment="VM-Linux"
+add address=192.168.1.100 mac-address=AA:BB:CC:DD:EE:01 comment="Dell-Wyse"
+
+# 5. NAT MASQUERADE & FASTTRACK PHẦN CỨNG (ĐẨY THẲNG GÓI TIN, KHÔNG CAN THIỆP SÂU)
+/ip firewall nat
+add action=masquerade chain=srcnat out-interface=pppoe-viettel
+
+/ip firewall filter
+add action=accept chain=input connection-state=established,related
+add action=accept chain=input protocol=icmp
+add action=drop chain=input in-interface=pppoe-viettel comment="Drop WAN Hack"
+add action=fasttrack-connection chain=forward connection-state=established,related hw-offload=yes
+add action=accept chain=forward connection-state=established,related
+
+# 6. GIỚI HẠN NHẸ ĐƯỜNG TRUYỀN (GIỮ 10M CHO 2 ĐIỆN THOẠI KHI VM KÉO MAX 200M NLOAD)
+/queue simple
+add name="01.Priority-Phone" target=192.168.1.0/24 priority=1/1
+add name="02.Farm-Traffic" target=192.168.1.7/32,192.168.1.100/32 max-limit=190M/190M priority=8/8
