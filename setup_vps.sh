@@ -182,6 +182,7 @@ if [[ ! -c /dev/net/tun ]]; then
   chmod 600 /dev/net/tun 2>/dev/null || true
 fi
 
+# KHOI TAO ZRAM AN TOAN - KHONG SWAPOFF NEU DANG CHAY DE TRANH OOM CRASH CONTAINER
 cat > /usr/local/bin/ii-init-zram.sh <<'EOF_ZRAM_INIT'
 #!/usr/bin/env bash
 MEM_MB=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
@@ -194,15 +195,16 @@ if [[ ! -b /dev/zram0 ]] && [[ -f /sys/class/zram-control/hot_add ]]; then
 fi
 
 if [[ -b /dev/zram0 ]]; then
-  swapon --show 2>/dev/null | grep -q "/dev/zram0" && swapoff /dev/zram0 2>/dev/null || true
-  if grep -q "zstd" /sys/block/zram0/comp_algorithm 2>/dev/null; then
-    echo zstd > /sys/block/zram0/comp_algorithm 2>/dev/null || true
-  elif grep -q "lz4" /sys/block/zram0/comp_algorithm 2>/dev/null; then
-    echo lz4 > /sys/block/zram0/comp_algorithm 2>/dev/null || true
+  if ! swapon --show 2>/dev/null | grep -q "/dev/zram0"; then
+    if grep -q "zstd" /sys/block/zram0/comp_algorithm 2>/dev/null; then
+      echo zstd > /sys/block/zram0/comp_algorithm 2>/dev/null || true
+    elif grep -q "lz4" /sys/block/zram0/comp_algorithm 2>/dev/null; then
+      echo lz4 > /sys/block/zram0/comp_algorithm 2>/dev/null || true
+    fi
+    echo "$ZRAM_BYTES" > /sys/block/zram0/disksize 2>/dev/null || true
+    mkswap /dev/zram0 >/dev/null 2>&1
+    swapon -p 10 /dev/zram0 2>/dev/null || true
   fi
-  echo "$ZRAM_BYTES" > /sys/block/zram0/disksize 2>/dev/null || true
-  mkswap /dev/zram0 >/dev/null 2>&1
-  swapon -p 10 /dev/zram0 2>/dev/null || true
 fi
 EOF_ZRAM_INIT
 chmod +x /usr/local/bin/ii-init-zram.sh
@@ -316,16 +318,14 @@ echo "=============================================================="
 CURR_DISK_SWAP_MB=$(swapon --show=NAME,SIZE --bytes 2>/dev/null | awk '/swapfile/{print int($2/1024/1024)}' || echo 0)
 if (( IS_CONTAINER != 1 )); then
   if (( CURR_DISK_SWAP_MB != TARGET_SWAP_MB )); then
-    swapoff /swapfile /swapfile2 2>/dev/null || true
-    rm -f /swapfile /swapfile2 2>/dev/null || true
-    if ! fallocate -l "${TARGET_SWAP_MB}M" /swapfile 2>/dev/null; then
-      dd if=/dev/zero of=/swapfile bs=1M count="$TARGET_SWAP_MB" status=none
-    fi
-    chmod 600 /swapfile
-    if mkswap /swapfile >/dev/null 2>&1 && swapon -p 0 /swapfile 2>/dev/null; then
-      grep -q "^/swapfile" /etc/fstab || echo "/swapfile none swap sw,pri=0 0 0" >> /etc/fstab
-    else
-      rm -f /swapfile
+    if (( CURR_DISK_SWAP_MB == 0 )); then
+      if ! fallocate -l "${TARGET_SWAP_MB}M" /swapfile 2>/dev/null; then
+        dd if=/dev/zero of=/swapfile bs=1M count="$TARGET_SWAP_MB" status=none
+      fi
+      chmod 600 /swapfile
+      if mkswap /swapfile >/dev/null 2>&1 && swapon -p 0 /swapfile 2>/dev/null; then
+        grep -q "^/swapfile" /etc/fstab || echo "/swapfile none swap sw,pri=0 0 0" >> /etc/fstab
+      fi
     fi
   fi
 fi
@@ -359,9 +359,9 @@ Unattended-Upgrade::Automatic-Reboot "false";
 Unattended-Upgrade::Automatic-Reboot-WithUsers "false";
 EOF_APT
 
+# BAO VE MANG DOCKER - TUYET DOI KHONG DUNG iptables -F FORWARD
 iptables -P INPUT ACCEPT 2>/dev/null || true
 iptables -P FORWARD ACCEPT 2>/dev/null || true
-# GHI CHU: Tuyet doi khong dung iptables -F FORWARD vi se xoa sach bang NAT cua Docker
 if command -v netfilter-persistent >/dev/null 2>&1; then
   netfilter-persistent save 2>/dev/null || true
 fi
@@ -643,6 +643,7 @@ EOF_FLAPGUARD
 chmod +x /usr/local/bin/ii-flapguard.sh
 ln -sf /usr/local/bin/ii-flapguard.sh /usr/bin/ii-flapguard 2>/dev/null || true
 
+# NANG CAP WATCHDOG TUONG THICH 100% VOI TUN2PROXY (--proxy)
 cat > /usr/local/bin/ii-repocket-watchdog.sh <<'EOF_RP_WATCHDOG'
 #!/usr/bin/env bash
 set -uo pipefail
@@ -703,6 +704,17 @@ for cid in $(docker ps -aq 2>/dev/null); do
       raw_proxy=$(echo "$tun_envs" | grep '^PROXY=' | cut -d= -f2-)
       if [[ -n "$raw_proxy" ]]; then
         clean_p="${raw_proxy#*://}"
+        [[ "$clean_p" == *@* ]] && clean_p="${clean_p#*@}"
+        proxy_ip="${clean_p%%:*}"
+        proxy_port="${clean_p##*:}"
+      fi
+    fi
+
+    # QUET THEM TU DONG LENH CUA TUN2PROXY
+    if [[ -z "$proxy_ip" || -z "$proxy_port" ]]; then
+      tun_cmd=$(docker inspect -f '{{join .Config.Cmd " "}}' "$target_tun" 2>/dev/null || true)
+      if [[ "$tun_cmd" =~ --proxy[[:space:]]+([^[:space:]]+) ]]; then
+        clean_p="${BASH_REMATCH[1]#*://}"
         [[ "$clean_p" == *@* ]] && clean_p="${clean_p#*@}"
         proxy_ip="${clean_p%%:*}"
         proxy_port="${clean_p##*:}"
@@ -778,6 +790,7 @@ EOF_RP_WATCHDOG
 chmod +x /usr/local/bin/ii-repocket-watchdog.sh
 ln -sf /usr/local/bin/ii-repocket-watchdog.sh /usr/bin/ii-repocket-watchdog 2>/dev/null || true
 
+# NANG CAP DOCTOR NHAN DIEN CHINH XAC PROXY TUN2PROXY
 cat > /usr/local/bin/ii-repocket-doctor <<'EOF_DOCTOR'
 #!/usr/bin/env bash
 set -uo pipefail
@@ -818,6 +831,16 @@ for cid in $RP_CTRS; do
       raw_proxy=$(echo "$tun_envs" | grep '^PROXY=' | cut -d= -f2-)
       if [[ -n "$raw_proxy" ]]; then
         clean_p="${raw_proxy#*://}"
+        [[ "$clean_p" == *@* ]] && clean_p="${clean_p#*@}"
+        p_ip="${clean_p%%:*}"
+        p_port="${clean_p##*:}"
+      fi
+    fi
+
+    if [[ -z "$p_ip" || -z "$p_port" ]]; then
+      tun_cmd=$(docker inspect -f '{{join .Config.Cmd " "}}' "$target_tun" 2>/dev/null || true)
+      if [[ "$tun_cmd" =~ --proxy[[:space:]]+([^[:space:]]+) ]]; then
+        clean_p="${BASH_REMATCH[1]#*://}"
         [[ "$clean_p" == *@* ]] && clean_p="${clean_p#*@}"
         p_ip="${clean_p%%:*}"
         p_port="${clean_p##*:}"
