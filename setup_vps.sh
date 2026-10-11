@@ -288,9 +288,6 @@ for g in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
   echo performance > "$g" 2>/dev/null || true
 done
 
-SWAPPINESS=100
-sysctl -w vm.swappiness=100 >/dev/null 2>&1 || true
-
 if (( CPU <= 2 )); then
   SYN_BACKLOG=8192
   NETDEV_BUDGET=300
@@ -364,7 +361,7 @@ EOF_APT
 
 iptables -P INPUT ACCEPT 2>/dev/null || true
 iptables -P FORWARD ACCEPT 2>/dev/null || true
-iptables -F FORWARD 2>/dev/null || true
+# GHI CHU: Tuyet doi khong dung iptables -F FORWARD vi se xoa sach bang NAT cua Docker
 if command -v netfilter-persistent >/dev/null 2>&1; then
   netfilter-persistent save 2>/dev/null || true
 fi
@@ -387,10 +384,10 @@ net.ipv4.tcp_wmem = 4096 65536 16777216
 vm.min_free_kbytes = 65536
 vm.page-cluster = 0
 vm.overcommit_memory = 1
-vm.swappiness = ${SWAPPINESS}
-vm.vfs_cache_pressure = 300
-vm.dirty_background_ratio = 3
-vm.dirty_ratio = 8
+vm.swappiness = 60
+vm.vfs_cache_pressure = 100
+vm.dirty_background_ratio = 5
+vm.dirty_ratio = 15
 vm.dirty_writeback_centisecs = 1500
 fs.file-max = 2097152
 fs.nr_open = 2097152
@@ -411,10 +408,10 @@ kernel.sched_autogroup_enabled = 0
 fs.epoll.max_user_watches = 2097152
 net.ipv4.ip_local_port_range = 1024 65535
 net.ipv4.tcp_tw_reuse = 1
-net.ipv4.tcp_fin_timeout = 10
-net.ipv4.tcp_keepalive_time = 30
-net.ipv4.tcp_keepalive_intvl = 5
-net.ipv4.tcp_keepalive_probes = 3
+net.ipv4.tcp_fin_timeout = 30
+net.ipv4.tcp_keepalive_time = 180
+net.ipv4.tcp_keepalive_intvl = 15
+net.ipv4.tcp_keepalive_probes = 5
 net.ipv4.tcp_slow_start_after_idle = 0
 net.netfilter.nf_conntrack_max = 524288
 net.netfilter.nf_conntrack_udp_timeout = 60
@@ -463,7 +460,7 @@ ii_profile() {
     dind*)
       P_APP="docker-in-docker"; P_BASE_MIN="120m"; P_POLICY="unless-stopped" ;;
     traffmon*)
-      P_APP="Traffmonetizer";  P_BASE_MIN="25m";  P_POLICY="unless-stopped" ;;
+      P_APP="Traffmonetizer";  P_BASE_MIN="60m";  P_POLICY="unless-stopped" ;;
     bitping*)
       P_APP="Bitping";         P_BASE_MIN="35m";  P_POLICY="unless-stopped" ;;
     proxylite*|proxyrack*|proxybase*|antgain*|wizardgain*|peer2profit*|packetsdk*|castarsdk*)
@@ -566,10 +563,10 @@ auto_patch_engageub_repo() {
     set_kv USE_VPNS false
     set_kv USE_MULTI_IP false
     set_kv USE_SOCKS5_DNS false
-    set_kv USE_DNS_OVER_HTTPS true
+    set_kv USE_DNS_OVER_HTTPS false
     set_kv USE_DNSCRYPT false
     set_kv USE_DNS_CACHE true
-    set_kv USE_TUN2PROXY false
+    set_kv USE_TUN2PROXY true
     set_kv USE_DOCKER_EMBEDDED_DNS false
     set_kv USE_CUSTOM_NETWORK false
     set_kv AUTO_UPDATE_CONTAINERS false
@@ -955,17 +952,18 @@ for cid in "${!LIVE_ACTUAL_MB[@]}"; do
     (( target_burst > 512 )) && target_burst=512
   fi
 
+  # DUNG CPU-SHARES=512 DE DAM BAO TIEN TRINH TRAFFMONETIZER KHONG BI DOI CPU KHI CAN BANG THONG
   docker update \
     --memory-reservation="${soft_floor}m" \
     --memory="${target_burst}m" \
-    --cpu-shares=256 \
+    --cpu-shares=512 \
     --memory-swap="-1" \
     --restart="$P_POLICY" \
     "$cid" >/dev/null 2>&1 || \
   docker update \
     --memory-reservation="${soft_floor}m" \
     --memory="${target_burst}m" \
-    --cpu-shares=256 \
+    --cpu-shares=512 \
     --restart="$P_POLICY" \
     "$cid" >/dev/null 2>&1 || true
 done
@@ -1261,7 +1259,7 @@ SWAP_TOTAL=$(free -m | awk '/^Swap:/{print $2}')
 SWAP_USED=$(free -m | awk '/^Swap:/{print $3}')
 
 echo "  RAM  : Total ${RAM_TOTAL}MB | Used ${RAM_USED}MB | Avail ${RAM_AVAIL}MB"
-echo "  Swap : Total ${SWAP_TOTAL}MB | Used ${SWAP_USED}MB (Swappiness: $(cat /proc/sys/vm/swappiness 2>/dev/null || echo 100))"
+echo "  Swap : Total ${SWAP_TOTAL}MB | Used ${SWAP_USED}MB (Swappiness: $(cat /proc/sys/vm/swappiness 2>/dev/null || echo 60))"
 
 if swapon --show 2>/dev/null | grep -q "/dev/zram0"; then
   ZRAM_SIZE=$(swapon --show 2>/dev/null | grep "/dev/zram0" | awk '{print $3}')
