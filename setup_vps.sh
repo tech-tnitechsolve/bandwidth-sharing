@@ -567,7 +567,7 @@ auto_patch_engageub_repo() {
     set_kv USE_MULTI_IP false
     set_kv USE_SOCKS5_DNS false
     # set_kv USE_DNS_OVER_HTTPS true
-    set_kv USE_DNSCRYPT false
+    # set_kv USE_DNSCRYPT false
     set_kv USE_DNS_CACHE true
     # set_kv USE_TUN2PROXY false
     set_kv USE_DOCKER_EMBEDDED_DNS false
