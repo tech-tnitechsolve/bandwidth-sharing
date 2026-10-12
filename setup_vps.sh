@@ -182,7 +182,6 @@ if [[ ! -c /dev/net/tun ]]; then
   chmod 600 /dev/net/tun 2>/dev/null || true
 fi
 
-# KHOI TAO ZRAM AN TOAN - KHONG SWAPOFF NEU DANG CHAY DE TRANH OOM CRASH CONTAINER
 cat > /usr/local/bin/ii-init-zram.sh <<'EOF_ZRAM_INIT'
 #!/usr/bin/env bash
 MEM_MB=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
@@ -195,16 +194,15 @@ if [[ ! -b /dev/zram0 ]] && [[ -f /sys/class/zram-control/hot_add ]]; then
 fi
 
 if [[ -b /dev/zram0 ]]; then
-  if ! swapon --show 2>/dev/null | grep -q "/dev/zram0"; then
-    if grep -q "zstd" /sys/block/zram0/comp_algorithm 2>/dev/null; then
-      echo zstd > /sys/block/zram0/comp_algorithm 2>/dev/null || true
-    elif grep -q "lz4" /sys/block/zram0/comp_algorithm 2>/dev/null; then
-      echo lz4 > /sys/block/zram0/comp_algorithm 2>/dev/null || true
-    fi
-    echo "$ZRAM_BYTES" > /sys/block/zram0/disksize 2>/dev/null || true
-    mkswap /dev/zram0 >/dev/null 2>&1
-    swapon -p 10 /dev/zram0 2>/dev/null || true
+  swapon --show 2>/dev/null | grep -q "/dev/zram0" && swapoff /dev/zram0 2>/dev/null || true
+  if grep -q "zstd" /sys/block/zram0/comp_algorithm 2>/dev/null; then
+    echo zstd > /sys/block/zram0/comp_algorithm 2>/dev/null || true
+  elif grep -q "lz4" /sys/block/zram0/comp_algorithm 2>/dev/null; then
+    echo lz4 > /sys/block/zram0/comp_algorithm 2>/dev/null || true
   fi
+  echo "$ZRAM_BYTES" > /sys/block/zram0/disksize 2>/dev/null || true
+  mkswap /dev/zram0 >/dev/null 2>&1
+  swapon -p 10 /dev/zram0 2>/dev/null || true
 fi
 EOF_ZRAM_INIT
 chmod +x /usr/local/bin/ii-init-zram.sh
@@ -290,6 +288,9 @@ for g in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
   echo performance > "$g" 2>/dev/null || true
 done
 
+SWAPPINESS=100
+sysctl -w vm.swappiness=100 >/dev/null 2>&1 || true
+
 if (( CPU <= 2 )); then
   SYN_BACKLOG=8192
   NETDEV_BUDGET=300
@@ -318,14 +319,16 @@ echo "=============================================================="
 CURR_DISK_SWAP_MB=$(swapon --show=NAME,SIZE --bytes 2>/dev/null | awk '/swapfile/{print int($2/1024/1024)}' || echo 0)
 if (( IS_CONTAINER != 1 )); then
   if (( CURR_DISK_SWAP_MB != TARGET_SWAP_MB )); then
-    if (( CURR_DISK_SWAP_MB == 0 )); then
-      if ! fallocate -l "${TARGET_SWAP_MB}M" /swapfile 2>/dev/null; then
-        dd if=/dev/zero of=/swapfile bs=1M count="$TARGET_SWAP_MB" status=none
-      fi
-      chmod 600 /swapfile
-      if mkswap /swapfile >/dev/null 2>&1 && swapon -p 0 /swapfile 2>/dev/null; then
-        grep -q "^/swapfile" /etc/fstab || echo "/swapfile none swap sw,pri=0 0 0" >> /etc/fstab
-      fi
+    swapoff /swapfile /swapfile2 2>/dev/null || true
+    rm -f /swapfile /swapfile2 2>/dev/null || true
+    if ! fallocate -l "${TARGET_SWAP_MB}M" /swapfile 2>/dev/null; then
+      dd if=/dev/zero of=/swapfile bs=1M count="$TARGET_SWAP_MB" status=none
+    fi
+    chmod 600 /swapfile
+    if mkswap /swapfile >/dev/null 2>&1 && swapon -p 0 /swapfile 2>/dev/null; then
+      grep -q "^/swapfile" /etc/fstab || echo "/swapfile none swap sw,pri=0 0 0" >> /etc/fstab
+    else
+      rm -f /swapfile
     fi
   fi
 fi
@@ -359,9 +362,9 @@ Unattended-Upgrade::Automatic-Reboot "false";
 Unattended-Upgrade::Automatic-Reboot-WithUsers "false";
 EOF_APT
 
-# BAO VE MANG DOCKER - TUYET DOI KHONG DUNG iptables -F FORWARD
 iptables -P INPUT ACCEPT 2>/dev/null || true
 iptables -P FORWARD ACCEPT 2>/dev/null || true
+iptables -F FORWARD 2>/dev/null || true
 if command -v netfilter-persistent >/dev/null 2>&1; then
   netfilter-persistent save 2>/dev/null || true
 fi
@@ -384,10 +387,10 @@ net.ipv4.tcp_wmem = 4096 65536 16777216
 vm.min_free_kbytes = 65536
 vm.page-cluster = 0
 vm.overcommit_memory = 1
-vm.swappiness = 60
-vm.vfs_cache_pressure = 100
-vm.dirty_background_ratio = 5
-vm.dirty_ratio = 15
+vm.swappiness = ${SWAPPINESS}
+vm.vfs_cache_pressure = 300
+vm.dirty_background_ratio = 3
+vm.dirty_ratio = 8
 vm.dirty_writeback_centisecs = 1500
 fs.file-max = 2097152
 fs.nr_open = 2097152
@@ -408,10 +411,10 @@ kernel.sched_autogroup_enabled = 0
 fs.epoll.max_user_watches = 2097152
 net.ipv4.ip_local_port_range = 1024 65535
 net.ipv4.tcp_tw_reuse = 1
-net.ipv4.tcp_fin_timeout = 30
-net.ipv4.tcp_keepalive_time = 180
-net.ipv4.tcp_keepalive_intvl = 15
-net.ipv4.tcp_keepalive_probes = 5
+net.ipv4.tcp_fin_timeout = 10
+net.ipv4.tcp_keepalive_time = 30
+net.ipv4.tcp_keepalive_intvl = 5
+net.ipv4.tcp_keepalive_probes = 3
 net.ipv4.tcp_slow_start_after_idle = 0
 net.netfilter.nf_conntrack_max = 524288
 net.netfilter.nf_conntrack_udp_timeout = 60
@@ -460,7 +463,7 @@ ii_profile() {
     dind*)
       P_APP="docker-in-docker"; P_BASE_MIN="120m"; P_POLICY="unless-stopped" ;;
     traffmon*)
-      P_APP="Traffmonetizer";  P_BASE_MIN="60m";  P_POLICY="unless-stopped" ;;
+      P_APP="Traffmonetizer";  P_BASE_MIN="25m";  P_POLICY="unless-stopped" ;;
     bitping*)
       P_APP="Bitping";         P_BASE_MIN="35m";  P_POLICY="unless-stopped" ;;
     proxylite*|proxyrack*|proxybase*|antgain*|wizardgain*|peer2profit*|packetsdk*|castarsdk*)
@@ -563,10 +566,10 @@ auto_patch_engageub_repo() {
     set_kv USE_VPNS false
     set_kv USE_MULTI_IP false
     set_kv USE_SOCKS5_DNS false
-    set_kv USE_DNS_OVER_HTTPS false
+    set_kv USE_DNS_OVER_HTTPS true
     set_kv USE_DNSCRYPT false
     set_kv USE_DNS_CACHE true
-    set_kv USE_TUN2PROXY true
+    set_kv USE_TUN2PROXY false
     set_kv USE_DOCKER_EMBEDDED_DNS false
     set_kv USE_CUSTOM_NETWORK false
     set_kv AUTO_UPDATE_CONTAINERS false
@@ -643,7 +646,6 @@ EOF_FLAPGUARD
 chmod +x /usr/local/bin/ii-flapguard.sh
 ln -sf /usr/local/bin/ii-flapguard.sh /usr/bin/ii-flapguard 2>/dev/null || true
 
-# NANG CAP WATCHDOG TUONG THICH 100% VOI TUN2PROXY (--proxy)
 cat > /usr/local/bin/ii-repocket-watchdog.sh <<'EOF_RP_WATCHDOG'
 #!/usr/bin/env bash
 set -uo pipefail
@@ -704,17 +706,6 @@ for cid in $(docker ps -aq 2>/dev/null); do
       raw_proxy=$(echo "$tun_envs" | grep '^PROXY=' | cut -d= -f2-)
       if [[ -n "$raw_proxy" ]]; then
         clean_p="${raw_proxy#*://}"
-        [[ "$clean_p" == *@* ]] && clean_p="${clean_p#*@}"
-        proxy_ip="${clean_p%%:*}"
-        proxy_port="${clean_p##*:}"
-      fi
-    fi
-
-    # QUET THEM TU DONG LENH CUA TUN2PROXY
-    if [[ -z "$proxy_ip" || -z "$proxy_port" ]]; then
-      tun_cmd=$(docker inspect -f '{{join .Config.Cmd " "}}' "$target_tun" 2>/dev/null || true)
-      if [[ "$tun_cmd" =~ --proxy[[:space:]]+([^[:space:]]+) ]]; then
-        clean_p="${BASH_REMATCH[1]#*://}"
         [[ "$clean_p" == *@* ]] && clean_p="${clean_p#*@}"
         proxy_ip="${clean_p%%:*}"
         proxy_port="${clean_p##*:}"
@@ -790,7 +781,6 @@ EOF_RP_WATCHDOG
 chmod +x /usr/local/bin/ii-repocket-watchdog.sh
 ln -sf /usr/local/bin/ii-repocket-watchdog.sh /usr/bin/ii-repocket-watchdog 2>/dev/null || true
 
-# NANG CAP DOCTOR NHAN DIEN CHINH XAC PROXY TUN2PROXY
 cat > /usr/local/bin/ii-repocket-doctor <<'EOF_DOCTOR'
 #!/usr/bin/env bash
 set -uo pipefail
@@ -831,16 +821,6 @@ for cid in $RP_CTRS; do
       raw_proxy=$(echo "$tun_envs" | grep '^PROXY=' | cut -d= -f2-)
       if [[ -n "$raw_proxy" ]]; then
         clean_p="${raw_proxy#*://}"
-        [[ "$clean_p" == *@* ]] && clean_p="${clean_p#*@}"
-        p_ip="${clean_p%%:*}"
-        p_port="${clean_p##*:}"
-      fi
-    fi
-
-    if [[ -z "$p_ip" || -z "$p_port" ]]; then
-      tun_cmd=$(docker inspect -f '{{join .Config.Cmd " "}}' "$target_tun" 2>/dev/null || true)
-      if [[ "$tun_cmd" =~ --proxy[[:space:]]+([^[:space:]]+) ]]; then
-        clean_p="${BASH_REMATCH[1]#*://}"
         [[ "$clean_p" == *@* ]] && clean_p="${clean_p#*@}"
         p_ip="${clean_p%%:*}"
         p_port="${clean_p##*:}"
@@ -975,18 +955,17 @@ for cid in "${!LIVE_ACTUAL_MB[@]}"; do
     (( target_burst > 512 )) && target_burst=512
   fi
 
-  # DUNG CPU-SHARES=512 DE DAM BAO TIEN TRINH TRAFFMONETIZER KHONG BI DOI CPU KHI CAN BANG THONG
   docker update \
     --memory-reservation="${soft_floor}m" \
     --memory="${target_burst}m" \
-    --cpu-shares=512 \
+    --cpu-shares=256 \
     --memory-swap="-1" \
     --restart="$P_POLICY" \
     "$cid" >/dev/null 2>&1 || \
   docker update \
     --memory-reservation="${soft_floor}m" \
     --memory="${target_burst}m" \
-    --cpu-shares=512 \
+    --cpu-shares=256 \
     --restart="$P_POLICY" \
     "$cid" >/dev/null 2>&1 || true
 done
@@ -1282,7 +1261,7 @@ SWAP_TOTAL=$(free -m | awk '/^Swap:/{print $2}')
 SWAP_USED=$(free -m | awk '/^Swap:/{print $3}')
 
 echo "  RAM  : Total ${RAM_TOTAL}MB | Used ${RAM_USED}MB | Avail ${RAM_AVAIL}MB"
-echo "  Swap : Total ${SWAP_TOTAL}MB | Used ${SWAP_USED}MB (Swappiness: $(cat /proc/sys/vm/swappiness 2>/dev/null || echo 60))"
+echo "  Swap : Total ${SWAP_TOTAL}MB | Used ${SWAP_USED}MB (Swappiness: $(cat /proc/sys/vm/swappiness 2>/dev/null || echo 100))"
 
 if swapon --show 2>/dev/null | grep -q "/dev/zram0"; then
   ZRAM_SIZE=$(swapon --show 2>/dev/null | grep "/dev/zram0" | awk '{print $3}')
