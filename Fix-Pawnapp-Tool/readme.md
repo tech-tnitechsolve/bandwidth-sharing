@@ -7,12 +7,14 @@ sudo bash install-shield.sh
 
 ### CÁCH 2: CHẠY 1 LỆNH DUY NHẤT (NẾU MUỐN CHẠY NHANH KHÔNG CẦN TẠO FILE)
 
-Nếu bạn không muốn dùng `nano`, chỉ cần copy đúng khối lệnh này dán vào terminal:
-
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ (hoặc) dùng lệnh tạo trực tiếp:
+curl -fsSL https://raw.githubusercontent.com/tech-tnitechsolve/bandwidth-sharing/main/Fix-Pawnapp-Tool/install-shield.sh | sudo bash
 ```
-*(Khuyên bạn nên dùng **Cách 1** ở trên: mở `nano install-shield.sh` rồi dán vào $\rightarrow$ Đây là cách an toàn 100% không bao giờ bị đứt chữ do đường truyền mạng lag).*
+
+*(Hoặc dùng lệnh `wget` nếu VPS chưa có curl:)*
+```bash
+wget -qO- https://raw.githubusercontent.com/tech-tnitechsolve/bandwidth-sharing/main/Fix-Pawnapp-Tool/install-shield.sh | sudo bash
+```
 
 ---
 
@@ -26,3 +28,10 @@ curl -fsSL https://raw.githubusercontent.com/ (hoặc) dùng lệnh tạo trực
   ```bash
   sudo bash install-shield.sh --uninstall
   ```
+
+---
+
+### LỆNH GỠ BỎ 1-DÒNG (NẾU CẦN GỠ SẠCH TRÊN VPS NÀO ĐÓ):
+```bash
+curl -fsSL https://raw.githubusercontent.com/tech-tnitechsolve/bandwidth-sharing/main/Fix-Pawnapp-Tool/install-shield.sh | sudo bash -s -- --uninstall
+```
