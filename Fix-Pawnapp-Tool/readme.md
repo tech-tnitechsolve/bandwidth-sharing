@@ -1,0 +1,28 @@
+#### Chạy script cài đặt
+```bash
+sudo bash install-shield.sh
+```
+
+---
+
+### CÁCH 2: CHẠY 1 LỆNH DUY NHẤT (NẾU MUỐN CHẠY NHANH KHÔNG CẦN TẠO FILE)
+
+Nếu bạn không muốn dùng `nano`, chỉ cần copy đúng khối lệnh này dán vào terminal:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ (hoặc) dùng lệnh tạo trực tiếp:
+```
+*(Khuyên bạn nên dùng **Cách 1** ở trên: mở `nano install-shield.sh` rồi dán vào $\rightarrow$ Đây là cách an toàn 100% không bao giờ bị đứt chữ do đường truyền mạng lag).*
+
+---
+
+### HƯỚNG DẪN KHI SETUP MÁY CHỦ VPS MỚI:
+
+1. **Cài đặt tool cày tiền:** Chạy script cài đặt của bên bán như bình thường.
+2. **Kích hoạt bộ lọc:** Chạy `sudo bash install-shield.sh` (chỉ mất 3 giây).
+3. **Sử dụng:** Vào Web UI Pawns Manager (`:8787`), add proxy và tạo thiết bị cày tiền bình thường.
+
+* *Khi nào muốn gỡ bỏ hoàn toàn trên VPS nào đó, chỉ cần gõ:*
+  ```bash
+  sudo bash install-shield.sh --uninstall
+  ```
