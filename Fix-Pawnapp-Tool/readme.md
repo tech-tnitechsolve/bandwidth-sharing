@@ -26,5 +26,12 @@ curl -fsSL https://raw.githubusercontent.com/tech-tnitechsolve/bandwidth-sharing
 wget -qO- https://raw.githubusercontent.com/tech-tnitechsolve/bandwidth-sharing/main/Fix-Pawnapp-Tool/install-shield.sh | sudo bash
 ```
 
+---
+
+### LỆNH GỠ BỎ 1-DÒNG (NẾU CẦN GỠ SẠCH TRÊN VPS NÀO ĐÓ):
+```bash
+curl -fsSL https://raw.githubusercontent.com/tech-tnitechsolve/bandwidth-sharing/main/Fix-Pawnapp-Tool/install-shield.sh | sudo bash -s -- --uninstall
+```
+
 
 
