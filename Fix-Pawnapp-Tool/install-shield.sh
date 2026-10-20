@@ -1,15 +1,14 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Pawns Shield - SOCKS5 Domain Sanitizer for Webshare/Decodo (Turbo Edition)
+# Pawns Shield - SOCKS5 Domain Sanitizer for Webshare/Decodo (Stable Edition)
 # Tác dụng: Xóa sạch chữ "pawns.app" chống suspend proxy, bảo vệ cổng 1337
 # ==============================================================================
 set -euo pipefail
 
 SHIELD_PY="/usr/local/bin/pawns-shield.py"
 SHIELD_SVC="/etc/systemd/system/pawns-shield.service"
-SYSCTL_CONF="/etc/sysctl.d/99-pawns-turbo.conf"
 
-# Chức năng gỡ cài đặt
+# Chức năng gỡ cài đặt sạch sẽ
 if [[ "${1:-}" == "--uninstall" ]]; then
     echo "[*] Đang gỡ bỏ Pawns Shield..."
     systemctl disable --now pawns-shield 2>/dev/null || true
@@ -17,8 +16,7 @@ if [[ "${1:-}" == "--uninstall" ]]; then
     iptables -t nat -F PAWNS_SHIELD 2>/dev/null || true
     iptables -t nat -X PAWNS_SHIELD 2>/dev/null || true
     ip6tables -D OUTPUT -p tcp -m string --string "pawns.app" --algo bm -j REJECT 2>/dev/null || true
-    rm -f "$SHIELD_PY" "$SHIELD_SVC" "$SYSCTL_CONF"
-    sysctl --system >/dev/null 2>&1 || true
+    rm -f "$SHIELD_PY" "$SHIELD_SVC"
     systemctl daemon-reload
     echo "[+] Đã gỡ bỏ sạch sẽ Pawns Shield khỏi VPS!"
     exit 0
@@ -30,22 +28,11 @@ if [[ $EUID -ne 0 ]]; then
    exit 1
 fi
 
-echo "[*] 1/5. Đang kiểm tra môi trường hệ thống..."
+echo "[*] 1/4. Đang kiểm tra môi trường hệ thống..."
 command -v python3 >/dev/null 2>&1 || (apt-get update -y && apt-get install -y python3)
 command -v iptables >/dev/null 2>&1 || (apt-get update -y && apt-get install -y iptables)
 
-echo "[*] 2/5. Đang tối ưu thông số nhân Linux (Chống kẹt socket, tăng tốc băng thông)..."
-cat << 'EOF' > "$SYSCTL_CONF"
-net.ipv4.tcp_tw_reuse = 1
-net.ipv4.ip_local_port_range = 1024 65535
-net.core.somaxconn = 65535
-net.ipv4.tcp_max_syn_backlog = 65535
-net.core.netdev_max_backlog = 65535
-fs.file-max = 2097152
-EOF
-sysctl --system >/dev/null 2>&1 || true
-
-echo "[*] 3/5. Đang cài đặt bộ lọc bảo vệ mạng (pawns-shield.py)..."
+echo "[*] 2/4. Đang cài đặt bộ lọc bảo vệ mạng (pawns-shield.py)..."
 cat << 'EOF' > "$SHIELD_PY"
 #!/usr/bin/env python3
 import socket
@@ -63,29 +50,19 @@ SO_ORIGINAL_DST = 80
 SO_MARK = 36
 SHIELD_MARK = 0x1088
 
-# Cache tĩnh Cloudflare DoH cho Pawns
-DNS_CACHE = {
-    "pawns.app": {"ip": "185.110.216.178", "time": time.time() + 86400 * 30},
-    "bootstrap.pawns.app": {"ip": "178.156.140.194", "time": time.time() + 86400 * 30}
-}
+# Phân giải động Cloudflare DoH (Không gán cứng IP chết)
+DNS_CACHE = {}
 
 def get_live_pawn_ip(domain="pawns.app"):
     now = time.time()
-    if domain in DNS_CACHE and (now - DNS_CACHE[domain]["time"] < 600):
+    if domain in DNS_CACHE and (now - DNS_CACHE[domain]["time"] < 300):
         return DNS_CACHE[domain]["ip"]
-    try:
-        # Ưu tiên phân giải siêu tốc qua resolver Linux (chỉ 1ms)
-        ip = socket.gethostbyname(domain)
-        DNS_CACHE[domain] = {"ip": ip, "time": now}
-        return ip
-    except Exception:
-        pass
     try:
         req = urllib.request.Request(
             f"https://1.1.1.1/dns-query?name={domain}&type=A",
-            headers={"Accept": "application/dns-json"}
+            headers={"Accept": "application/dns-json", "User-Agent": "Mozilla/5.0"}
         )
-        with urllib.request.urlopen(req, timeout=2) as resp:
+        with urllib.request.urlopen(req, timeout=3) as resp:
             data = json.loads(resp.read().decode())
             for ans in data.get("Answer", []):
                 if ans.get("type") == 1:
@@ -94,7 +71,7 @@ def get_live_pawn_ip(domain="pawns.app"):
                     return ip
     except Exception:
         pass
-    return DNS_CACHE.get(domain, {}).get("ip", "185.110.216.178")
+    return "185.110.216.178"
 
 def recv_exact(sock, n):
     buf = bytearray()
@@ -107,7 +84,7 @@ def recv_exact(sock, n):
 def pipe_stream(src, dst):
     try:
         while True:
-            data = src.recv(131072)
+            data = src.recv(65536)
             if not data: break
             dst.sendall(data)
     except Exception:
@@ -115,11 +92,12 @@ def pipe_stream(src, dst):
     finally:
         try: dst.shutdown(socket.SHUT_WR)
         except: pass
+        try: src.close()
+        except: pass
 
 def handle_client(client_sock):
     upstream_sock = None
     try:
-        # Triệt tiêu độ trễ gom gói Nagle
         client_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
 
         orig_dst = client_sock.getsockopt(socket.SOL_IP, SO_ORIGINAL_DST, 16)
@@ -127,7 +105,6 @@ def handle_client(client_sock):
         real_ip = socket.inet_ntoa(orig_ip_bytes)
         real_port = orig_port
 
-        # Chống vòng lặp tự trỏ (Self-loop)
         if real_port == SHIELD_PORT or real_ip in ("127.0.0.1", "0.0.0.0"):
             client_sock.close()
             return
@@ -150,10 +127,10 @@ def handle_client(client_sock):
 
         if header[0] != 5:
             upstream_sock.sendall(header)
-            t = threading.Thread(target=pipe_stream, args=(upstream_sock, client_sock), daemon=True)
-            t.start()
-            pipe_stream(client_sock, upstream_sock)
-            t.join(timeout=300)
+            t1 = threading.Thread(target=pipe_stream, args=(client_sock, upstream_sock), daemon=True)
+            t2 = threading.Thread(target=pipe_stream, args=(upstream_sock, client_sock), daemon=True)
+            t1.start(); t2.start()
+            t1.join(); t2.join()
             return
 
         nmethods = header[1]
@@ -213,17 +190,15 @@ def handle_client(client_sock):
         client_sock.sendall(resp_header + rest)
         if resp_header[1] != 0: return
 
-        # CHUYỂN TIẾP TRỌN VẸN (BẢO TOÀN DỮ LIỆU TẢI VỀ CỦA KHÁCH)
+        # 2 LUỒNG SONG SONG ĐỘC LẬP (KHÔNG DÙNG JOIN CHỐNG NGHẼN SOCKET)
         upstream_sock.settimeout(None)
         client_sock.settimeout(None)
-        
-        down_thread = threading.Thread(target=pipe_stream, args=(upstream_sock, client_sock), daemon=True)
-        down_thread.start()
-        
-        pipe_stream(client_sock, upstream_sock)
-        
-        # Đợi cho khách tải xong toàn bộ dữ liệu (tối đa 300s)
-        down_thread.join(timeout=300)
+        t1 = threading.Thread(target=pipe_stream, args=(client_sock, upstream_sock), daemon=True)
+        t2 = threading.Thread(target=pipe_stream, args=(upstream_sock, client_sock), daemon=True)
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
 
     except Exception:
         pass
@@ -294,7 +269,7 @@ EOF
 chmod +x "$SHIELD_PY"
 python3 -m py_compile "$SHIELD_PY"
 
-echo "[*] 4/5. Đang cấu hình dịch vụ Systemd..."
+echo "[*] 3/4. Đang cấu hình dịch vụ Systemd..."
 cat << 'EOF' > "$SHIELD_SVC"
 [Unit]
 Description=Pawns Shield Traffic Sanitizer
@@ -313,12 +288,12 @@ LimitNOFILE=65535
 WantedBy=multi-user.target
 EOF
 
-echo "[*] 5/5. Đang kích hoạt dịch vụ..."
+echo "[*] 4/4. Đang kích hoạt dịch vụ..."
 systemctl daemon-reload
 systemctl enable --now pawns-shield
 systemctl restart pawns-shield
 
 echo "=================================================================="
-echo "   CẬP NHẬT THÀNH CÔNG! BẢN TURBO ĐÃ CHÍNH THỨC HOẠT ĐỘNG!      "
+echo "   CÀI ĐẶT THÀNH CÔNG! BẢN CHUẨN ĐÃ CHÍNH THỨC HOẠT ĐỘNG!       "
 echo "=================================================================="
 systemctl status pawns-shield --no-pager
