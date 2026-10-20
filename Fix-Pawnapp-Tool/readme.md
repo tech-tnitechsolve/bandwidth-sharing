@@ -9,7 +9,7 @@
 ```bash
 sudo bash install-shield.sh
 ```
-* *Khi nào muốn gỡ bỏ hoàn toàn trên VPS nào đó, chỉ cần gõ:*
+*Khi nào muốn gỡ bỏ hoàn toàn trên VPS nào đó, chỉ cần gõ:*
   ```bash
   sudo bash install-shield.sh --uninstall
   ```
