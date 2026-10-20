@@ -1,0 +1,31 @@
+sudo bash -c '
+echo "=================================================================="
+echo "      KIỂM TRA CHUYÊN SÂU HỆ THỐNG SAU KHI CẬP NHẬT TỪ GITHUB     "
+echo "=================================================================="
+
+echo -e "\n[1] TRẠNG THÁI TIẾN TRÌNH TOOL & BỘ LỌC:"
+echo "  - pawns-manager.service : $(systemctl is-active pawns-manager 2>/dev/null)"
+echo "  - pawns-shield.service  : $(systemctl is-active pawns-shield 2>/dev/null)"
+ps -eo pid,user,args | grep -E "pawns-manager|sdk-win" | grep -v grep
+
+echo -e "\n[2] KIỂM TRA DÀN MÁY CŨ (CỔNG 1337 - BẢO VỆ 100%):"
+CONN_1337=$(ss -H -tp state established "( dport = :1337 )" 2>/dev/null | wc -l)
+echo "  - Tổng số kết nối cổng 1337 đang cày tiền : $CONN_1337 socket(s)"
+ss -tp state established "( dport = :1337 )" 2>/dev/null | head -n 4
+
+echo -e "\n[3] KIỂM TRA KẾT NỐI PROXY WEBSHARE / DECODO (sdk-win):"
+ss -tp state established | grep "sdk-win" | grep -v ":1337" | head -n 6
+
+echo -e "\n[4] THÔNG SỐ TỐI ƯU NHÂN LINUX (TURBO KERNEL):"
+echo "  - tcp_tw_reuse (Tái sử dụng socket ngay)  : $(sysctl -n net.ipv4.tcp_tw_reuse 2>/dev/null) (Chuẩn: 1)"
+echo "  - somaxconn (Hàng đợi kết nối tối đa)     : $(sysctl -n net.core.somaxconn 2>/dev/null) (Chuẩn: 65535)"
+echo "  - Dải cổng tạm thời (Port range)          : $(sysctl -n net.ipv4.ip_local_port_range 2>/dev/null) (Chuẩn: 1024 65535)"
+
+echo -e "\n[5] LƯU LƯỢNG VÀ QUY TẮC BỘ LỌC IPTABLES (PAWNS_SHIELD):"
+iptables -t nat -L PAWNS_SHIELD -n -v
+
+echo -e "\n[6] KIỂM TRA LỖI ĐƯỜNG TRUYỀN (DROPS / TIMEOUTS / RESETS):"
+netstat -s 2>/dev/null | grep -iE "timeout|refused|reset|drop|overflow" | head -n 6 || echo "  - Hoàn hảo: 0 phát hiện lỗi!"
+
+echo -e "\n=================================================================="
+'
