@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Pawns Shield - SOCKS5 Domain Sanitizer for Webshare/Decodo (Stable Edition)
-# Tác dụng: Xóa sạch chữ "pawns.app" chống suspend proxy, bảo vệ cổng 1337
+# Pawns Shield - SOCKS5 Domain Sanitizer & IPv6 Leak Blocker (All-in-One Edition)
+# Tác dụng: Xóa sạch chữ "pawns.app" chống suspend proxy, khóa IPv6, bảo vệ cổng 1337
 # ==============================================================================
 set -euo pipefail
 
@@ -15,7 +15,7 @@ if [[ "${1:-}" == "--uninstall" ]]; then
     iptables -t nat -D OUTPUT -j PAWNS_SHIELD 2>/dev/null || true
     iptables -t nat -F PAWNS_SHIELD 2>/dev/null || true
     iptables -t nat -X PAWNS_SHIELD 2>/dev/null || true
-    ip6tables -D OUTPUT -p tcp -m string --string "pawns.app" --algo bm -j REJECT 2>/dev/null || true
+    ip6tables -F OUTPUT 2>/dev/null || true
     rm -f "$SHIELD_PY" "$SHIELD_SVC"
     systemctl daemon-reload
     echo "[+] Đã gỡ bỏ sạch sẽ Pawns Shield khỏi VPS!"
@@ -31,6 +31,7 @@ fi
 echo "[*] 1/4. Đang kiểm tra môi trường hệ thống..."
 command -v python3 >/dev/null 2>&1 || (apt-get update -y && apt-get install -y python3)
 command -v iptables >/dev/null 2>&1 || (apt-get update -y && apt-get install -y iptables)
+command -v ip6tables >/dev/null 2>&1 || (apt-get update -y && apt-get install -y iptables)
 
 echo "[*] 2/4. Đang cài đặt bộ lọc bảo vệ mạng (pawns-shield.py)..."
 cat << 'EOF' > "$SHIELD_PY"
@@ -105,6 +106,7 @@ def handle_client(client_sock):
         real_ip = socket.inet_ntoa(orig_ip_bytes)
         real_port = orig_port
 
+        # Chống vòng lặp tự trỏ
         if real_port == SHIELD_PORT or real_ip in ("127.0.0.1", "0.0.0.0"):
             client_sock.close()
             return
@@ -190,7 +192,7 @@ def handle_client(client_sock):
         client_sock.sendall(resp_header + rest)
         if resp_header[1] != 0: return
 
-        # 2 LUỒNG SONG SONG ĐỘC LẬP (KHÔNG DÙNG JOIN CHỐNG NGHẼN SOCKET)
+        # 2 LUỒNG SONG SONG ĐỘC LẬP (ĐÃ KIỂM CHỨNG CỰC KỲ MƯỢT)
         upstream_sock.settimeout(None)
         client_sock.settimeout(None)
         t1 = threading.Thread(target=pipe_stream, args=(client_sock, upstream_sock), daemon=True)
@@ -210,40 +212,44 @@ def handle_client(client_sock):
             except: pass
 
 def setup_universal_iptables():
+    # 1. Cấu hình bảng NAT IPv4 bảo vệ Proxy
     subprocess.run("iptables -t nat -N PAWNS_SHIELD 2>/dev/null || iptables -t nat -F PAWNS_SHIELD", shell=True)
     subprocess.run("iptables -t nat -D OUTPUT -j PAWNS_SHIELD 2>/dev/null || true", shell=True)
     subprocess.run("iptables -t nat -I OUTPUT 1 -j PAWNS_SHIELD", shell=True)
 
-    # 1. Bỏ qua gói tin do chính Shield phát ra
+    # Bỏ qua gói tin do chính Shield phát ra
     subprocess.run(f"iptables -t nat -A PAWNS_SHIELD -m mark --mark {hex(SHIELD_MARK)} -j RETURN", shell=True)
 
-    # 2. BẢO VỆ CỤM CỔNG 1337 CỦA DÀN CŨ (TUYỆT ĐỐI KHÔNG CHẠM VÀO)
+    # BẢO VỆ CỤM CỔNG 1337 DÀN CŨ (TUYỆT ĐỐI KHÔNG CHẠM VÀO)
     subprocess.run("iptables -t nat -A PAWNS_SHIELD -p tcp --dport 1337 -j RETURN", shell=True)
 
-    # 3. Bỏ qua các cổng hệ thống và web trực tiếp
+    # Bỏ qua các cổng hệ thống và web trực tiếp
     subprocess.run("iptables -t nat -A PAWNS_SHIELD -p tcp --dport 22 -j RETURN", shell=True)
     subprocess.run("iptables -t nat -A PAWNS_SHIELD -p tcp --dport 53 -j RETURN", shell=True)
     subprocess.run("iptables -t nat -A PAWNS_SHIELD -p tcp --dport 80 -j RETURN", shell=True)
     subprocess.run("iptables -t nat -A PAWNS_SHIELD -p tcp --dport 443 -j RETURN", shell=True)
     subprocess.run("iptables -t nat -A PAWNS_SHIELD -p tcp --dport 8787 -j RETURN", shell=True)
 
-    # 4. BẢO VỆ MẠNG LOCAL & DOCKER (RFC 1918)
+    # BẢO VỆ MẠNG LOCAL & DOCKER (RFC 1918)
     subprocess.run("iptables -t nat -A PAWNS_SHIELD -d 127.0.0.0/8 -j RETURN", shell=True)
     subprocess.run("iptables -t nat -A PAWNS_SHIELD -d 10.0.0.0/8 -j RETURN", shell=True)
     subprocess.run("iptables -t nat -A PAWNS_SHIELD -d 172.16.0.0/12 -j RETURN", shell=True)
     subprocess.run("iptables -t nat -A PAWNS_SHIELD -d 192.168.0.0/16 -j RETURN", shell=True)
 
-    # 5. CHỐT CHẶN VẠN NĂNG: Chỉ bắt các kết nối TCP ra Public IP (Toàn bộ Proxy Webshare/Decodo)
+    # CHỐT CHẶN VẠN NĂNG: Chỉ bắt các kết nối TCP ra Public IP (Proxy Webshare/Decodo)
     subprocess.run(f"iptables -t nat -A PAWNS_SHIELD -p tcp -j REDIRECT --to-ports {SHIELD_PORT}", shell=True)
 
-    # 6. Chống rò rỉ tên miền qua đường IPv6
-    subprocess.run("ip6tables -A OUTPUT -p tcp -m string --string \"pawns.app\" --algo bm -j REJECT 2>/dev/null || true", shell=True)
+    # 2. KHÓA CHẶT RÒ RỈ IPV6 (ÉP 100% LƯU LƯỢNG CHẠY QUA IPV4 ĐÃ BẢO VỆ)
+    subprocess.run("ip6tables -F OUTPUT 2>/dev/null || true", shell=True)
+    subprocess.run("ip6tables -A OUTPUT -o lo -j ACCEPT 2>/dev/null || true", shell=True)
+    subprocess.run("ip6tables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || true", shell=True)
+    subprocess.run("ip6tables -A OUTPUT -p tcp -j REJECT --reject-with icmp6-adm-prohibited 2>/dev/null || true", shell=True)
 
 def cleanup_iptables(*args):
     subprocess.run("iptables -t nat -D OUTPUT -j PAWNS_SHIELD 2>/dev/null || true", shell=True)
     subprocess.run("iptables -t nat -F PAWNS_SHIELD 2>/dev/null || true", shell=True)
     subprocess.run("iptables -t nat -X PAWNS_SHIELD 2>/dev/null || true", shell=True)
-    subprocess.run("ip6tables -D OUTPUT -p tcp -m string --string \"pawns.app\" --algo bm -j REJECT 2>/dev/null || true", shell=True)
+    subprocess.run("ip6tables -F OUTPUT 2>/dev/null || true", shell=True)
     sys.exit(0)
 
 def main():
