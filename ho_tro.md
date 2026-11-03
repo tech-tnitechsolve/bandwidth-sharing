@@ -276,3 +276,25 @@ ln -sf /usr/local/bin/update-traffmonetizer /usr/bin/update-traffmonetizer 2>/de
 /usr/local/bin/update-traffmonetizer
 EOF
 ```
+
+# LỆNH KIỂM TRA TỰ ĐỘNG TOÀN DIỆN (CHẠY 1 PHÁT RA TẤT CẢ)
+
+```
+cat << 'EOF' | bash
+echo "==================== [BẢNG TỔNG KẾT SỨC KHỎE TRAFFMONETIZER] ===================="
+TOTAL=$(docker ps -aq --filter "name=^traffmon" | wc -l)
+RUNNING=$(docker ps -q --filter "name=^traffmon" | wc -l)
+CONNECTED=$(docker ps -q --filter "name=^traffmon" | xargs -I {} docker logs --tail 15 {} 2>&1 | grep -c "Connected: True" || echo 0)
+
+echo "  - Tổng số container TraffMonetizer : $TOTAL"
+echo "  - Số container đang chạy (Running) : $RUNNING / $TOTAL"
+echo "  - Số node ghi nhận kết nối máy chủ : $CONNECTED log xác nhận"
+
+if (( RUNNING == TOTAL && TOTAL > 0 )); then
+  echo -e "\n \033[1;32m===> KẾT LUẬN: 100% NODE ĐÃ LÊN BẢN MỚI VÀ HOẠT ĐỘNG HOÀN HẢO!\033[0m"
+else
+  echo -e "\n \033[1;33m===> KẾT LUẬN: Đang có $((TOTAL - RUNNING)) node chưa chạy. Hãy kiểm tra lại tunnel proxy.\033[0m"
+fi
+echo "=================================================================================="
+EOF
+```
