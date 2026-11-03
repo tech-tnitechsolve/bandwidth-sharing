@@ -113,3 +113,166 @@ done
 echo -e "\n${C_G}=== DA HOI PHUC XONG ${TOTAL_DEAD} NODE (AN TOAN TUYET DOI - KHONG LAG VPS)! ===${C_0}\n"
 '
 ```
+
+# Update Docker Traffmonetizer an toàn nhất 
+
+```
+sudo update-traffmonetizer
+```
+
+```
+cat << 'EOF' | sudo bash
+set -uo pipefail
+
+# 1. Tạo script cập nhật chuẩn hóa
+cat << 'EOSCRIPT' > /usr/local/bin/update-traffmonetizer
+#!/usr/bin/env bash
+set -uo pipefail
+
+if [[ -t 1 ]]; then
+  C_G='\033[1;32m'; C_Y='\033[1;33m'; C_R='\033[1;31m'; C_B='\033[1;34m'; C_C='\033[1;36m'; C_0='\033[0m'
+else
+  C_G=''; C_Y=''; C_R=''; C_B=''; C_C=''; C_0=''
+fi
+
+echo -e "\n${C_B}========================================================================${C_0}"
+echo -e "${C_B} [TRAFFMONETIZER] QUY TRÌNH NÂNG CẤP CUỐN CHIẾU AN TOÀN 2026 (MULTI-FOLDER)${C_0}"
+echo -e "${C_B}========================================================================${C_0}"
+
+# 1.1 Xác định CPU & Kéo bản build mới nhất (Duy nhất 1 lần ~1.4MB)
+CPU_ARCH=$(uname -m)
+case "$CPU_ARCH" in
+  aarch64|arm64) TM_IMG="traffmonetizer/cli_v2:arm64v8" ;;
+  armv7l)        TM_IMG="traffmonetizer/cli_v2:arm32v7" ;;
+  *)             TM_IMG="traffmonetizer/cli_v2:latest" ;;
+esac
+
+echo -e "\n${C_Y}==> [1/5] Dang pull image moi nhat (${TM_IMG}) - Tieu ton ~1.4MB...${C_0}"
+if ! docker pull "$TM_IMG"; then
+  echo -e "${C_R}[XX] Loi ket noi mang, khong the pull image. Vui long thu lai!${C_0}"
+  exit 1
+fi
+
+# 1.2 Quét toàn bộ container TraffMonetizer trên mọi folder
+CTR_IDS=($(docker ps -a --filter "name=^traffmon" --format "{{.ID}}"))
+TOTAL=${#CTR_IDS[@]}
+
+if (( TOTAL == 0 )); then
+  echo -e "\n${C_Y}[!] Khong tim thay container TraffMonetizer nao tren VPS/VM.${C_0}"
+  exit 0
+fi
+
+echo -e "${C_G}[OK] Phat hien $TOTAL container TraffMonetizer tren toan bo he thong.${C_0}"
+echo -e "${C_Y}==> [2/5] Bat dau cap nhat cuon chieu (Staggered Rolling Update)...${C_0}\n"
+
+SUCCESS=0
+FAILED=0
+
+for (( i=0; i<TOTAL; i++ )); do
+  cid="${CTR_IDS[$i]}"
+  IDX=$(( i + 1 ))
+
+  # Kiểm soát RAM động: Nếu RAM trống < 200MB thì hãm phanh để ZRAM nén
+  RAM_AVAIL_MB=$(awk '/MemAvailable/{print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 500)
+  if (( RAM_AVAIL_MB < 200 )); then
+    echo -e "      ${C_Y}[CANH BAO: RAM con ${RAM_AVAIL_MB}MB] Tam dung 3s giai phong cache...${C_0}"
+    sync
+    echo 1 > /proc/sys/vm/drop_caches 2>/dev/null || true
+    sleep 3
+  fi
+
+  cname=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null | sed 's|^/||')
+  netmode=$(docker inspect -f '{{.HostConfig.NetworkMode}}' "$cid" 2>/dev/null || echo "")
+  src_vol=$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/.config/traffmonetizer"}}{{.Source}}{{end}}{{end}}' "$cid" 2>/dev/null || echo "")
+  dns_vol=$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/etc/resolv.conf"}}{{.Source}}{{end}}{{end}}' "$cid" 2>/dev/null || echo "")
+  cmd_args=$(docker inspect -f '{{range .Config.Cmd}}{{.}} {{end}}' "$cid" 2>/dev/null || echo "")
+
+  printf "  -> [%3d/%-3d] Node: %-26s " "$IDX" "$TOTAL" "$cname"
+
+  # Kiểm tra Proxy Tunnel tương ứng nếu chạy mode container:tun...
+  if [[ "$netmode" =~ ^container:(.+) ]]; then
+    target_tun="${BASH_REMATCH[1]}"
+    tun_running=$(docker inspect -f '{{.State.Running}}' "$target_tun" 2>/dev/null || echo "false")
+    if [[ "$tun_running" != "true" ]]; then
+      docker start "$target_tun" >/dev/null 2>&1 || true
+      sleep 0.5
+    fi
+  fi
+
+  # Dừng lịch sự (timeout 2s) để ngắt TCP socket êm ái
+  docker stop -t 2 "$cid" >/dev/null 2>&1 || true
+  docker rm "$cid" >/dev/null 2>&1 || true
+
+  # Ráp các volume mount bảo đảm an toàn dữ liệu đa folder
+  MOUNT_PARAMS=""
+  if [[ -n "$src_vol" && -d "$src_vol" ]]; then
+    MOUNT_PARAMS="$MOUNT_PARAMS --mount type=bind,source=$src_vol,target=/.config/traffmonetizer"
+  fi
+  if [[ -n "$dns_vol" && -f "$dns_vol" ]]; then
+    MOUNT_PARAMS="$MOUNT_PARAMS --mount type=bind,source=$dns_vol,target=/etc/resolv.conf,readonly"
+  fi
+
+  NET_PARAM=""
+  if [[ -n "$netmode" ]]; then
+    NET_PARAM="--network=$netmode"
+  fi
+
+  if docker run -d \
+      --name "$cname" \
+      --restart=unless-stopped \
+      $NET_PARAM \
+      $MOUNT_PARAMS \
+      "$TM_IMG" $cmd_args >/dev/null 2>&1; then
+    echo -e "${C_G}[OK]${C_0}"
+    SUCCESS=$((SUCCESS + 1))
+  else
+    echo -e "${C_R}[LOI]${C_0}"
+    FAILED=$((FAILED + 1))
+  fi
+
+  # Nghỉ 0.5s giữa các node để tránh bão CPU và sốc Proxy
+  sleep 0.5
+
+  # Sau mỗi cụm 10 node, nghỉ 2s để xả tải kết nối
+  if (( IDX % 10 == 0 && IDX < TOTAL )); then
+    echo -e "      ${C_C}>> Da cap nhat 10 node. Nghi 2s de ha nhiet Proxy & CPU...${C_0}"
+    sleep 2
+  fi
+done
+
+# 1.3 Dọn dẹp layer image cũ
+echo -e "\n${C_Y}==> [3/5] Don dep layer image cu (Dangling images)...${C_0}"
+docker image prune -f >/dev/null 2>&1 || true
+
+# 1.4 Khóa hạn mức tài nguyên thông qua ii-autosync
+echo -e "${C_Y}==> [4/5] Kich hoat ii-autosync de ap Memory Reservation & Limits...${C_0}"
+if [[ -x /usr/local/bin/ii-autosync.sh ]]; then
+  /usr/local/bin/ii-autosync.sh >/dev/null 2>&1 || true
+elif [[ -x /usr/bin/ii-autosync ]]; then
+  /usr/bin/ii-autosync >/dev/null 2>&1 || true
+fi
+
+# 1.5 Kiểm tra hoạt động thực tế
+echo -e "${C_Y}==> [5/5] Kiem tra trang thai ket noi cua node ngau nhien:${C_0}"
+sleep 2
+SAMPLE_CTR=$(docker ps -q --filter "name=^traffmon" | head -n 1)
+if [[ -n "$SAMPLE_CTR" ]]; then
+  SAMPLE_NAME=$(docker inspect -f '{{.Name}}' "$SAMPLE_CTR" | sed 's|^/||')
+  echo -e "--- [Log mau: ${C_G}${SAMPLE_NAME}${C_0}] ---"
+  docker logs --tail 6 "$SAMPLE_CTR" || true
+  echo "--------------------------------------------------------"
+fi
+
+echo -e "\n${C_B}========================================================================${C_0}"
+echo -e "${C_G} [HOÀN TẤT] THÀNH CÔNG: ${SUCCESS}/${TOTAL} node. LỖI: ${FAILED} node.${C_0}"
+echo -e "${C_B} Toàn bộ node TraffMonetizer trên mọi folder đã lên bản build mới nhất!${C_0}"
+echo -e "${C_B}========================================================================${C_0}\n"
+EOSCRIPT
+
+chmod +x /usr/local/bin/update-traffmonetizer
+ln -sf /usr/local/bin/update-traffmonetizer /usr/bin/update-traffmonetizer 2>/dev/null || true
+
+# 2. Thực thi ngay lập tức
+/usr/local/bin/update-traffmonetizer
+EOF
+```
