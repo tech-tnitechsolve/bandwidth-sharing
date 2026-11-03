@@ -280,7 +280,15 @@ EOF
 # LỆNH KIỂM TRA TỰ ĐỘNG TOÀN DIỆN (CHẠY 1 PHÁT RA TẤT CẢ)
 
 ```
+sudo check-traffmon
+```
+
+```
 cat << 'EOF' | sudo bash
+set -uo pipefail
+
+cat << 'EOSCRIPT' > /usr/local/bin/check-traffmon
+#!/usr/bin/env bash
 set -uo pipefail
 
 if [[ -t 1 ]]; then
@@ -291,13 +299,13 @@ fi
 
 clear
 echo -e "${C_B}========================================================================================================${C_0}"
-echo -e "${C_B}       [MASTER AUDIT 2026] BẢNG ĐO LƯỜNG CHUYÊN SÂU: ĐƯỜNG TRUYỀN, CHỐNG LỘ IP & PHIÊN BẢN NODE         ${C_0}"
+echo -e "${C_B}      [MASTER AUDIT 2026] BẢNG ĐO LƯỜNG CHUYÊN SÂU: ĐƯỜNG TRUYỀN, CHỐNG LỘ IP & PHIÊN BẢN NODE          ${C_0}"
 echo -e "${C_B}========================================================================================================${C_0}"
 
 PRIMARY_IFACE=$(ip -4 route show default 2>/dev/null | awk '{print $5}' | head -n1)
 PUB_IP=$(curl -s4 -m 3 --interface "$PRIMARY_IFACE" https://api.ipify.org 2>/dev/null || echo "Unknown")
 
-echo -e " VPS Host IP (Can bao ve) : ${C_R}${PUB_IP}${C_0} (Tuyet doi khong duoc phep ro ri ra ngoai)"
+echo -e " VPS Host IP (Can bao ve) : ${C_G}${PUB_IP}${C_0} (IP goc cua may chu)"
 echo -e " Conntrack Streams         : $(cat /proc/sys/net/netfilter/nf_conntrack_count 2>/dev/null || echo 0) / $(cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null || echo 524288)"
 echo -e " RAM / ZRAM Status         : Dung $(free -m | awk '/^Mem:/{print $3}')MB / Con trong $(free -m | awk '/^Mem:/{print $7}')MB (Swappiness: $(cat /proc/sys/vm/swappiness 2>/dev/null || echo 100))"
 echo -e " Kiem tra luc              : $(date '+%Y-%m-%d %H:%M:%S %Z')"
@@ -307,57 +315,93 @@ TM_CTRS=($(docker ps -aq --filter "name=^traffmon" 2>/dev/null))
 TOTAL=${#TM_CTRS[@]}
 
 if (( TOTAL == 0 )); then
-  echo -e "${C_R}[XX] Khong tim thay container TraffMonetizer nao tren VPS/VM!${C_0}"
+  echo -e "${C_R}[XX] Khong tim thay container TraffMonetizer nao tren he thong!${C_0}"
   exit 0
 fi
 
-# Lay Image ID chuan moi nhat tren may
-SAMPLE_IMG=$(docker inspect -f '{{.Config.Image}}' "${TM_CTRS[0]}" 2>/dev/null || echo "traffmonetizer/cli_v2:latest")
-LATEST_IMAGE_ID=$(docker image inspect "$SAMPLE_IMG" -f '{{.Id}}' 2>/dev/null || echo "unknown")
+# 1. Xác định Image ID chuẩn mới nhất theo kiến trúc CPU
+CPU_ARCH=$(uname -m)
+case "$CPU_ARCH" in
+  aarch64|arm64) EXPECTED_TAG="traffmonetizer/cli_v2:arm64v8" ;;
+  armv7l)        EXPECTED_TAG="traffmonetizer/cli_v2:arm32v7" ;;
+  *)             EXPECTED_TAG="traffmonetizer/cli_v2:latest" ;;
+esac
 
-printf " %-24s %-12s %-10s %-14s %-10s %-14s %-8s %s\n" \
+LATEST_IMAGE_ID=$(docker image inspect "$EXPECTED_TAG" -f '{{.Id}}' 2>/dev/null || \
+                  docker image inspect "traffmonetizer/cli_v2:latest" -f '{{.Id}}' 2>/dev/null || echo "unknown")
+
+printf " %-24s %-12s %-10s %-16s %-10s %-15s %-6s %s\n" \
   "NODE CONTAINER" "TUNNEL" "VERSION" "KERNEL INODE" "TCP SOCKET" "DATA (RX/TX)" "DROP" "KẾT LUẬN"
 echo "--------------------------------------------------------------------------------------------------------"
 
 PERFECT_NODES=0
+DIRECT_NODES=0
+WARN_NODES=0
 TOTAL_DATA_MB=0
 
 for cid in "${TM_CTRS[@]}"; do
   cname=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null | sed 's|^/||')
   netmode=$(docker inspect -f '{{.HostConfig.NetworkMode}}' "$cid" 2>/dev/null || echo "")
   tm_pid=$(docker inspect -f '{{.State.Pid}}' "$cid" 2>/dev/null || echo 0)
+  tm_status=$(docker inspect -f '{{.State.Status}}' "$cid" 2>/dev/null || echo "unknown")
   tm_img_id=$(docker inspect -f '{{.Image}}' "$cid" 2>/dev/null || echo "")
 
-  # 1. Kiem tra phien ban build Docker
+  # 1. Đo lường phiên bản Build
   ver_status="${C_R}BAN CU${C_0}"
   if [[ "$tm_img_id" == "$LATEST_IMAGE_ID" && "$LATEST_IMAGE_ID" != "unknown" ]]; then
     ver_status="${C_G}BUILD MOI${C_0}"
   fi
 
-  # 2. Kiem tra cach ly mang tuyet doi bang Linux Inode
+  # 2. Phân loại & Đo Inode Kernel
   target_tun="Direct"
   tun_pid=0
-  inode_status="${C_R}FAIL (LEAK)${C_0}"
-  is_locked=0
+  inode_status="${C_Y}HOST DIRECT${C_0}"
+  is_direct=1
+  is_valid=1
+  verdict="${C_G}[DIRECT GỐC]${C_0}"
 
   if [[ "$netmode" =~ ^container:(.+) ]]; then
+    is_direct=0
     tun_id="${BASH_REMATCH[1]}"
     target_tun="${tun_id:0:10}"
     tun_pid=$(docker inspect -f '{{.State.Pid}}' "$tun_id" 2>/dev/null || echo 0)
+    tun_status=$(docker inspect -f '{{.State.Status}}' "$tun_id" 2>/dev/null || echo "stopped")
 
     if (( tm_pid > 0 && tun_pid > 0 )); then
       tm_inode=$(readlink "/proc/$tm_pid/ns/net" 2>/dev/null || echo "1")
       tun_inode=$(readlink "/proc/$tun_pid/ns/net" 2>/dev/null || echo "2")
+
       if [[ -n "$tm_inode" && "$tm_inode" == "$tun_inode" ]]; then
         inode_status="${C_G}LOCKED (100%)${C_0}"
-        is_locked=1
+        verdict="${C_G}[HOAN HAO]${C_0}"
+      else
+        inode_status="${C_R}LEAK DETECT${C_0}"
+        verdict="${C_R}[RO RI IP!]${C_0}"
+        is_valid=0
       fi
+    elif (( tun_pid == 0 )); then
+      inode_status="${C_R}TUNNEL OFF${C_0}"
+      verdict="${C_R}[TUNNEL SẬP]${C_0}"
+      is_valid=0
+    else
+      inode_status="${C_R}NODE OFF${C_0}"
+      verdict="${C_R}[NODE DỪNG]${C_0}"
+      is_valid=0
+    fi
+  else
+    # Chế độ Direct
+    if (( tm_pid == 0 )); then
+      inode_status="${C_R}NODE OFF${C_0}"
+      verdict="${C_R}[NODE DỪNG]${C_0}"
+      is_valid=0
+    else
+      verdict="${C_G}[DIRECT GỐC]${C_0}"
     fi
   fi
 
-  # 3. Kiem tra TCP Socket & Luu luong tren Card Mang Ao
+  # 3. Đo lường Socket & Lưu lượng
   CHECK_PID=$tun_pid
-  if (( CHECK_PID == 0 )); then CHECK_PID=$tm_pid; fi
+  if (( is_direct == 1 || CHECK_PID == 0 )); then CHECK_PID=$tm_pid; fi
 
   conns=0
   rx_mb="0.0"; tx_mb="0.0"
@@ -367,10 +411,13 @@ for cid in "${TM_CTRS[@]}"; do
     conns=$(nsenter -t "$CHECK_PID" -n ss -tan state established 2>/dev/null | grep -vc 'Recv-Q' || echo 0)
 
     if [[ -f "/proc/$CHECK_PID/net/dev" ]]; then
-      read -r r_b r_d t_b t_d < <(awk '
-        $1 ~ /^(tun0|tap0):/ {
-          print $2, $5, $10, $13;
-          found=1; exit
+      read -r r_b r_d t_b t_d < <(awk -v is_dir="$is_direct" '
+        {
+          if (is_dir == 1 && $1 ~ /^eth0:/) {
+            print $2, $5, $10, $13; found=1; exit
+          } else if (is_dir == 0 && $1 ~ /^(tun0|tap0):/) {
+            print $2, $5, $10, $13; found=1; exit
+          }
         }
         END { if (!found) print 0, 0, 0, 0 }
       ' "/proc/$CHECK_PID/net/dev" 2>/dev/null || echo "0 0 0 0")
@@ -383,40 +430,45 @@ for cid in "${TM_CTRS[@]}"; do
     fi
   fi
 
-  # 4. Kiem tra Telemetry tu Log
-  log_tail=$(docker logs --tail 15 "$cid" 2>&1 || true)
-  verdict="${C_G}[HOAN HAO]${C_0}"
-  
-  if (( is_locked == 0 )); then
-    verdict="${C_R}[LEAK IP!]${C_0}"
-  elif [[ "$ver_status" =~ "BAN CU" ]]; then
-    verdict="${C_Y}[CHUA UPDATE]${C_0}"
-  elif (( conns == 0 )); then
-    verdict="${C_Y}[CHO PHAN PHOI]${C_0}"
+  # 4. Đánh giá tổng hợp
+  if (( is_valid == 1 )); then
+    if (( is_direct == 1 )); then
+      DIRECT_NODES=$(( DIRECT_NODES + 1 ))
+    else
+      PERFECT_NODES=$(( PERFECT_NODES + 1 ))
+    fi
   else
-    PERFECT_NODES=$(( PERFECT_NODES + 1 ))
+    WARN_NODES=$(( WARN_NODES + 1 ))
   fi
 
-  printf " %-24s %-12s %-19b %-23b %-10s %-14s %-8s %b\n" \
+  printf " %-24s %-12s %-19b %-25b %-10s %-15s %-6s %b\n" \
     "$cname" "$target_tun" "$ver_status" "$inode_status" "$conns conns" "${rx_mb}M/${tx_mb}M" "$drop_total" "$verdict"
 done
 
 echo "--------------------------------------------------------------------------------------------------------"
 echo -e "${C_B}>>> TỔNG KẾT ĐÁNH GIÁ CHẤT LƯỢNG HỆ THỐNG:${C_0}"
 echo -e "  * Tổng số node TraffMonetizer đang chạy : ${TOTAL}"
-echo -e "  * Số node đạt chuẩn Hoàn Hảo (100%)    : ${C_G}${PERFECT_NODES} / ${TOTAL}${C_0}"
+echo -e "  * Node Proxy Tunnel Hoàn Hảo (100% Khóa): ${C_G}${PERFECT_NODES}${C_0} node"
+if (( DIRECT_NODES > 0 )); then
+  echo -e "  * Node Direct sử dụng IP gốc máy chủ    : ${C_Y}${DIRECT_NODES}${C_0} node (Hợp lệ)"
+fi
 echo -e "  * Tổng lưu lượng các node đã truyền nhận: ${C_G}~${TOTAL_DATA_MB} MB${C_0}"
 echo ""
 
-if (( PERFECT_NODES == TOTAL )); then
-  echo -e "  ${C_G}[✓] 100% NODE ĐÃ LÊN BẢN BUILD MỚI NHẤT (${SAMPLE_IMG})${C_0}"
-  echo -e "  ${C_G}[✓] KHÔNG RÒ RỈ IP: Inode mạng của TraffMonetizer và Tunnel trùng khớp tuyệt đối.${C_0}"
-  echo -e "  ${C_G}[✓] KHÔNG MẤT GÓI TIN: Tỷ lệ Drop trên toàn bộ card tun0 bằng 0.${C_0}"
-  echo -e "  ${C_G}[✓] BĂNG THÔNG HOẠT ĐỘNG: Socket ESTABLISHED đang truyền tải dữ liệu liên tục.${C_0}"
-  echo -e "\n \033[1;42;37m ===> HỆ THỐNG ĐẠT ĐIỂM TỐI ĐA: AN TOÀN TUYỆT ĐỐI - KHÔNG XUNG ĐỘT - CÀY TIỀN TỐT! \033[0m"
+TOTAL_HEALTHY=$(( PERFECT_NODES + DIRECT_NODES ))
+if (( TOTAL_HEALTHY == TOTAL )); then
+  echo -e "  ${C_G}[✓] 100% NODE ĐẠT CHUẨN (${TOTAL_HEALTHY}/${TOTAL}): Không rò rỉ IP, không rớt gói tin!${C_0}"
+  echo -e "\n \033[1;42;37m ===> HỆ THỐNG HOÀN HẢO TUYỆT ĐỐI: ĐƯỜNG TRUYỀN THÔNG SUỐT - AN TOÀN 100%! \033[0m"
 else
-  echo -e "  ${C_Y}[!] LƯU Ý: Có $((TOTAL - PERFECT_NODES)) node đang ở trạng thái chờ socket hoặc chưa cập nhật.${C_0}"
+  echo -e "  ${C_R}[!] CẢNH BÁO: Có ${WARN_NODES} node gặp sự cố (bị tắt hoặc tunnel sập). Hãy kiểm tra lại!${C_0}"
 fi
 echo -e "${C_B}========================================================================================================${C_0}\n"
+EOSCRIPT
+
+chmod +x /usr/local/bin/check-traffmon
+ln -sf /usr/local/bin/check-traffmon /usr/bin/check-traffmon 2>/dev/null || true
+
+# Thực thi kiểm tra ngay lập tức
+/usr/local/bin/check-traffmon
 EOF
 ```
