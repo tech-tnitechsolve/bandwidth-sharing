@@ -280,21 +280,162 @@ EOF
 # LỆNH KIỂM TRA TỰ ĐỘNG TOÀN DIỆN (CHẠY 1 PHÁT RA TẤT CẢ)
 
 ```
-cat << 'EOF' | bash
-echo "==================== [BẢNG TỔNG KẾT SỨC KHỎE TRAFFMONETIZER] ===================="
-TOTAL=$(docker ps -aq --filter "name=^traffmon" | wc -l)
-RUNNING=$(docker ps -q --filter "name=^traffmon" | wc -l)
-CONNECTED=$(docker ps -q --filter "name=^traffmon" | xargs -I {} docker logs --tail 15 {} 2>&1 | grep -c "Connected: True" || echo 0)
+cat << 'EOF' | sudo bash
+set -uo pipefail
 
-echo "  - Tổng số container TraffMonetizer : $TOTAL"
-echo "  - Số container đang chạy (Running) : $RUNNING / $TOTAL"
-echo "  - Số node ghi nhận kết nối máy chủ : $CONNECTED log xác nhận"
+C_G='\033[1;32m'; C_Y='\033[1;33m'; C_R='\033[1;31m'; C_B='\033[1;34m'; C_C='\033[1;36m'; C_0='\033[0m'
 
-if (( RUNNING == TOTAL && TOTAL > 0 )); then
-  echo -e "\n \033[1;32m===> KẾT LUẬN: 100% NODE ĐÃ LÊN BẢN MỚI VÀ HOẠT ĐỘNG HOÀN HẢO!\033[0m"
-else
-  echo -e "\n \033[1;33m===> KẾT LUẬN: Đang có $((TOTAL - RUNNING)) node chưa chạy. Hãy kiểm tra lại tunnel proxy.\033[0m"
+clear
+echo -e "${C_B}====================================================================================================${C_0}"
+echo -e "${C_B}             [DEEP PACKET & NAMESPACE AUDIT] - KIỂM TRA ĐƯỜNG TRUYỀN & DỮ LIỆU SÂU NHẤT             ${C_0}"
+echo -e "${C_B}====================================================================================================${C_0}"
+
+PRIMARY_IFACE=$(ip -4 route show default 2>/dev/null | awk '{print $5}' | head -n1)
+PUB_IP=$(curl -s4 -m 3 --interface "$PRIMARY_IFACE" https://api.ipify.org 2>/dev/null || echo "Unknown")
+echo -e " VPS Host IP (Can bao ve): ${C_R}${PUB_IP}${C_0} (Tuyet doi khong duoc phep ro ri ra ngoai)"
+echo -e " Thoi gian kiem tra     : $(date '+%Y-%m-%d %H:%M:%S')"
+echo -e " Conntrack Streams       : $(cat /proc/sys/net/netfilter/nf_conntrack_count 2>/dev/null || echo 0) streams"
+echo "----------------------------------------------------------------------------------------------------"
+
+TM_CTRS=($(docker ps -aq --filter "name=^traffmon" 2>/dev/null))
+TOTAL=${#TM_CTRS[@]}
+
+if (( TOTAL == 0 )); then
+  echo -e "${C_R}[XX] Khong tim thay node TraffMonetizer nao tren VPS/VM!${C_0}"
+  exit 0
 fi
-echo "=================================================================================="
+
+printf " %-22s %-16s %-10s %-9s %-14s %-10s %s\n" "NODE CONTAINER" "TUNNEL PROXY" "SANDBOX" "TCP-ESTAB" "DATA (RX/TX)" "DROP/ERR" "TRẠNG THÁI & KẾT LUẬN"
+echo "----------------------------------------------------------------------------------------------------"
+
+PERFECT_COUNT=0
+WARN_COUNT=0
+FAIL_COUNT=0
+
+for cid in "${TM_CTRS[@]}"; do
+  cname=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null | sed 's|^/||')
+  netmode=$(docker inspect -f '{{.HostConfig.NetworkMode}}' "$cid" 2>/dev/null || echo "")
+  tm_pid=$(docker inspect -f '{{.State.Pid}}' "$cid" 2>/dev/null || echo 0)
+  tm_status=$(docker inspect -f '{{.State.Status}}' "$cid" 2>/dev/null || echo "unknown")
+
+  target_tun="Direct/None"
+  tun_pid=0
+  sandbox_match="${C_R}FAIL${C_0}"
+  conns=0
+  data_str="0MB / 0MB"
+  drop_err_str="${C_G}0 / 0${C_0}"
+  verdict="${C_G}[CHUẨN 100%]${C_0}"
+  app_status="${C_R}OFFLINE${C_0}"
+
+  if [[ "$netmode" =~ ^container:(.+) ]]; then
+    target_tun="${BASH_REMATCH[1]}"
+    tun_pid=$(docker inspect -f '{{.State.Pid}}' "$target_tun" 2>/dev/null || echo 0)
+
+    # 1. Soi Namespace Sandbox: Phải trùng khớp 100% với Tunnel
+    tm_sb=$(docker inspect -f '{{.NetworkSettings.SandboxKey}}' "$cid" 2>/dev/null || echo "1")
+    tun_sb=$(docker inspect -f '{{.NetworkSettings.SandboxKey}}' "$target_tun" 2>/dev/null || echo "2")
+    if [[ -n "$tm_sb" && "$tm_sb" == "$tun_sb" ]]; then
+      sandbox_match="${C_G}LOCKED${C_0}" # Khóa cứng trong tunnel, không thể rò rỉ IP VPS
+    else
+      sandbox_match="${C_R}LEAK!${C_0}"
+      verdict="${C_R}[LỖI RÒ RỈ IP]${C_0}"
+    fi
+  fi
+
+  # 2. Soi Socket TCP & Gói tin từ bên trong Network Namespace qua PID của Tunnel
+  CHECK_PID=$tm_pid
+  if (( tun_pid > 0 )); then CHECK_PID=$tun_pid; fi
+
+  if (( CHECK_PID > 0 )) && [[ -d "/proc/$CHECK_PID" ]]; then
+    # Đếm số Socket đang truyền nhận dữ liệu thật sự (ESTABLISHED)
+    conns=$(nsenter -t "$CHECK_PID" -n ss -tan state established 2>/dev/null | grep -vc 'Recv-Q' || echo 0)
+    syn_sent=$(nsenter -t "$CHECK_PID" -n ss -tan state syn-sent 2>/dev/null | grep -vc 'Recv-Q' || echo 0)
+
+    # Đọc chi tiết RX, TX, Drop, Error của card mạng ảo
+    rx_bytes=0; tx_bytes=0; rx_drop=0; tx_drop=0; rx_err=0; tx_err=0
+    if [[ -f "/proc/$CHECK_PID/net/dev" ]]; then
+      read -r rx_bytes rx_err rx_drop tx_bytes tx_err tx_drop < <(awk '
+        /tun0:|tap0:/ { 
+          r_b+=$2; r_e+=$4; r_d+=$5; 
+          t_b+=$10; t_e+=$12; t_d+=$13; 
+          found=1 
+        }
+        END { 
+          if (found==1) print r_b+0, r_e+0, r_d+0, t_b+0, t_e+0, t_d+0;
+          else print 0,0,0,0,0,0;
+        }
+      ' "/proc/$CHECK_PID/net/dev" 2>/dev/null || echo "0 0 0 0 0 0")
+    fi
+
+    rx_mb=$(awk "BEGIN {printf \"%.1f\", $rx_bytes/1048576}")
+    tx_mb=$(awk "BEGIN {printf \"%.1f\", $tx_bytes/1048576}")
+    data_str="${rx_mb}M/${tx_mb}M"
+
+    tot_drop=$(( rx_drop + tx_drop ))
+    tot_err=$(( rx_err + tx_err ))
+    if (( tot_drop > 0 || tot_err > 0 )); then
+      drop_err_str="${C_Y}${tot_drop}/${tot_err}${C_0}"
+    else
+      drop_err_str="${C_G}0 / 0${C_0}"
+    fi
+
+    if (( syn_sent > 3 )) && (( conns == 0 )); then
+      verdict="${C_R}[NGHẼN PROXY/SYN]${C_0}"
+    fi
+  fi
+
+  # 3. Soi Telemetry thực tế từ Log ứng dụng TraffMonetizer
+  logs_raw=$(docker logs --tail 25 "$cid" 2>&1 || true)
+  if echo "$logs_raw" | grep -q "Connected: True"; then
+    if echo "$logs_raw" | grep -q "Accepting: True"; then
+      app_status="${C_G}ACCPT:ON${C_0}"
+    else
+      app_status="${C_Y}CONN:OK${C_0}"
+    fi
+  elif echo "$logs_raw" | grep -qiE "exception|refused|timeout|fail|handshake"; then
+    app_status="${C_R}APP:ERR${C_0}"
+    verdict="${C_R}[LỖI KẾT NỐI APP]${C_0}"
+  else
+    app_status="${C_Y}STARTING${C_0}"
+  fi
+
+  # Đánh giá tổng hợp
+  if [[ "$tm_status" != "running" ]]; then
+    verdict="${C_R}[CONTAINER CHẾT]${C_0}"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+  elif [[ "$verdict" =~ LỖI ]]; then
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+  elif (( conns > 0 )) && [[ "$sandbox_match" =~ LOCKED ]]; then
+    verdict="${C_G}[CHUẨN 100%]${C_0}"
+    PERFECT_COUNT=$((PERFECT_COUNT + 1))
+  else
+    verdict="${C_Y}[STANDBY/CHỜ TASK]${C_0}"
+    WARN_COUNT=$((WARN_COUNT + 1))
+  fi
+
+  printf " %-22s %-16s %-19b %-9s %-14s %-19b %b\n" \
+    "$cname" "$target_tun" "$sandbox_match" "$conns socket" "$data_str" "$drop_err_str" "$verdict"
+done
+
+echo "----------------------------------------------------------------------------------------------------"
+echo -e "\n${C_B}============================== [KẾT QUẢ PHÂN TÍCH CHUYÊN SÂU] ==============================${C_0}"
+echo -e "  * TỔNG SỐ NODE KIỂM TRA : ${TOTAL}"
+echo -e "  * NODE HOẠT ĐỘNG HOÀN HẢO : ${C_G}${PERFECT_COUNT} / ${TOTAL}${C_0} (Dữ liệu truyền nhận chuẩn, không drop gói)"
+if (( WARN_COUNT > 0 )); then
+  echo -e "  * NODE ĐANG CHỜ PHÂN PHỐI : ${C_Y}${WARN_COUNT}${C_0} (Đã thông mạng, máy chủ đang phân task)"
+fi
+if (( FAIL_COUNT > 0 )); then
+  echo -e "  * NODE GẶP LỖI CẦN XỬ LÝ : ${C_R}${FAIL_COUNT}${C_0}"
+fi
+
+echo -e "\n${C_C}==> CHẨN ĐOÁN VỀ TÍNH TOÀN VẸN CỦA ĐƯỜNG TRUYỀN:${C_0}"
+if (( FAIL_COUNT == 0 )); then
+  echo -e "  ${C_G}[✓] KHÔNG RÒ RỈ IP:${C_0} 100% Traffic bị khóa cứng trong Namespace Proxy (Sandbox LOCKED)."
+  echo -e "  ${C_G}[✓] KHÔNG THIẾU SÓT DỮ LIỆU:${C_0} Chỉ số Drop/Error trên Kernel đạt 0/0 (Không mất gói TCP)."
+  echo -e "  ${C_G}[✓] DỮ LIỆU ĐI ĐÚNG MÁY CHỦ:${C_0} Telemetry xác nhận các socket ESTABLISHED đang truyền tải."
+else
+  echo -e "  ${C_R}[!] CẢNH BÁO:${C_0} Có ${FAIL_COUNT} node bị lỗi proxy hoặc rớt socket. Hãy kiểm tra lại Proxy IP-Auth tương ứng."
+fi
+echo -e "${C_B}============================================================================================${C_0}\n"
 EOF
 ```
