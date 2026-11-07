@@ -1,4 +1,3 @@
-cat << 'EOF' > fix_bandwidth.sh
 #!/usr/bin/env bash
 ################################################################################
 # Tên file   : fix_bandwidth.sh
@@ -114,6 +113,3 @@ done
 
 echo -e "\n${C_G}>>> KẾT QUẢ TỔNG THỂ: ${SUCCESS}/${TOTAL} NODE ĐÃ KẾT NỐI VÀ ĐANG CẮN DATA THÀNH CÔNG! <<<${C_0}\n"
 exit 0
-EOF
-
-chmod +x fix_bandwidth.sh
