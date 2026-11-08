@@ -58,10 +58,12 @@ for w in $WORKERS; do
     docker start "$w" >/dev/null 2>&1 || true
     NEED_WAIT=1
   else
-    # Đo lường kết nối thụ động 100% qua Kernel Namespace (Không ping/curl ra ngoài)
+    # Đo lường kết nối chuẩn xác bằng wc -l (Luôn ra 1 số nguyên duy nhất)
     conns=0
     if [ "$pid" -gt 0 ]; then
-      conns=$(nsenter -t "$pid" -n ss -tan state established 2>/dev/null | grep -vc 'Recv-Q' || echo 0)
+      conns=$(nsenter -t "$pid" -n ss -tan state established 2>/dev/null | grep -v 'Recv-Q' | wc -l)
+      conns=$(echo "$conns" | tr -dc '0-9')
+      conns=${conns:-0}
     fi
 
     if [ "$conns" -eq 0 ]; then
@@ -100,7 +102,9 @@ for w in $WORKERS; do
   pid=$(docker inspect -f '{{.State.Pid}}' "$w" 2>/dev/null || echo 0)
   conns=0
   if [ "$pid" -gt 0 ]; then
-    conns=$(nsenter -t "$pid" -n ss -tan state established 2>/dev/null | grep -vc 'Recv-Q' || echo 0)
+    conns=$(nsenter -t "$pid" -n ss -tan state established 2>/dev/null | grep -v 'Recv-Q' | wc -l)
+    conns=$(echo "$conns" | tr -dc '0-9')
+    conns=${conns:-0}
   fi
 
   if [ "$conns" -gt 0 ]; then
