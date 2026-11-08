@@ -1,6 +1,6 @@
 # LỆNH TẢI & CHẠY TẠI CHỖ (CHO 1 FOLDER CỤ THỂ)
 ```
-curl -4 -sSL "https://raw.githubusercontent.com/tech-tnitechsolve/bandwidth-sharing/main/List_Proxy/fix_bandwidth.sh" -o fix_bandwidth.sh && chmod +x fix_bandwidth.sh && ./fix_bandwidth.sh
+curl -4 -sSL "https://raw.githubusercontent.com/tech-tnitechsolve/bandwidth-sharing/main/List_Proxy/fix_bandwidth.sh?v=$(date +%s)" -o fix_bandwidth.sh && chmod +x fix_bandwidth.sh && ./fix_bandwidth.sh
 ```
 
 # LỆNH "QUÉT TOÀN BỘ VPS"
