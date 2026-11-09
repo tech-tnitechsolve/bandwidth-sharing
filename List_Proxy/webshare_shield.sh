@@ -13,7 +13,7 @@ fi
 
 C_G='\033[1;32m'; C_Y='\033[1;33m'; C_R='\033[1;31m'; C_B='\033[1;34m'; C_C='\033[1;36m'; C_0='\033[0m'
 
-# 1. Danh sách FQDN chuẩn xác (Đã tích hợp IMVU, Disney+, Hoyoverse, Instagram...)
+# 1. Danh sách FQDN chuẩn xác (Đầy đủ: Game, Streaming, Banking, OpenAI, Gov, Ticketing)
 AUTH_TARGETS=(
   # Google, Microsoft & Yahoo
   "accounts.google.com"
@@ -48,7 +48,11 @@ AUTH_TARGETS=(
   "sso.crunchyroll.com"
   "login.hbo.com"
   
-  # Private Mobile APIs (Chống tool check acc rác)
+  # OpenAI / ChatGPT Account Stuffing
+  "auth.openai.com"
+  "auth0.openai.com"
+  
+  # Private Mobile APIs
   "i.instagram.com"
   "api.tiktokv.com"
   
@@ -58,13 +62,15 @@ AUTH_TARGETS=(
   "auth0.com"
   "auth.atlassian.com"
   
-  # Ticketing & Scalping (Webshare theo dõi gắt gao)
+  # Ticketing & Scalping (Chống bot gom vé)
   "auth.ticketmaster.com"
   "identity.ticketmaster.com"
   "identity.axs.com"
   "auth.stubhub.com"
+  "auth.livenation.com"
+  "auth.seatgeek.com"
   
-  # Crypto, Banking & Điểm thưởng
+  # Crypto & Ví điện tử
   "accounts.binance.com"
   "login.coinbase.com"
   "auth.revolut.com"
@@ -76,9 +82,18 @@ AUTH_TARGETS=(
   "identity.uber.com"
   "auth.doordash.com"
   
-  # Cổng chính phủ nhạy cảm
+  # Ngân hàng Quốc tế Lớn (Chống Carding & Fraud)
+  "secure.chase.com"
+  "secure.bankofamerica.com"
+  "connect.secure.wellsfargo.com"
+  "online.citi.com"
+  "verified.capitalone.com"
+  
+  # Cổng chính phủ & Thuế nhạy cảm
   "tenders.etimad.sa"
   "login.gov"
+  "secure.login.gov"
+  "sa.www4.irs.gov"
 )
 
 # 2. TOÀN BỘ CỔNG PHÁ HOẠI CẦN KHÓA (KHÔNG ĐỤNG TỚI CỔNG 80 VÀ 443)
