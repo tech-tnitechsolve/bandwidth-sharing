@@ -94,6 +94,15 @@ AUTH_TARGETS=(
   "login.gov"
   "secure.login.gov"
   "sa.www4.irs.gov"
+  
+  #Others
+  "auth.uber.com"
+  "cn-geo1.uber.com"
+  "iforgot.apple.com"
+  "authentication-prod.ar.indazn.com"
+  "api.minecraftservices.com"
+  "api.sendgrid.com"
+  "api.steampowered.com"
 )
 
 # 2. TOÀN BỘ CỔNG PHÁ HOẠI CẦN KHÓA (KHÔNG ĐỤNG TỚI CỔNG 80 VÀ 443)
