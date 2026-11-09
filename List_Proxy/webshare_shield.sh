@@ -13,17 +13,22 @@ fi
 
 C_G='\033[1;32m'; C_Y='\033[1;33m'; C_R='\033[1;31m'; C_B='\033[1;34m'; C_C='\033[1;36m'; C_0='\033[0m'
 
-# 1. Danh sách domain Auth/Login hay bị lạm dụng dò pass nhất
+# 1. Danh sách domain Auth/Login, Crypto & Chính phủ nhạy cảm
 AUTH_TARGETS=(
+  # Google & Microsoft
   "accounts.google.com"
   "oauth2.googleapis.com"
   "login.microsoftonline.com"
   "login.live.com"
   "account.live.com"
   "login.yahoo.com"
+  
+  # Streaming & Social
   "passport.twitch.tv"
   "auth.netflix.com"
   "accounts.spotify.com"
+  
+  # Gaming Brute-force
   "login.steampowered.com"
   "help.steampowered.com"
   "auth.riotgames.com"
@@ -32,18 +37,34 @@ AUTH_TARGETS=(
   "auth.ea.com"
   "login.battle.net"
   "id.sonyentertainmentnetwork.com"
+  
+  # Apple & SSO Identity
   "appleid.apple.com"
   "idmsa.apple.com"
+  "auth0.com"
+  "auth.atlassian.com"
+  
+  # Ticketing & Scalping (Webshare cấm)
   "auth.ticketmaster.com"
   "identity.ticketmaster.com"
   "identity.axs.com"
-  "auth0.com"
-  "auth.atlassian.com"
+  
+  # Crypto & Banking Phishing
   "accounts.binance.com"
+  "login.coinbase.com"
+  
+  # Chính phủ nhạy cảm (Đã phát hiện trong log của bạn)
+  "tenders.etimad.sa"
 )
 
-# 2. Cổng nguy hiểm gây án phạt Abuse/Hack server (Port 22/2222 SSH scan, Port 25 Spam mail)
-DANGEROUS_PORTS=(22 25 2222)
+# 2. Toàn bộ các cổng độc hại cần khóa chiều ra (Tuyệt đối không ảnh hưởng Port 80 & 443)
+# 22, 2222 : SSH scan
+# 23       : Telnet botnet
+# 3389     : Windows RDP brute-force
+# 25, 465, 587 : Mail Spam (chống Spamhaus)
+# 445, 139 : Windows SMB exploits
+# 3306, 1433, 6379 : Dò pass cơ sở dữ liệu
+DANGEROUS_PORTS=(22 23 25 139 445 465 587 1433 2222 3306 3389 6379)
 
 MARKER="# --- WEBSHARE COMPLIANCE FILTER ---"
 
@@ -78,7 +99,7 @@ if [[ $# -gt 0 ]]; then
 fi
 
 echo -e "\n${C_B}======================================================================${C_0}"
-echo -e "${C_B}>>> [UNIVERSAL SHIELD] BẢO VỆ TOÀN DIỆN 100% CONTAINER TRÊN VPS <<<${C_0}"
+echo -e "${C_B}>>> [UNIVERSAL SHIELD PRO] BẢO VỆ CHUYÊN SÂU 100% CONTAINER TRÊN VPS <<<${C_0}"
 echo -e "${C_B}======================================================================${C_0}"
 
 TOTAL_SCANNED=0
@@ -106,7 +127,6 @@ for cid in $CONTAINER_LIST; do
     target_tun="$cname"
   fi
 
-  # Bỏ qua nếu container không thuộc hệ sinh thái Proxy / Income
   [[ -z "$target_tun" ]] && continue
 
   pid=$(docker inspect -f "{{.State.Pid}}" "$target_tun" 2>/dev/null || echo 0)
@@ -119,11 +139,9 @@ for cid in $CONTAINER_LIST; do
   fi
 
   if [[ "$MODE" == "ROLLBACK" ]]; then
-    # Gỡ bỏ hosts
     if [[ -f "$hosts_path" ]]; then
-      sed -i "/$MARKER/,+30d" "$hosts_path" 2>/dev/null || true
+      sed -i "/$MARKER/,+35d" "$hosts_path" 2>/dev/null || true
     fi
-    # Gỡ bỏ iptables
     if (( pid > 0 )) && [[ -z "${PROCESSED_TUNS[$target_tun]:-}" ]]; then
       for port in "${DANGEROUS_PORTS[@]}"; do
         nsenter -t "$pid" -n iptables -D OUTPUT -p tcp --dport "$port" -j DROP 2>/dev/null || true
@@ -136,7 +154,7 @@ for cid in $CONTAINER_LIST; do
   fi
 
   # CHẾ ĐỘ THI HÀNH (RUN hoặc TEST)
-  # 1. Khóa cổng nguy hiểm trong Namespace mạng của Tunnel (ĐÃ SỬA LỖI CÚ PHÁP CHUẨN XÁC)
+  # 1. Khóa sạch các cổng phá hoại trong Namespace mạng của Tunnel
   if (( pid > 0 )) && [[ -z "${PROCESSED_TUNS[$target_tun]:-}" ]]; then
     for port in "${DANGEROUS_PORTS[@]}"; do
       nsenter -t "$pid" -n iptables -C OUTPUT -p tcp --dport "$port" -j DROP 2>/dev/null || \
@@ -162,11 +180,13 @@ done
 
 echo -e "\n${C_B}======================================================================${C_0}"
 if [[ "$MODE" == "ROLLBACK" ]]; then
-  echo -e "${C_G}[HOÀN TẤT GỠ BỎ] Hệ thống đã quay về nguyên trạng ban đầu 100%!${C_0}"
+  echo -e "${C_G}[HOÀN TẤT GỠ BỎ] Toàn bộ hệ thống đã quay về nguyên trạng ban đầu!${C_0}"
 else
-  echo -e "${C_G}[HOÀN TẤT BẢO VỆ] Kết quả:${C_0}"
+  echo -e "${C_G}[HOÀN TẤT BẢO VỆ TOÀN DIỆN] Kết quả:${C_0}"
   echo -e "  * Tổng container đã bọc giáp : ${C_G}${PROTECTED_COUNT}${C_0} container"
-  echo -e "  * Trạng thái hoạt động       : ${C_G}[100% HEALTHY] Không restart, băng thông mở tối đa.${C_0}"
+  echo -e "  * Các cổng độc hại đã khóa  : ${C_Y}${DANGEROUS_PORTS[*]}${C_0}"
+  echo -e "  * Cổng kiếm tiền mở 100%    : ${C_G}Port 80 (HTTP) & Port 443 (HTTPS)${C_0}"
+  echo -e "  * Trạng thái hoạt động       : ${C_G}[100% HEALTHY] Không restart, không nghẽn.${C_0}"
 fi
 echo -e "${C_B}======================================================================${C_0}\n"
 exit 0
