@@ -121,7 +121,7 @@ for cid in $CONTAINER_LIST; do
   if [[ "$MODE" == "ROLLBACK" ]]; then
     # Gỡ bỏ hosts
     if [[ -f "$hosts_path" ]]; then
-      sed -i "/$MARKER/,+25d" "$hosts_path" 2>/dev/null || true
+      sed -i "/$MARKER/,+30d" "$hosts_path" 2>/dev/null || true
     fi
     # Gỡ bỏ iptables
     if (( pid > 0 )) && [[ -z "${PROCESSED_TUNS[$target_tun]:-}" ]]; then
@@ -136,11 +136,11 @@ for cid in $CONTAINER_LIST; do
   fi
 
   # CHẾ ĐỘ THI HÀNH (RUN hoặc TEST)
-  # 1. Khóa cổng nguy hiểm trong Namespace mạng của Tunnel (Mỗi tunnel xử lý 1 lần duy nhất)
+  # 1. Khóa cổng nguy hiểm trong Namespace mạng của Tunnel (ĐÃ SỬA LỖI CÚ PHÁP CHUẨN XÁC)
   if (( pid > 0 )) && [[ -z "${PROCESSED_TUNS[$target_tun]:-}" ]]; then
     for port in "${DANGEROUS_PORTS[@]}"; do
       nsenter -t "$pid" -n iptables -C OUTPUT -p tcp --dport "$port" -j DROP 2>/dev/null || \
-      nsenter -t "$pid" -n iptables -I OUTPUT -p tcp --dport --dport "$port" -j DROP 2>/dev/null || true
+      nsenter -t "$pid" -n iptables -I OUTPUT -p tcp --dport "$port" -j DROP 2>/dev/null || true
     done
     PROCESSED_TUNS["$target_tun"]=1
   fi
