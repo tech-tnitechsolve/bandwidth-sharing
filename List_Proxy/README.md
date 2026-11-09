@@ -1,7 +1,8 @@
-# LỆNH TẢI & CHẠY TẠI CHỖ (CHO 1 FOLDER CỤ THỂ)
+# Tạo Sheild bảo vệ cho proxy: chặn các cổng và Request nguy hiểm ảnh hưởng
 ```
 sudo bash -c 'RAW_URL="https://raw.githubusercontent.com/tech-tnitechsolve/bandwidth-sharing/main/List_Proxy/webshare_shield.sh?v=$(date +%s)"; SHIELD_BIN="/usr/local/bin/webshare_shield.sh"; echo -e "\n\033[1;34m>>> ĐANG KÍCH HOẠT LÁ CHẮN BẢO VỆ TOÀN DIỆN TỪ GITHUB...<<<\033[0m"; rm -f "$SHIELD_BIN" /tmp/shield.sh; curl -4 -sSL -H "Cache-Control: no-cache, no-store" -H "Pragma: no-cache" "$RAW_URL" -o "$SHIELD_BIN" && chmod +x "$SHIELD_BIN" && "$SHIELD_BIN"; if ! grep -q "webshare_shield.sh" /etc/cron.d/internetincome 2>/dev/null; then mkdir -p /etc/cron.d; echo "*/5 * * * * root /usr/local/bin/webshare_shield.sh >/dev/null 2>&1" >> /etc/cron.d/internetincome; echo -e "\033[1;32m[OK] Đã ghim vệ sĩ tự động bảo vệ định kỳ mỗi 5 phút vào cron hệ thống!\033[0m\n"; fi'
 ```
+<img width="1108" height="421" alt="image" src="https://github.com/user-attachments/assets/1dfb17ef-a52f-4bbc-b62b-f64130a7424d" />
 
 # LỆNH TẢI & CHẠY TẠI CHỖ (CHO 1 FOLDER CỤ THỂ)
 ```
