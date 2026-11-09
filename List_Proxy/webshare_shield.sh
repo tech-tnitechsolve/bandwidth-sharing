@@ -2,8 +2,8 @@
 ################################################################################
 # Script Name : webshare_shield.sh
 # Repository  : tech-tnitechsolve/bandwidth-sharing
-# Phiên bản   : V3 ULTIMATE MASTER - CHỐNG SUSPEND TUYỆT ĐỐI 100%
-# Đặc tính    : TCP RST 0ms | Chặn Torrent DMCA | Chặn VoIP/RDP/DB/Mail | Zero-Leak
+# Phiên bản   : V3.1 FINAL MASTER - CHỐNG SUSPEND & TỐI ĐA BĂNG THÔNG
+# Đặc tính    : TCP RST 0ms | Tự bọc giáp 0.1s | 100% Unmetered Traffic 80/443
 ################################################################################
 set -uo pipefail
 
@@ -13,7 +13,7 @@ fi
 
 C_G='\033[1;32m'; C_Y='\033[1;33m'; C_R='\033[1;31m'; C_B='\033[1;34m'; C_C='\033[1;36m'; C_0='\033[0m'
 
-# 1. Danh sách domain Auth, Crypto, Banking, Ticketing & Chính phủ nhạy cảm
+# 1. Danh sách FQDN chuẩn xác (Tuyệt đối không chứa dấu gạch chéo path)
 AUTH_TARGETS=(
   # Google, Microsoft & Yahoo
   "accounts.google.com"
@@ -50,26 +50,21 @@ AUTH_TARGETS=(
   "identity.axs.com"
   "auth.stubhub.com"
   
-  # Crypto & Banking Phishing / Carding
+  # Crypto & Banking Phishing / Carding (Đã chuẩn hóa FQDN)
   "accounts.binance.com"
   "login.coinbase.com"
   "auth.revolut.com"
   "auth.kraken.com"
   "login.blockchain.com"
-  "www.paypal.com/signin"
+  "auth.paypal.com"
+  "identity.paypal.com"
   
-  # Chính phủ nhạy cảm (Đã phát hiện trong log của bạn)
+  # Cổng chính phủ nhạy cảm
   "tenders.etimad.sa"
   "login.gov"
 )
 
-# 2. TOÀN BỘ CÁC CỔNG ĐỘC HẠI BỊ CẤM TRÊN TOÀN NGÀNH PROXY
-# - Cổng Hacking / Điều khiển: 22, 2222 (SSH), 23 (Telnet), 3389 (RDP), 5900 (VNC)
-# - Cổng Mail Spam (Chống dính Spamhaus): 25, 465, 587 (SMTP)
-# - Cổng Khai thác Windows: 135, 137, 138, 139, 445 (SMB / NetBIOS)
-# - Cổng Tấn công Database: 1433 (MSSQL), 3306 (MySQL), 5432 (Postgres), 6379 (Redis), 27017 (MongoDB)
-# - Cổng Lừa đảo cước VoIP: 5060, 5061 (SIP protocol)
-# - Cổng Tải lậu Torrent (Chống gậy bản quyền DMCA): 6881:6889, 6969, 51413
+# 2. TOÀN BỘ CỔNG PHÁ HOẠI CẦN KHÓA (KHÔNG ĐỤNG TỚI CỔNG 80 VÀ 443)
 SINGLE_PORTS=(22 23 25 135 137 138 139 445 465 587 1433 2222 3306 3389 5060 5061 5432 5900 6379 6969 27017 51413)
 PORT_RANGES=("6881:6889")
 
@@ -78,7 +73,7 @@ MARKER="# --- WEBSHARE COMPLIANCE FILTER ---"
 MODE="RUN"
 TARGET_SINGLE=""
 
-# Xử lý tham số an toàn
+# Xử lý tham số
 if [[ $# -gt 0 ]]; then
   case "$1" in
     --dry-run)
@@ -122,7 +117,7 @@ fi
 # ==================== CHẾ ĐỘ THI HÀNH (RUN / TEST / ROLLBACK) ====================
 if [[ "$MODE" != "TEST" ]]; then
   echo -e "\n${C_B}======================================================================${C_0}"
-  echo -e "${C_B}>>> [UNIVERSAL SHIELD V3] PHÁO ĐÀI BẢO VỆ CHUYÊN SÂU 100% PROXY VPS <<<${C_0}"
+  echo -e "${C_B}>>> [UNIVERSAL SHIELD V3.1] PHÁO ĐÀI BẢO VỆ CHUYÊN SÂU 100% PROXY VPS <<<${C_0}"
   echo -e "${C_B}======================================================================${C_0}"
 fi
 
@@ -182,25 +177,23 @@ for cid in $CONTAINER_LIST; do
 
   # 1. Khóa cổng độc hại bằng TCP RST (Ngắt trong 0ms, không gây treo socket 90s)
   if (( pid > 0 )) && [[ -z "${PROCESSED_TUNS[$target_tun]:-}" ]]; then
-    # Khóa các cổng đơn
     for port in "${SINGLE_PORTS[@]}"; do
       nsenter -t "$pid" -n iptables -C OUTPUT -p tcp --dport "$port" -j REJECT --reject-with tcp-reset 2>/dev/null || \
       nsenter -t "$pid" -n iptables -C OUTPUT -p tcp --dport "$port" -j DROP 2>/dev/null || \
       nsenter -t "$pid" -n iptables -I OUTPUT -p tcp --dport "$port" -j REJECT --reject-with tcp-reset 2>/dev/null || \
       nsenter -t "$pid" -n iptables -I OUTPUT -p tcp --dport "$port" -j DROP 2>/dev/null || true
     done
-    # Khóa dải cổng P2P Torrent (Chống khiếu nại bản quyền DMCA)
     for prange in "${PORT_RANGES[@]}"; do
       nsenter -t "$pid" -n iptables -C OUTPUT -p tcp --dport "$prange" -j DROP 2>/dev/null || \
       nsenter -t "$pid" -n iptables -I OUTPUT -p tcp --dport "$prange" -j DROP 2>/dev/null || true
     done
-    # Khóa cứng IPv6 bên trong buồng mạng (Chống rò rỉ IP thật VPS)
+    # Khóa cứng IPv6 nội bộ (Chống rò rỉ IP VPS thật)
     nsenter -t "$pid" -n sysctl -w net.ipv6.conf.all.disable_ipv6=1 net.ipv6.conf.default.disable_ipv6=1 >/dev/null 2>&1 || true
 
     PROCESSED_TUNS["$target_tun"]=1
   fi
 
-  # 2. Bổ trợ danh sách Auth/Banking Blackhole vào file hosts của container
+  # 2. Bổ trợ danh sách Auth Blackhole vào file hosts của container
   if [[ -f "$hosts_path" ]] && ! grep -q "$MARKER" "$hosts_path"; then
     {
       echo ""
@@ -264,7 +257,7 @@ fi
 
 if [[ "$MODE" != "TEST" ]]; then
   echo -e "\n${C_B}======================================================================${C_0}"
-  echo -e "${C_G}[HOÀN TẤT BẢO VỆ PHÁO ĐÀI V3] Kết quả:${C_0}"
+  echo -e "${C_G}[HOÀN TẤT BẢO VỆ PHÁO ĐÀI V3.1] Kết quả:${C_0}"
   echo -e "  * Tổng container đã bọc giáp : ${C_G}${PROTECTED_COUNT}${C_0} container"
   echo -e "  * Cổng độc hại đã khóa sạch : ${C_Y}${SINGLE_PORTS[*]} và dải Torrent ${PORT_RANGES[*]}${C_0}"
   echo -e "  * Cơ chế ngắt kết nối lậu   : ${C_G}TCP RST trong 0ms (Xóa sạch lỗi treo socket 90s)${C_0}"
