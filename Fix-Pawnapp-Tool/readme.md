@@ -18,14 +18,8 @@ sudo bash install-shield.sh
 ### CÁCH 2: CHẠY 1 LỆNH DUY NHẤT (NẾU MUỐN CHẠY NHANH KHÔNG CẦN TẠO FILE)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/tech-tnitechsolve/bandwidth-sharing/main/Fix-Pawnapp-Tool/install-shield.sh | sudo bash
+sudo bash -c 'RAW_URL="https://raw.githubusercontent.com/tech-tnitechsolve/bandwidth-sharing/main/List_Proxy/webshare_shield.sh?v=$(date +%s)"; SHIELD_BIN="/usr/local/bin/webshare_shield.sh"; rm -f "$SHIELD_BIN" /tmp/shield.sh; curl -4 -sSL -H "Cache-Control: no-cache, no-store" -H "Pragma: no-cache" "$RAW_URL" -o "$SHIELD_BIN" && chmod +x "$SHIELD_BIN" && "$SHIELD_BIN"'
 ```
-
-*(Hoặc dùng lệnh `wget` nếu VPS chưa có curl:)*
-```bash
-wget -qO- https://raw.githubusercontent.com/tech-tnitechsolve/bandwidth-sharing/main/Fix-Pawnapp-Tool/install-shield.sh | sudo bash
-```
-
 ---
 
 ### LỆNH GỠ BỎ 1-DÒNG (NẾU CẦN GỠ SẠCH TRÊN VPS NÀO ĐÓ):
