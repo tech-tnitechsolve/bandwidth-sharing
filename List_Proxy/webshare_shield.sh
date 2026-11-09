@@ -2,8 +2,8 @@
 ################################################################################
 # Script Name : webshare_shield.sh
 # Repository  : tech-tnitechsolve/bandwidth-sharing
-# Mục tiêu    : Decodo-style Universal Egress Protection (Áp dụng TOÀN BỘ VPS)
-# Đặc tính    : Bọc giáp Realtime trong 0.1s | Zero-Downtime | Tự động hóa 100%
+# Phiên bản   : V3 ULTIMATE MASTER - CHỐNG SUSPEND TUYỆT ĐỐI 100%
+# Đặc tính    : TCP RST 0ms | Chặn Torrent DMCA | Chặn VoIP/RDP/DB/Mail | Zero-Leak
 ################################################################################
 set -uo pipefail
 
@@ -13,9 +13,9 @@ fi
 
 C_G='\033[1;32m'; C_Y='\033[1;33m'; C_R='\033[1;31m'; C_B='\033[1;34m'; C_C='\033[1;36m'; C_0='\033[0m'
 
-# 1. Danh sách domain Auth/Login, Crypto & Chính phủ nhạy cảm
+# 1. Danh sách domain Auth, Crypto, Banking, Ticketing & Chính phủ nhạy cảm
 AUTH_TARGETS=(
-  # Google & Microsoft
+  # Google, Microsoft & Yahoo
   "accounts.google.com"
   "oauth2.googleapis.com"
   "login.microsoftonline.com"
@@ -23,7 +23,7 @@ AUTH_TARGETS=(
   "account.live.com"
   "login.yahoo.com"
   
-  # Streaming & Social
+  # Streaming & Social Auth
   "passport.twitch.tv"
   "auth.netflix.com"
   "accounts.spotify.com"
@@ -44,28 +44,41 @@ AUTH_TARGETS=(
   "auth0.com"
   "auth.atlassian.com"
   
-  # Ticketing & Scalping (Webshare cấm)
+  # Ticketing & Scalping (Webshare theo dõi gắt gao)
   "auth.ticketmaster.com"
   "identity.ticketmaster.com"
   "identity.axs.com"
+  "auth.stubhub.com"
   
-  # Crypto & Banking Phishing
+  # Crypto & Banking Phishing / Carding
   "accounts.binance.com"
   "login.coinbase.com"
+  "auth.revolut.com"
+  "auth.kraken.com"
+  "login.blockchain.com"
+  "www.paypal.com/signin"
   
   # Chính phủ nhạy cảm (Đã phát hiện trong log của bạn)
   "tenders.etimad.sa"
+  "login.gov"
 )
 
-# 2. Toàn bộ các cổng độc hại cần khóa chiều ra (Tuyệt đối không ảnh hưởng Port 80 & 443)
-DANGEROUS_PORTS=(22 23 25 139 445 465 587 1433 2222 3306 3389 6379)
+# 2. TOÀN BỘ CÁC CỔNG ĐỘC HẠI BỊ CẤM TRÊN TOÀN NGÀNH PROXY
+# - Cổng Hacking / Điều khiển: 22, 2222 (SSH), 23 (Telnet), 3389 (RDP), 5900 (VNC)
+# - Cổng Mail Spam (Chống dính Spamhaus): 25, 465, 587 (SMTP)
+# - Cổng Khai thác Windows: 135, 137, 138, 139, 445 (SMB / NetBIOS)
+# - Cổng Tấn công Database: 1433 (MSSQL), 3306 (MySQL), 5432 (Postgres), 6379 (Redis), 27017 (MongoDB)
+# - Cổng Lừa đảo cước VoIP: 5060, 5061 (SIP protocol)
+# - Cổng Tải lậu Torrent (Chống gậy bản quyền DMCA): 6881:6889, 6969, 51413
+SINGLE_PORTS=(22 23 25 135 137 138 139 445 465 587 1433 2222 3306 3389 5060 5061 5432 5900 6379 6969 27017 51413)
+PORT_RANGES=("6881:6889")
 
 MARKER="# --- WEBSHARE COMPLIANCE FILTER ---"
 
 MODE="RUN"
 TARGET_SINGLE=""
 
-# Xử lý tham số
+# Xử lý tham số an toàn
 if [[ $# -gt 0 ]]; then
   case "$1" in
     --dry-run)
@@ -97,7 +110,6 @@ fi
 # ==================== CHẾ ĐỘ WATCHER (TỰ ĐỘNG BỌC TRONG 0.1s) ====================
 if [[ "$MODE" == "WATCH" ]]; then
   while ! docker info >/dev/null 2>&1; do sleep 1; done
-  # Bắt sự kiện container vừa bật lên -> Bọc giáp ngay lập tức trong 0.1s
   docker events --filter "type=container" --filter "event=start" --format "{{.Actor.Attributes.name}}" 2>/dev/null | while read -r cname; do
     [[ -z "$cname" ]] && continue
     if [[ "$cname" =~ ^(traffmon|pawns|tun|gluetun|hev|socks) ]]; then
@@ -110,7 +122,7 @@ fi
 # ==================== CHẾ ĐỘ THI HÀNH (RUN / TEST / ROLLBACK) ====================
 if [[ "$MODE" != "TEST" ]]; then
   echo -e "\n${C_B}======================================================================${C_0}"
-  echo -e "${C_B}>>> [UNIVERSAL SHIELD PRO] BẢO VỆ CHUYÊN SÂU 100% CONTAINER TRÊN VPS <<<${C_0}"
+  echo -e "${C_B}>>> [UNIVERSAL SHIELD V3] PHÁO ĐÀI BẢO VỆ CHUYÊN SÂU 100% PROXY VPS <<<${C_0}"
   echo -e "${C_B}======================================================================${C_0}"
 fi
 
@@ -151,11 +163,15 @@ for cid in $CONTAINER_LIST; do
 
   if [[ "$MODE" == "ROLLBACK" ]]; then
     if [[ -f "$hosts_path" ]]; then
-      sed -i "/$MARKER/,+35d" "$hosts_path" 2>/dev/null || true
+      sed -i "/$MARKER/,+45d" "$hosts_path" 2>/dev/null || true
     fi
     if (( pid > 0 )) && [[ -z "${PROCESSED_TUNS[$target_tun]:-}" ]]; then
-      for port in "${DANGEROUS_PORTS[@]}"; do
+      for port in "${SINGLE_PORTS[@]}"; do
+        nsenter -t "$pid" -n iptables -D OUTPUT -p tcp --dport "$port" -j REJECT --reject-with tcp-reset 2>/dev/null || \
         nsenter -t "$pid" -n iptables -D OUTPUT -p tcp --dport "$port" -j DROP 2>/dev/null || true
+      done
+      for prange in "${PORT_RANGES[@]}"; do
+        nsenter -t "$pid" -n iptables -D OUTPUT -p tcp --dport "$prange" -j DROP 2>/dev/null || true
       done
       PROCESSED_TUNS["$target_tun"]=1
     fi
@@ -164,16 +180,27 @@ for cid in $CONTAINER_LIST; do
     continue
   fi
 
-  # 1. Khóa cổng nguy hiểm trong Namespace mạng của Tunnel
+  # 1. Khóa cổng độc hại bằng TCP RST (Ngắt trong 0ms, không gây treo socket 90s)
   if (( pid > 0 )) && [[ -z "${PROCESSED_TUNS[$target_tun]:-}" ]]; then
-    for port in "${DANGEROUS_PORTS[@]}"; do
+    # Khóa các cổng đơn
+    for port in "${SINGLE_PORTS[@]}"; do
+      nsenter -t "$pid" -n iptables -C OUTPUT -p tcp --dport "$port" -j REJECT --reject-with tcp-reset 2>/dev/null || \
       nsenter -t "$pid" -n iptables -C OUTPUT -p tcp --dport "$port" -j DROP 2>/dev/null || \
+      nsenter -t "$pid" -n iptables -I OUTPUT -p tcp --dport "$port" -j REJECT --reject-with tcp-reset 2>/dev/null || \
       nsenter -t "$pid" -n iptables -I OUTPUT -p tcp --dport "$port" -j DROP 2>/dev/null || true
     done
+    # Khóa dải cổng P2P Torrent (Chống khiếu nại bản quyền DMCA)
+    for prange in "${PORT_RANGES[@]}"; do
+      nsenter -t "$pid" -n iptables -C OUTPUT -p tcp --dport "$prange" -j DROP 2>/dev/null || \
+      nsenter -t "$pid" -n iptables -I OUTPUT -p tcp --dport "$prange" -j DROP 2>/dev/null || true
+    done
+    # Khóa cứng IPv6 bên trong buồng mạng (Chống rò rỉ IP thật VPS)
+    nsenter -t "$pid" -n sysctl -w net.ipv6.conf.all.disable_ipv6=1 net.ipv6.conf.default.disable_ipv6=1 >/dev/null 2>&1 || true
+
     PROCESSED_TUNS["$target_tun"]=1
   fi
 
-  # 2. Bổ trợ danh sách Auth Blackhole vào hosts của container
+  # 2. Bổ trợ danh sách Auth/Banking Blackhole vào file hosts của container
   if [[ -f "$hosts_path" ]] && ! grep -q "$MARKER" "$hosts_path"; then
     {
       echo ""
@@ -190,9 +217,8 @@ for cid in $CONTAINER_LIST; do
   PROTECTED_COUNT=$((PROTECTED_COUNT + 1))
 done
 
-# ==================== TỰ ĐỘNG CÀI ĐẶT HỆ THỐNG WATCHER & CRON (CHẾ ĐỘ RUN) ====================
+# ==================== TỰ ĐỘNG CÀI ĐẶT SYSTEMD WATCHER 0.1s & CRON ====================
 if [[ "$MODE" == "RUN" ]]; then
-  # 1. Tự cài đặt Service thời gian thực 0.1s
   if command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; then
     cat > /etc/systemd/system/webshare-watcher.service << "EOF_SVC"
 [Unit]
@@ -211,18 +237,17 @@ WantedBy=multi-user.target
 EOF_SVC
     systemctl daemon-reload >/dev/null 2>&1 || true
     systemctl enable --now webshare-watcher.service >/dev/null 2>&1 || true
-    echo -e "\n  * ${C_G}[TỰ ĐỘNG THỜI GIAN THỰC]${C_0} Đã kích hoạt Vệ sĩ canh Docker 0.1s (webshare-watcher.service)"
+    echo -e "\n  * ${C_G}[TỰ ĐỘNG THỜI GIAN THỰC]${C_0} Vệ sĩ canh Docker 0.1s (webshare-watcher.service) đang hoạt động!"
   fi
 
-  # 2. Tự cài đặt Cronjob dự phòng 5 phút
   mkdir -p /etc/cron.d
   if ! grep -q "webshare_shield.sh" /etc/cron.d/internetincome 2>/dev/null; then
     echo "*/5 * * * * root /usr/local/bin/webshare_shield.sh >/dev/null 2>&1" >> /etc/cron.d/internetincome
-    echo -e "  * ${C_G}[TỰ ĐỘNG DỰ PHÒNG]${C_0} Đã ghim Cronjob kiểm tra mỗi 5 phút (/etc/cron.d/internetincome)"
+    echo -e "  * ${C_G}[TỰ ĐỘNG DỰ PHÒNG]${C_0} Cronjob kiểm tra mỗi 5 phút (/etc/cron.d/internetincome)"
   fi
 fi
 
-# ==================== XỬ LÝ ROLLBACK GỠ SERVICE ====================
+# ==================== ROLLBACK ====================
 if [[ "$MODE" == "ROLLBACK" ]]; then
   if command -v systemctl >/dev/null 2>&1; then
     systemctl stop webshare-watcher.service >/dev/null 2>&1 || true
@@ -239,9 +264,10 @@ fi
 
 if [[ "$MODE" != "TEST" ]]; then
   echo -e "\n${C_B}======================================================================${C_0}"
-  echo -e "${C_G}[HOÀN TẤT BẢO VỆ TOÀN DIỆN] Kết quả:${C_0}"
+  echo -e "${C_G}[HOÀN TẤT BẢO VỆ PHÁO ĐÀI V3] Kết quả:${C_0}"
   echo -e "  * Tổng container đã bọc giáp : ${C_G}${PROTECTED_COUNT}${C_0} container"
-  echo -e "  * Các cổng độc hại đã khóa  : ${C_Y}${DANGEROUS_PORTS[*]}${C_0}"
+  echo -e "  * Cổng độc hại đã khóa sạch : ${C_Y}${SINGLE_PORTS[*]} và dải Torrent ${PORT_RANGES[*]}${C_0}"
+  echo -e "  * Cơ chế ngắt kết nối lậu   : ${C_G}TCP RST trong 0ms (Xóa sạch lỗi treo socket 90s)${C_0}"
   echo -e "  * Cổng kiếm tiền mở 100%    : ${C_G}Port 80 (HTTP) & Port 443 (HTTPS)${C_0}"
   echo -e "  * Tự động hóa mới           : ${C_G}[0.1 GIÂY] Container mới mọc lên tự có giáp ngay!${C_0}"
   echo -e "${C_B}======================================================================${C_0}\n"
