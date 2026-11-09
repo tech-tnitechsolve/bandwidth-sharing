@@ -62,6 +62,10 @@ AUTH_TARGETS=(
   # Cổng chính phủ nhạy cảm
   "tenders.etimad.sa"
   "login.gov"
+
+  # Gaming & Social Bot Targets
+  "api.imvu.com"
+  "imvu.com"
 )
 
 # 2. TOÀN BỘ CỔNG PHÁ HOẠI CẦN KHÓA (KHÔNG ĐỤNG TỚI CỔNG 80 VÀ 443)
