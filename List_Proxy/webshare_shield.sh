@@ -2,8 +2,8 @@
 ################################################################################
 # Script Name : webshare_shield.sh
 # Repository  : tech-tnitechsolve/bandwidth-sharing
-# Phiên bản   : V3.2 FINAL MASTER - AUTO REFRESH HOSTS & TỐI ĐA BĂNG THÔNG
-# Đặc tính    : TCP RST 0ms | Tự bọc giáp 0.1s | Đồng bộ FQDN cũ & mới 100%
+# Phiên bản   : V3.3 ULTIMATE MASTER - XÓA ĐIỂM MÙ DIRECT CONNECTION
+# Đặc tính    : Bọc giáp 100% cả Proxy lẫn IP Direct | TCP RST 0ms | Watcher 0.1s
 ################################################################################
 set -uo pipefail
 
@@ -149,13 +149,13 @@ fi
 # ==================== CHẾ ĐỘ THI HÀNH (RUN / TEST / ROLLBACK) ====================
 if [[ "$MODE" != "TEST" ]]; then
   echo -e "\n${C_B}======================================================================${C_0}"
-  echo -e "${C_B}>>> [UNIVERSAL SHIELD V3.2] PHÁO ĐÀI BẢO VỆ CHUYÊN SÂU 100% PROXY VPS <<<${C_0}"
+  echo -e "${C_B}>>> [UNIVERSAL SHIELD V3.3] PHÁO ĐÀI BẢO VỆ CHUYÊN SÂU 100% CONTAINER <<<${C_0}"
   echo -e "${C_B}======================================================================${C_0}"
 fi
 
 TOTAL_SCANNED=0
 PROTECTED_COUNT=0
-declare -A PROCESSED_TUNS
+declare -A PROCESSED_PIDS
 
 CONTAINER_LIST=$(docker ps -q 2>/dev/null)
 if [[ "$MODE" == "TEST" ]]; then
@@ -170,64 +170,72 @@ for cid in $CONTAINER_LIST; do
   cname=$(docker inspect -f "{{.Name}}" "$cid" 2>/dev/null | sed "s|^/||")
   netmode=$(docker inspect -f "{{.HostConfig.NetworkMode}}" "$cid" 2>/dev/null || echo "")
 
+  # TỰ ĐỘNG XỬ LÝ CẢ CONTAINER PROXY LẪN DIRECT CONNECTION
   target_tun=""
+  net_pid=0
   if [[ "$netmode" =~ ^container:(.+) ]]; then
     target_tun="${BASH_REMATCH[1]}"
+    net_pid=$(docker inspect -f "{{.State.Pid}}" "$target_tun" 2>/dev/null || echo 0)
   elif [[ "$cname" =~ ^tun|^gluetun|^hev|^socks ]]; then
     target_tun="$cname"
+    net_pid=$(docker inspect -f "{{.State.Pid}}" "$cid" 2>/dev/null || echo 0)
+  elif [[ "$cname" =~ ^(traffmon|pawns) ]]; then
+    # Direct connection: Dùng chính PID của container để khóa chốt mạng
+    target_tun="direct-host"
+    net_pid=$(docker inspect -f "{{.State.Pid}}" "$cid" 2>/dev/null || echo 0)
   fi
 
+  # Bỏ qua nếu không phải container cày tiền
   [[ -z "$target_tun" ]] && continue
 
-  pid=$(docker inspect -f "{{.State.Pid}}" "$target_tun" 2>/dev/null || echo 0)
   hosts_path=$(docker inspect -f "{{.HostsPath}}" "$cid" 2>/dev/null || echo "")
 
   if [[ "$MODE" == "DRY_RUN" ]]; then
-    echo -e "  [SẼ BỌC GIÁP] ${C_C}$cname${C_0} (Tunnel: $target_tun, PID: $pid)"
+    echo -e "  [SẼ BỌC GIÁP] ${C_C}$cname${C_0} (Tunnel: $target_tun, PID: $net_pid)"
     PROTECTED_COUNT=$((PROTECTED_COUNT + 1))
     continue
   fi
 
   if [[ "$MODE" == "ROLLBACK" ]]; then
     if [[ -f "$hosts_path" ]]; then
-      sed -i "/$MARKER/,+50d" "$hosts_path" 2>/dev/null || true
+      sed -i "/$MARKER/,+60d" "$hosts_path" 2>/dev/null || true
     fi
-    if (( pid > 0 )) && [[ -z "${PROCESSED_TUNS[$target_tun]:-}" ]]; then
+    if (( net_pid > 0 )) && [[ -z "${PROCESSED_PIDS[$net_pid]:-}" ]]; then
       for port in "${SINGLE_PORTS[@]}"; do
-        nsenter -t "$pid" -n iptables -D OUTPUT -p tcp --dport "$port" -j REJECT --reject-with tcp-reset 2>/dev/null || \
-        nsenter -t "$pid" -n iptables -D OUTPUT -p tcp --dport "$port" -j DROP 2>/dev/null || true
+        nsenter -t "$net_pid" -n iptables -D OUTPUT -p tcp --dport "$port" -j REJECT --reject-with tcp-reset 2>/dev/null || \
+        nsenter -t "$net_pid" -n iptables -D OUTPUT -p tcp --dport "$port" -j DROP 2>/dev/null || true
       done
       for prange in "${PORT_RANGES[@]}"; do
-        nsenter -t "$pid" -n iptables -D OUTPUT -p tcp --dport "$prange" -j DROP 2>/dev/null || true
+        nsenter -t "$net_pid" -n iptables -D OUTPUT -p tcp --dport "$prange" -j DROP 2>/dev/null || true
       done
-      PROCESSED_TUNS["$target_tun"]=1
+      PROCESSED_PIDS["$net_pid"]=1
     fi
     echo -e "  -> Đã gỡ bỏ: ${cname}"
     PROTECTED_COUNT=$((PROTECTED_COUNT + 1))
     continue
   fi
 
-  # 1. Khóa cổng độc hại bằng TCP RST (Ngắt trong 0ms, không gây treo socket 90s)
-  if (( pid > 0 )) && [[ -z "${PROCESSED_TUNS[$target_tun]:-}" ]]; then
+  # 1. Khóa cổng độc hại bằng TCP RST (Chạy trên PID buồng mạng tương ứng)
+  if (( net_pid > 0 )) && [[ -z "${PROCESSED_PIDS[$net_pid]:-}" ]]; then
     for port in "${SINGLE_PORTS[@]}"; do
-      nsenter -t "$pid" -n iptables -C OUTPUT -p tcp --dport "$port" -j REJECT --reject-with tcp-reset 2>/dev/null || \
-      nsenter -t "$pid" -n iptables -C OUTPUT -p tcp --dport "$port" -j DROP 2>/dev/null || \
-      nsenter -t "$pid" -n iptables -I OUTPUT -p tcp --dport "$port" -j REJECT --reject-with tcp-reset 2>/dev/null || \
-      nsenter -t "$pid" -n iptables -I OUTPUT -p tcp --dport "$port" -j DROP 2>/dev/null || true
+      nsenter -t "$net_pid" -n iptables -C OUTPUT -p tcp --dport "$port" -j REJECT --reject-with tcp-reset 2>/dev/null || \
+      nsenter -t "$net_pid" -n iptables -C OUTPUT -p tcp --dport "$port" -j DROP 2>/dev/null || \
+      nsenter -t "$net_pid" -n iptables -I OUTPUT -p tcp --dport "$port" -j REJECT --reject-with tcp-reset 2>/dev/null || \
+      nsenter -t "$net_pid" -n iptables -I OUTPUT -p tcp --dport "$port" -j DROP 2>/dev/null || true
     done
     for prange in "${PORT_RANGES[@]}"; do
-      nsenter -t "$pid" -n iptables -C OUTPUT -p tcp --dport "$prange" -j DROP 2>/dev/null || \
-      nsenter -t "$pid" -n iptables -I OUTPUT -p tcp --dport "$prange" -j DROP 2>/dev/null || true
+      nsenter -t "$net_pid" -n iptables -C OUTPUT -p tcp --dport "$prange" -j DROP 2>/dev/null || \
+      nsenter -t "$net_pid" -n iptables -I OUTPUT -p tcp --dport "$prange" -j DROP 2>/dev/null || true
     done
-    nsenter -t "$pid" -n sysctl -w net.ipv6.conf.all.disable_ipv6=1 net.ipv6.conf.default.disable_ipv6=1 >/dev/null 2>&1 || true
+    nsenter -t "$net_pid" -n sysctl -w net.ipv6.conf.all.disable_ipv6=1 net.ipv6.conf.default.disable_ipv6=1 >/dev/null 2>&1 || true
 
-    PROCESSED_TUNS["$target_tun"]=1
+    PROCESSED_PIDS["$net_pid"]=1
   fi
 
-  # 2. Bổ trợ danh sách Auth Blackhole (TỰ ĐỘNG XÓA BẢN CŨ ĐỂ NẠP BẢN MỚI CÓ IMVU CHO CẢ 242 CONTAINER CŨ)
+  # 2. Bổ trợ danh sách Auth Blackhole vào file hosts (Tự xóa bản cũ để nạp mới đầy đủ)
   if [[ -f "$hosts_path" ]]; then
     if grep -q "$MARKER" "$hosts_path"; then
-      sed -i "/$MARKER/,+50d" "$hosts_path" 2>/dev/null || true
+      sed -i "/$MARKER/,+60d" "$hosts_path" 2>/dev/null || true
     fi
     {
       echo ""
@@ -291,11 +299,10 @@ fi
 
 if [[ "$MODE" != "TEST" ]]; then
   echo -e "\n${C_B}======================================================================${C_0}"
-  echo -e "${C_G}[HOÀN TẤT BẢO VỆ PHÁO ĐÀI V3.2] Kết quả:${C_0}"
-  echo -e "  * Tổng container đã bọc giáp : ${C_G}${PROTECTED_COUNT}${C_0} container"
-  echo -e "  * Đã đồng bộ FQDN mới        : IMVU, HoYoverse, Disney+, Instagram API..."
+  echo -e "${C_G}[HOÀN TẤT BẢO VỆ PHÁO ĐÀI V3.3] Kết quả:${C_0}"
+  echo -e "  * Tổng container đã bọc giáp : ${C_G}${PROTECTED_COUNT}${C_0} container (Cả Proxy & Direct)"
   echo -e "  * Cổng kiếm tiền mở 100%    : ${C_G}Port 80 (HTTP) & Port 443 (HTTPS)${C_0}"
-  echo -e "  * Tự động hóa mới           : ${C_G}[0.1 GIÂY] Container mới mọc lên tự có giáp ngay!${C_0}"
+  echo -e "  * Trạng thái an toàn        : ${C_G}[100% SẠCH BÓNG] Không còn góc chết!${C_0}"
   echo -e "${C_B}======================================================================${C_0}\n"
 fi
 exit 0
