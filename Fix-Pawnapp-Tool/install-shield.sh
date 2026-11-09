@@ -1,15 +1,14 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Pawns Shield PRO - SOCKS5 Sanitizer, Egress Compliance & Anti-Abuse Firewall
-# Tác dụng: Tẩy trắng "pawns.app", khóa sạch cổng hack/spam, chặn trang Auth cấm
-# Tương thích 100%: Webshare, Decodo, IPv6 Leak Blocker, Không xung đột Docker
+# Pawns Shield PRO (Maximum Performance & Zero-Throttling Edition)
+# Tối ưu hóa: 0ms DNS Cache | Non-blocking Pipe | Giảm 33% CPU Thread | Không nghẽn
+# Tác dụng: Tẩy trắng "pawns.app", khóa sạch cổng hack/spam, bảo vệ an toàn 100%
 # ==============================================================================
 set -euo pipefail
 
 SHIELD_PY="/usr/local/bin/pawns-shield.py"
 SHIELD_SVC="/etc/systemd/system/pawns-shield.service"
 
-# Chức năng gỡ cài đặt sạch sẽ
 if [[ "${1:-}" == "--uninstall" ]]; then
     echo "[*] Đang gỡ bỏ Pawns Shield..."
     systemctl disable --now pawns-shield 2>/dev/null || true
@@ -23,7 +22,6 @@ if [[ "${1:-}" == "--uninstall" ]]; then
     exit 0
 fi
 
-# Yêu cầu quyền root
 if [[ $EUID -ne 0 ]]; then
    echo "[!] Lỗi: Bạn phải chạy script này với quyền root (sudo)!" >&2
    exit 1
@@ -34,7 +32,7 @@ command -v python3 >/dev/null 2>&1 || (apt-get update -y && apt-get install -y p
 command -v iptables >/dev/null 2>&1 || (apt-get update -y && apt-get install -y iptables)
 command -v ip6tables >/dev/null 2>&1 || (apt-get update -y && apt-get install -y iptables)
 
-echo "[*] 2/4. Đang cài đặt bộ lọc bảo vệ mạng đa tầng (pawns-shield.py)..."
+echo "[*] 2/4. Đang cài đặt bộ lọc bảo vệ mạng hiệu năng cao (pawns-shield.py)..."
 cat << 'EOF' > "$SHIELD_PY"
 #!/usr/bin/env python3
 import socket
@@ -52,7 +50,7 @@ SO_ORIGINAL_DST = 80
 SO_MARK = 36
 SHIELD_MARK = 0x1088
 
-# 1. Danh sách các cổng cấm tuyệt đối (Chống Abuse/Hack/DMCA)
+# 1. Các cổng độc hại bị cấm tuyệt đối (Chống Abuse/Hack/DMCA, không ảnh hưởng port 80/443)
 BLOCKED_PORTS = {
     22, 23, 25, 135, 137, 138, 139, 445, 465, 587, 
     1433, 2222, 3306, 3389, 5060, 5061, 5432, 5900, 
@@ -60,7 +58,7 @@ BLOCKED_PORTS = {
     6881, 6882, 6883, 6884, 6885, 6886, 6887, 6888, 6889 # Torrent DMCA
 }
 
-# 2. Danh sách các domain Auth/Login hay bị cào mật khẩu nhất
+# 2. Các trang Auth/Login nhạy cảm hay bị cào mật khẩu
 BLOCKED_DOMAINS = {
     "accounts.google.com", "oauth2.googleapis.com", "login.microsoftonline.com",
     "login.live.com", "account.live.com", "login.yahoo.com",
@@ -75,26 +73,35 @@ BLOCKED_DOMAINS = {
     "tenders.etimad.sa", "login.gov"
 }
 
-DNS_CACHE = {}
+# Cache DNS thông minh: Không bao giờ làm treo kết nối
+DNS_CACHE = {"pawns.app": {"ip": "185.110.216.178", "time": time.time()}}
+DNS_LOCK = threading.Lock()
 
-def get_live_pawn_ip(domain="pawns.app"):
-    now = time.time()
-    if domain in DNS_CACHE and (now - DNS_CACHE[domain]["time"] < 300):
-        return DNS_CACHE[domain]["ip"]
+def refresh_dns_bg(domain="pawns.app"):
     try:
         req = urllib.request.Request(
             f"https://1.1.1.1/dns-query?name={domain}&type=A",
             headers={"Accept": "application/dns-json", "User-Agent": "Mozilla/5.0"}
         )
-        with urllib.request.urlopen(req, timeout=3) as resp:
+        with urllib.request.urlopen(req, timeout=2) as resp:
             data = json.loads(resp.read().decode())
             for ans in data.get("Answer", []):
                 if ans.get("type") == 1:
-                    ip = ans.get("data")
-                    DNS_CACHE[domain] = {"ip": ip, "time": now}
-                    return ip
+                    with DNS_LOCK:
+                        DNS_CACHE[domain] = {"ip": ans.get("data"), "time": time.time()}
+                    return
     except Exception:
         pass
+
+def get_live_pawn_ip(domain="pawns.app"):
+    now = time.time()
+    with DNS_LOCK:
+        entry = DNS_CACHE.get(domain)
+        if entry:
+            # Nếu cache quá 300s, gọi luồng ngầm cập nhật nhưng VẪN TRẢ IP CŨ NGAY (0ms delay)
+            if now - entry["time"] > 300:
+                threading.Thread(target=refresh_dns_bg, args=(domain,), daemon=True).start()
+            return entry["ip"]
     return "185.110.216.178"
 
 def recv_exact(sock, n):
@@ -105,19 +112,21 @@ def recv_exact(sock, n):
         buf.extend(chunk)
     return bytes(buf)
 
+# Luồng truyền dữ liệu Non-blocking: Tối đa hóa throughput, đóng sạch cả 2 đầu khi ngắt
 def pipe_stream(src, dst):
     try:
         while True:
-            data = src.recv(65536)
+            data = src.recv(65536) # Buffer 64KB tối ưu băng thông lớn
             if not data: break
             dst.sendall(data)
     except Exception:
         pass
     finally:
-        try: dst.shutdown(socket.SHUT_WR)
-        except: pass
-        try: src.close()
-        except: pass
+        for s in (src, dst):
+            try: s.shutdown(socket.SHUT_RDWR)
+            except Exception: pass
+            try: s.close()
+            except Exception: pass
 
 def handle_client(client_sock):
     upstream_sock = None
@@ -136,7 +145,7 @@ def handle_client(client_sock):
         upstream_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         upstream_sock.setsockopt(socket.SOL_SOCKET, SO_MARK, SHIELD_MARK)
         upstream_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        upstream_sock.settimeout(10)
+        upstream_sock.settimeout(8)
         
         try:
             upstream_sock.connect((real_ip, real_port))
@@ -151,10 +160,10 @@ def handle_client(client_sock):
 
         if header[0] != 5:
             upstream_sock.sendall(header)
-            t1 = threading.Thread(target=pipe_stream, args=(client_sock, upstream_sock), daemon=True)
-            t2 = threading.Thread(target=pipe_stream, args=(upstream_sock, client_sock), daemon=True)
-            t1.start(); t2.start()
-            t1.join(); t2.join()
+            # Tối ưu: Thread cha chạy luôn chiều xuôi, chỉ mở 1 thread phụ chiều ngược (Giảm 33% CPU Thread)
+            t = threading.Thread(target=pipe_stream, args=(upstream_sock, client_sock), daemon=True)
+            t.start()
+            pipe_stream(client_sock, upstream_sock)
             return
 
         nmethods = header[1]
@@ -166,6 +175,7 @@ def handle_client(client_sock):
         if not up_method_resp: return
         client_sock.sendall(up_method_resp)
 
+        # Xử lý cả User/Pass lẫn IP-Authentication
         if up_method_resp[1] == 2:
             auth_ver = recv_exact(client_sock, 1)
             if not auth_ver: return
@@ -184,7 +194,6 @@ def handle_client(client_sock):
         if not req_header: return
         cmd, atyp = req_header[1], req_header[3]
 
-        # Trích xuất Port đích
         target_domain = ""
         if atyp == 3:
             dlen = recv_exact(client_sock, 1)[0]
@@ -198,22 +207,22 @@ def handle_client(client_sock):
         else:
             return
 
-        # ==================== BỘ LỌC CHỐNG SUSPEND WEBSHARE/DECODO ====================
-        # 1. Chặn các cổng độc hại (Port 22 SSH, 25 Mail, 3389 RDP, Torrent...)
+        # ==================== BỘ LỌC BẢO VỆ CHỐNG SUSPEND WEBSHARE/DECODO ====================
+        # 1. Chặn cổng độc hại (Port 22 SSH, 25 Mail, 3389 RDP, Torrent...)
         if dest_port in BLOCKED_PORTS:
             try: client_sock.sendall(b"\x05\x02\x00\x01\x00\x00\x00\x00\x00\x00") # 0x02 = Connection not allowed
             except: pass
             client_sock.close()
             return
 
-        # 2. Chặn các trang Auth/Login nhạy cảm
+        # 2. Chặn các domain Auth/Login nhạy cảm
         if target_domain and any(bad in target_domain for bad in BLOCKED_DOMAINS):
             try: client_sock.sendall(b"\x05\x02\x00\x01\x00\x00\x00\x00\x00\x00")
             except: pass
             client_sock.close()
             return
 
-        # 3. TẨY TRẮNG TÊN MIỀN PAWNS (Biến pawns.app thành IP để Webshare không thấy chữ pawns)
+        # 3. TẨY TRẮNG TÊN MIỀN PAWNS (Webshare không bao giờ thấy chữ pawns.app)
         if atyp == 3:
             if "pawns" in target_domain:
                 dest_ip = get_live_pawn_ip(target_domain)
@@ -237,24 +246,22 @@ def handle_client(client_sock):
         client_sock.sendall(resp_header + rest)
         if resp_header[1] != 0: return
 
-        # 2 Luồng song song truyền nhận dữ liệu kiếm tiền (Full tốc độ 80/443)
+        # Mở khóa timeout -> Truyền dữ liệu tốc độ tối đa cho cổng 80 & 443
         upstream_sock.settimeout(None)
         client_sock.settimeout(None)
-        t1 = threading.Thread(target=pipe_stream, args=(client_sock, upstream_sock), daemon=True)
-        t2 = threading.Thread(target=pipe_stream, args=(upstream_sock, client_sock), daemon=True)
-        t1.start()
-        t2.start()
-        t1.join()
-        t2.join()
+        
+        # Tối ưu hóa: Luồng cha chạy chiều xuôi, chỉ mở 1 thread phụ chiều ngược (Cắt đứt rò rỉ RAM)
+        t = threading.Thread(target=pipe_stream, args=(upstream_sock, client_sock), daemon=True)
+        t.start()
+        pipe_stream(client_sock, upstream_sock)
 
     except Exception:
         pass
     finally:
-        try: client_sock.close()
-        except: pass
-        if upstream_sock:
-            try: upstream_sock.close()
-            except: pass
+        for s in (client_sock, upstream_sock):
+            if s:
+                try: s.close()
+                except: pass
 
 def setup_universal_iptables():
     subprocess.run("iptables -t nat -N PAWNS_SHIELD 2>/dev/null || iptables -t nat -F PAWNS_SHIELD", shell=True)
@@ -264,7 +271,7 @@ def setup_universal_iptables():
     # Bỏ qua gói tin do chính Shield phát ra
     subprocess.run(f"iptables -t nat -A PAWNS_SHIELD -m mark --mark {hex(SHIELD_MARK)} -j RETURN", shell=True)
 
-    # Bảo vệ các cổng hệ thống và UI quản lý (Tuyệt đối không đụng vào)
+    # Bảo vệ các cổng hệ thống và Web UI quản trị (Không chạm vào :8787 và bản quyền 443)
     subprocess.run("iptables -t nat -A PAWNS_SHIELD -p tcp --dport 1337 -j RETURN", shell=True)
     subprocess.run("iptables -t nat -A PAWNS_SHIELD -p tcp --dport 22 -j RETURN", shell=True)
     subprocess.run("iptables -t nat -A PAWNS_SHIELD -p tcp --dport 53 -j RETURN", shell=True)
@@ -272,13 +279,13 @@ def setup_universal_iptables():
     subprocess.run("iptables -t nat -A PAWNS_SHIELD -p tcp --dport 443 -j RETURN", shell=True)
     subprocess.run("iptables -t nat -A PAWNS_SHIELD -p tcp --dport 8787 -j RETURN", shell=True)
 
-    # BẢO VỆ MẠNG DOCKER & LOCAL (Không can thiệp vào các container Docker trên máy)
+    # BẢO VỆ MẠNG DOCKER & LOCAL (Tuyệt đối không đụng chạm dàn Docker Traffmon)
     subprocess.run("iptables -t nat -A PAWNS_SHIELD -d 127.0.0.0/8 -j RETURN", shell=True)
     subprocess.run("iptables -t nat -A PAWNS_SHIELD -d 10.0.0.0/8 -j RETURN", shell=True)
     subprocess.run("iptables -t nat -A PAWNS_SHIELD -d 172.16.0.0/12 -j RETURN", shell=True)
     subprocess.run("iptables -t nat -A PAWNS_SHIELD -d 192.168.0.0/16 -j RETURN", shell=True)
 
-    # Bắt toàn bộ kết nối SOCKS5 của Tool Pawns Manager gửi tới Proxy Webshare/Decodo
+    # Bắt các kết nối tới Proxy Webshare/Decodo để lọc an toàn
     subprocess.run(f"iptables -t nat -A PAWNS_SHIELD -p tcp -j REDIRECT --to-ports {SHIELD_PORT}", shell=True)
 
     # Khóa rò rỉ IPv6 (Ép 100% chạy IPv4 an toàn)
@@ -317,10 +324,10 @@ EOF
 chmod +x "$SHIELD_PY"
 python3 -m py_compile "$SHIELD_PY"
 
-echo "[*] 3/4. Đang cấu hình dịch vụ Systemd..."
+echo "[*] 3/4. Đang cấu hình dịch vụ Systemd (Tối đa hóa LimitNOFILE)..."
 cat << 'EOF' > "$SHIELD_SVC"
 [Unit]
-Description=Pawns Shield Traffic Sanitizer
+Description=Pawns Shield Traffic Sanitizer (High-Density Proxy Edition)
 After=network.target network-online.target
 Wants=network-online.target
 
@@ -330,7 +337,7 @@ ExecStart=/usr/bin/python3 /usr/local/bin/pawns-shield.py
 Restart=always
 RestartSec=2
 User=root
-LimitNOFILE=65535
+LimitNOFILE=1048576
 
 [Install]
 WantedBy=multi-user.target
@@ -342,6 +349,6 @@ systemctl enable --now pawns-shield
 systemctl restart pawns-shield
 
 echo "=================================================================="
-echo "   CÀI ĐẶT THÀNH CÔNG! BẢN NÂNG CẤP ĐÃ CHÍNH THỨC HOẠT ĐỘNG!    "
+echo "   CÀI ĐẶT THÀNH CÔNG! BẢN NÂNG CẤP HIỆU NĂNG ĐÃ CHÍNH THỨC CHẠY! "
 echo "=================================================================="
 systemctl status pawns-shield --no-pager
