@@ -5,20 +5,10 @@
 3. **Sử dụng:** Vào Web UI Pawns Manager (`:8787`), add proxy và tạo thiết bị cày tiền bình thường.
 
 ---
-#### Chạy script cài đặt
-```bash
-sudo bash install-shield.sh
-```
-*Khi nào muốn gỡ bỏ hoàn toàn trên VPS nào đó, chỉ cần gõ:*
-  ```bash
-  sudo bash install-shield.sh --uninstall
-  ```
----
-
-### CÁCH 2: CHẠY 1 LỆNH DUY NHẤT (NẾU MUỐN CHẠY NHANH KHÔNG CẦN TẠO FILE)
+### CHẠY 1 LỆNH DUY NHẤT (NẾU MUỐN CHẠY NHANH KHÔNG CẦN TẠO FILE)
 
 ```bash
-sudo bash -c 'RAW_URL="https://raw.githubusercontent.com/tech-tnitechsolve/bandwidth-sharing/main/List_Proxy/webshare_shield.sh?v=$(date +%s)"; SHIELD_BIN="/usr/local/bin/webshare_shield.sh"; rm -f "$SHIELD_BIN" /tmp/shield.sh; curl -4 -sSL -H "Cache-Control: no-cache, no-store" -H "Pragma: no-cache" "$RAW_URL" -o "$SHIELD_BIN" && chmod +x "$SHIELD_BIN" && "$SHIELD_BIN"'
+curl -fsSL "https://raw.githubusercontent.com/tech-tnitechsolve/bandwidth-sharing/main/Fix-Pawnapp-Tool/install-shield.sh?v=$(date +%s)" | sudo bash
 ```
 ---
 
