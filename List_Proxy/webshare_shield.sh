@@ -2,8 +2,8 @@
 ################################################################################
 # Script Name : webshare_shield.sh
 # Repository  : tech-tnitechsolve/bandwidth-sharing
-# Phiên bản   : V3.1 FINAL MASTER - CHỐNG SUSPEND & TỐI ĐA BĂNG THÔNG
-# Đặc tính    : TCP RST 0ms | Tự bọc giáp 0.1s | 100% Unmetered Traffic 80/443
+# Phiên bản   : V3.2 FINAL MASTER - AUTO REFRESH HOSTS & TỐI ĐA BĂNG THÔNG
+# Đặc tính    : TCP RST 0ms | Tự bọc giáp 0.1s | Đồng bộ FQDN cũ & mới 100%
 ################################################################################
 set -uo pipefail
 
@@ -13,7 +13,7 @@ fi
 
 C_G='\033[1;32m'; C_Y='\033[1;33m'; C_R='\033[1;31m'; C_B='\033[1;34m'; C_C='\033[1;36m'; C_0='\033[0m'
 
-# 1. Danh sách FQDN chuẩn xác (Tuyệt đối không chứa dấu gạch chéo path)
+# 1. Danh sách FQDN chuẩn xác (Đã tích hợp IMVU, Disney+, Hoyoverse, Instagram...)
 AUTH_TARGETS=(
   # Google, Microsoft & Yahoo
   "accounts.google.com"
@@ -23,20 +23,34 @@ AUTH_TARGETS=(
   "account.live.com"
   "login.yahoo.com"
   
-  # Streaming & Social Auth
-  "passport.twitch.tv"
-  "auth.netflix.com"
-  "accounts.spotify.com"
-  
-  # Gaming Brute-force
+  # Gaming & Social Bot Targets (IMVU, Steam, Epic, Riot, Hoyoverse...)
+  "api.imvu.com"
+  "imvu.com"
+  "account.hoyoverse.com"
+  "api-account-os.hoyoverse.com"
+  "connect.ubisoft.com"
+  "signin.ea.com"
+  "auth.ea.com"
   "login.steampowered.com"
   "help.steampowered.com"
   "auth.riotgames.com"
   "account.riotgames.com"
   "auth.roblox.com"
-  "auth.ea.com"
   "login.battle.net"
   "id.sonyentertainmentnetwork.com"
+  "account-public-service-prod.ol.epicgames.com"
+  
+  # Streaming Bản quyền
+  "passport.twitch.tv"
+  "auth.netflix.com"
+  "accounts.spotify.com"
+  "auth.disneyplus.com"
+  "sso.crunchyroll.com"
+  "login.hbo.com"
+  
+  # Private Mobile APIs (Chống tool check acc rác)
+  "i.instagram.com"
+  "api.tiktokv.com"
   
   # Apple & SSO Identity
   "appleid.apple.com"
@@ -50,22 +64,21 @@ AUTH_TARGETS=(
   "identity.axs.com"
   "auth.stubhub.com"
   
-  # Crypto & Banking Phishing / Carding (Đã chuẩn hóa FQDN)
+  # Crypto, Banking & Điểm thưởng
   "accounts.binance.com"
   "login.coinbase.com"
   "auth.revolut.com"
   "auth.kraken.com"
+  "auth.kucoin.com"
   "login.blockchain.com"
   "auth.paypal.com"
   "identity.paypal.com"
+  "identity.uber.com"
+  "auth.doordash.com"
   
   # Cổng chính phủ nhạy cảm
   "tenders.etimad.sa"
   "login.gov"
-
-  # Gaming & Social Bot Targets
-  "api.imvu.com"
-  "imvu.com"
 )
 
 # 2. TOÀN BỘ CỔNG PHÁ HOẠI CẦN KHÓA (KHÔNG ĐỤNG TỚI CỔNG 80 VÀ 443)
@@ -121,7 +134,7 @@ fi
 # ==================== CHẾ ĐỘ THI HÀNH (RUN / TEST / ROLLBACK) ====================
 if [[ "$MODE" != "TEST" ]]; then
   echo -e "\n${C_B}======================================================================${C_0}"
-  echo -e "${C_B}>>> [UNIVERSAL SHIELD V3.1] PHÁO ĐÀI BẢO VỆ CHUYÊN SÂU 100% PROXY VPS <<<${C_0}"
+  echo -e "${C_B}>>> [UNIVERSAL SHIELD V3.2] PHÁO ĐÀI BẢO VỆ CHUYÊN SÂU 100% PROXY VPS <<<${C_0}"
   echo -e "${C_B}======================================================================${C_0}"
 fi
 
@@ -162,7 +175,7 @@ for cid in $CONTAINER_LIST; do
 
   if [[ "$MODE" == "ROLLBACK" ]]; then
     if [[ -f "$hosts_path" ]]; then
-      sed -i "/$MARKER/,+45d" "$hosts_path" 2>/dev/null || true
+      sed -i "/$MARKER/,+50d" "$hosts_path" 2>/dev/null || true
     fi
     if (( pid > 0 )) && [[ -z "${PROCESSED_TUNS[$target_tun]:-}" ]]; then
       for port in "${SINGLE_PORTS[@]}"; do
@@ -191,14 +204,16 @@ for cid in $CONTAINER_LIST; do
       nsenter -t "$pid" -n iptables -C OUTPUT -p tcp --dport "$prange" -j DROP 2>/dev/null || \
       nsenter -t "$pid" -n iptables -I OUTPUT -p tcp --dport "$prange" -j DROP 2>/dev/null || true
     done
-    # Khóa cứng IPv6 nội bộ (Chống rò rỉ IP VPS thật)
     nsenter -t "$pid" -n sysctl -w net.ipv6.conf.all.disable_ipv6=1 net.ipv6.conf.default.disable_ipv6=1 >/dev/null 2>&1 || true
 
     PROCESSED_TUNS["$target_tun"]=1
   fi
 
-  # 2. Bổ trợ danh sách Auth Blackhole vào file hosts của container
-  if [[ -f "$hosts_path" ]] && ! grep -q "$MARKER" "$hosts_path"; then
+  # 2. Bổ trợ danh sách Auth Blackhole (TỰ ĐỘNG XÓA BẢN CŨ ĐỂ NẠP BẢN MỚI CÓ IMVU CHO CẢ 242 CONTAINER CŨ)
+  if [[ -f "$hosts_path" ]]; then
+    if grep -q "$MARKER" "$hosts_path"; then
+      sed -i "/$MARKER/,+50d" "$hosts_path" 2>/dev/null || true
+    fi
     {
       echo ""
       echo "$MARKER"
@@ -261,10 +276,9 @@ fi
 
 if [[ "$MODE" != "TEST" ]]; then
   echo -e "\n${C_B}======================================================================${C_0}"
-  echo -e "${C_G}[HOÀN TẤT BẢO VỆ PHÁO ĐÀI V3.1] Kết quả:${C_0}"
+  echo -e "${C_G}[HOÀN TẤT BẢO VỆ PHÁO ĐÀI V3.2] Kết quả:${C_0}"
   echo -e "  * Tổng container đã bọc giáp : ${C_G}${PROTECTED_COUNT}${C_0} container"
-  echo -e "  * Cổng độc hại đã khóa sạch : ${C_Y}${SINGLE_PORTS[*]} và dải Torrent ${PORT_RANGES[*]}${C_0}"
-  echo -e "  * Cơ chế ngắt kết nối lậu   : ${C_G}TCP RST trong 0ms (Xóa sạch lỗi treo socket 90s)${C_0}"
+  echo -e "  * Đã đồng bộ FQDN mới        : IMVU, HoYoverse, Disney+, Instagram API..."
   echo -e "  * Cổng kiếm tiền mở 100%    : ${C_G}Port 80 (HTTP) & Port 443 (HTTPS)${C_0}"
   echo -e "  * Tự động hóa mới           : ${C_G}[0.1 GIÂY] Container mới mọc lên tự có giáp ngay!${C_0}"
   echo -e "${C_B}======================================================================${C_0}\n"
