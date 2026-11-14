@@ -14,7 +14,7 @@ sudo bash -c 'RAW_URL="https://raw.githubusercontent.com/tech-tnitechsolve/bandw
 
 # Xóa Tool Shield khi không cần nữa
 ```
-
+sudo bash -c 'systemctl stop webshare-watcher.service 2>/dev/null || true; systemctl disable webshare-watcher.service 2>/dev/null || true; rm -f /etc/systemd/system/webshare-watcher.service; systemctl daemon-reload 2>/dev/null || true; sed -i "/webshare_shield.sh/d" /etc/cron.d/internetincome 2>/dev/null || true; pkill -9 -f "webshare_shield.sh" 2>/dev/null || true; for pid in $(docker inspect --format "{{.State.Pid}}" $(docker ps -q 2>/dev/null) 2>/dev/null); do (( pid > 0 )) && { nsenter -t "$pid" -n iptables -D OUTPUT -j WEBSHARE_SHIELD 2>/dev/null || true; nsenter -t "$pid" -n iptables -F WEBSHARE_SHIELD 2>/dev/null || true; nsenter -t "$pid" -n iptables -X WEBSHARE_SHIELD 2>/dev/null || true; }; done; for h in $(docker inspect --format "{{.HostsPath}}" $(docker ps -q 2>/dev/null) 2>/dev/null); do [[ -f "$h" ]] && { sed -i --copy "/# --- WEBSHARE COMPLIANCE FILTER/,\$d" "$h" 2>/dev/null || sed -i "/# --- WEBSHARE COMPLIANCE FILTER/,\$d" "$h" 2>/dev/null || true; }; done; rm -f /usr/local/bin/webshare_shield.sh; echo -e "\n\033[1;32m[HOÀN TẤT] ĐÃ GỠ BỎ SẠCH SẼ 100% KHÔNG CÒN DẤU VẾT!\033[0m\n"'
 ```
 
 <img width="1108" height="421" alt="image" src="https://github.com/user-attachments/assets/1dfb17ef-a52f-4bbc-b62b-f64130a7424d" />
