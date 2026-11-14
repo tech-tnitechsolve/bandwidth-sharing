@@ -90,11 +90,10 @@ apply_shield_core() {
     fi
   fi
 
-  # 2. Bọc DNS Hosts: KIỂM TRA ĐÍCH DANH DOMAIN MỚI NHẤT (Chống sót domain cũ)
+  # 2. Bọc DNS Hosts: TỰ ĐỘNG GỠ LIST CŨ & NẠP BẢN V5.4 (ĐÃ NHẢ GOOGLE/SOCIAL CHO PAWNS)
   if [[ -f "$hosts_path" ]]; then
-    if ! grep -q "0.0.0.0 auth.uber.com" "$hosts_path" 2>/dev/null; then
-      # Xóa sạch marker cũ nếu có để nạp lại bản đầy đủ nhất
-      sed -i "/$MARKER/,\$d" "$hosts_path" 2>/dev/null || true
+    if ! grep -q "$MARKER" "$hosts_path" 2>/dev/null; then
+      sed -i "/# --- WEBSHARE COMPLIANCE FILTER/,\$d" "$hosts_path" 2>/dev/null || true
       {
         echo ""
         echo "$MARKER"
