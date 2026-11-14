@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 ################################################################################
 # Script Name : webshare_shield.sh
-# Phiên bản   : V5.3 MASTER - TỰ ĐỘNG ĐỒNG BỘ DOMAIN MỚI 100% (ZERO-OMISSION)
+# Phiên bản   : V5.4 MASTER - TỰ ĐỘNG ĐỒNG BỘ DOMAIN MỚI 100% (ZERO-OMISSION)
 # Đặc tính    : Fix lỗi sót domain cũ | 0ms TCP RST | 0% CPU PID 1 | 100% An toàn
 ################################################################################
 set -uo pipefail
@@ -55,7 +55,8 @@ AUTH_TARGETS=(
   # === CỔNG CHÍNH PHỦ ===
   "tenders.etimad.sa" "login.gov" "secure.login.gov" "sa.www4.irs.gov"
 )
-BAD_PORTS="22,23,25,135,137,138,139,445,465,587,1433,2222,3306,3389,5060,5061,5432,5900,6379,6969,27017,51413"
+BAD_PORTS_1="22,23,25,135,137,138,139,445,465,587,1433"
+BAD_PORTS_2="2222,3306,3389,5060,5061,5432,5900,6379,6969,27017,51413"
 BAD_RANGES="6881:6889"
 # ĐỔI ĐUÔI V5.4 ĐỂ SCRIPT TỰ ĐỘNG GỠ BỎ LIST CŨ, NẠP LIST MỚI CHO CONTAINER
 MARKER="# --- WEBSHARE COMPLIANCE FILTER V5.4 ---"
@@ -77,17 +78,31 @@ apply_shield_core() {
   local net_pid="$1"
   local hosts_path="$2"
 
-  # 1. Bọc iptables Custom Chain
+  # 1. Bọc iptables Custom Chain (Tự động vá kín cổng nếu bị thiếu)
   if (( net_pid > 0 )); then
-    if ! nsenter -t "$net_pid" -n iptables -C OUTPUT -j WEBSHARE_SHIELD >/dev/null 2>&1; then
-      nsenter -t "$net_pid" -n iptables -N WEBSHARE_SHIELD 2>/dev/null || true
+    nsenter -t "$net_pid" -n iptables -N WEBSHARE_SHIELD 2>/dev/null || true
+
+    # Nếu chain chưa có đủ rule cổng thì nạp ngay (2 nhóm <= 15 cổng)
+    if ! nsenter -t "$net_pid" -n iptables -S WEBSHARE_SHIELD 2>/dev/null | grep -q -- "$BAD_PORTS_1"; then
       nsenter -t "$net_pid" -n iptables -F WEBSHARE_SHIELD 2>/dev/null || true
-      nsenter -t "$net_pid" -n iptables -A WEBSHARE_SHIELD -p tcp -m multiport --dports "$BAD_PORTS" -j REJECT --reject-with tcp-reset 2>/dev/null || \
-      nsenter -t "$net_pid" -n iptables -A WEBSHARE_SHIELD -p tcp -m multiport --dports "$BAD_PORTS" -j DROP 2>/dev/null || true
+
+      # Nhóm cổng 1 (11 cổng)
+      nsenter -t "$net_pid" -n iptables -A WEBSHARE_SHIELD -p tcp -m multiport --dports "$BAD_PORTS_1" -j REJECT --reject-with tcp-reset 2>/dev/null || \
+      nsenter -t "$net_pid" -n iptables -A WEBSHARE_SHIELD -p tcp -m multiport --dports "$BAD_PORTS_1" -j DROP 2>/dev/null || true
+
+      # Nhóm cổng 2 (11 cổng)
+      nsenter -t "$net_pid" -n iptables -A WEBSHARE_SHIELD -p tcp -m multiport --dports "$BAD_PORTS_2" -j REJECT --reject-with tcp-reset 2>/dev/null || \
+      nsenter -t "$net_pid" -n iptables -A WEBSHARE_SHIELD -p tcp -m multiport --dports "$BAD_PORTS_2" -j DROP 2>/dev/null || true
+
+      # Dải Torrent
       nsenter -t "$net_pid" -n iptables -A WEBSHARE_SHIELD -p tcp --dport "$BAD_RANGES" -j DROP 2>/dev/null || true
-      nsenter -t "$net_pid" -n iptables -I OUTPUT 1 -j WEBSHARE_SHIELD 2>/dev/null || true
-      nsenter -t "$net_pid" -n sysctl -w net.ipv6.conf.all.disable_ipv6=1 net.ipv6.conf.default.disable_ipv6=1 >/dev/null 2>&1 || true
     fi
+
+    # Đảm bảo OUTPUT luôn trỏ vào WEBSHARE_SHIELD
+    nsenter -t "$net_pid" -n iptables -C OUTPUT -j WEBSHARE_SHIELD >/dev/null 2>&1 || \
+    nsenter -t "$net_pid" -n iptables -I OUTPUT 1 -j WEBSHARE_SHIELD 2>/dev/null || true
+
+    nsenter -t "$net_pid" -n sysctl -w net.ipv6.conf.all.disable_ipv6=1 net.ipv6.conf.default.disable_ipv6=1 >/dev/null 2>&1 || true
   fi
 
   # 2. Bọc DNS Hosts: TỰ ĐỘNG GỠ LIST CŨ & NẠP BẢN V5.4 (ĐÃ NHẢ GOOGLE/SOCIAL CHO PAWNS)
@@ -153,7 +168,7 @@ RUNNING_IDS=$(docker ps -q 2>/dev/null)
 
 if [[ "$MODE" == "RUN" ]]; then
   echo -e "\n${C_B}======================================================================${C_0}"
-  echo -e "${C_B}>>> [WEBSHARE SHIELD V5.3] BẢO VỆ CHUYÊN SÂU - BẢO LƯU 100% INCOME <<<${C_0}"
+  echo -e "${C_B}>>> [WEBSHARE SHIELD V5.4] BẢO VỆ CHUYÊN SÂU - BẢO LƯU 100% INCOME <<<${C_0}"
   echo -e "${C_B}======================================================================${C_0}"
 fi
 
