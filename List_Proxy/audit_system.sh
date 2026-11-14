@@ -105,7 +105,7 @@ check_p() {
   if (( TUN_PID <= 0 )); then return 1; fi
   # 1. Soát trong Custom Chain WEBSHARE_SHIELD
   if nsenter -t "$TUN_PID" -n iptables -C OUTPUT -j WEBSHARE_SHIELD >/dev/null 2>&1; then
-    if nsenter -t "$TUN_PID" -n iptables -L WEBSHARE_SHIELD -n 2>/dev/null | grep -E "(dports.*(^|,)${p}(,|$)|dpt:${p})" >/dev/null; then
+    if nsenter -t "$TUN_PID" -n iptables -L WEBSHARE_SHIELD -n 2>/dev/null | grep -E "dports.*[ ,]${p}([, ]|$)|dpt:${p}" >/dev/null; then
       return 0
     fi
   fi
