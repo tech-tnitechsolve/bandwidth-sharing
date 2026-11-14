@@ -8,6 +8,7 @@ sudo bash -c 'RAW_URL="https://raw.githubusercontent.com/tech-tnitechsolve/bandw
 ```
 sudo bash -c 'RAW_URL="https://raw.githubusercontent.com/tech-tnitechsolve/bandwidth-sharing/main/List_Proxy/audit_system.sh?v=$(date +%s)"; AUDIT_BIN="/usr/local/bin/audit_system.sh"; curl -4 -sSL -H "Cache-Control: no-cache, no-store" -H "Pragma: no-cache" "$RAW_URL" -o "$AUDIT_BIN" && chmod +x "$AUDIT_BIN" && "$AUDIT_BIN"'
 ```
+--------------------------------------------------------------------------
 
 # Xóa Tool Shield khi không cần nữa
 ```
