@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Pawns Shield PRO (V3.2 Final Master - Maximum Performance & Zero-Conflict)
-# Tối ưu hóa: 0ms DNS Cache | Non-blocking Pipe | Giảm 33% CPU Thread | Không nghẽn
-# Tác dụng: Tẩy trắng "pawns.app" & "iproyal.com", chặn IMVU/OpenAI/Bank/Torrent DMCA
+# Pawns Shield PRO (V3.3 Final Master - Maximum Performance & Zero-Conflict)
+# Tối ưu hóa: Mở thông Google/Social cho Pawns | Tẩy trắng Pawns & IPRoyal | 0% CPU
+# Tác dụng: Chống Suspend Webshare/Decodo, chặn IMVU/Steam/Bank/Torrent DMCA
 # ==============================================================================
 set -euo pipefail
 
@@ -58,55 +58,54 @@ BLOCKED_PORTS = {
     6881, 6882, 6883, 6884, 6885, 6886, 6887, 6888, 6889 # Torrent DMCA
 }
 
-# 2. Toàn bộ domain Auth, Game lậu (IMVU, HoYoverse), OpenAI, Ngân hàng, Thuế (Chuẩn FQDN)
+# 2. Toàn bộ domain vi phạm Webshare cảnh báo (ĐÃ LOẠI BỎ GOOGLE/SOCIAL ĐỂ CỨU PAWNS)
 BLOCKED_DOMAINS = {
-    # Google, Microsoft & Yahoo
-    "accounts.google.com", "oauth2.googleapis.com", "login.microsoftonline.com",
-    "login.live.com", "account.live.com", "login.yahoo.com",
-    
-    # Game & Social Bot Targets (Đã thêm IMVU để xóa sổ câu hỏi Q1)
-    "api.imvu.com", "imvu.com", "account.hoyoverse.com", "api-account-os.hoyoverse.com",
+    # Mục tiêu bị Webshare cảnh báo đích danh
+    "auth.uber.com", "cn-geo1.uber.com", "identity.uber.com",
+    "api.imvu.com", "imvu.com",
+    "authentication-prod.ar.indazn.com",
+    "iforgot.apple.com", "appleid.apple.com", "idmsa.apple.com",
+    "api.minecraftservices.com",
+    "api.sendgrid.com",
+    "api.steampowered.com", "login.steampowered.com", "help.steampowered.com",
+    "clienthosting.eu", "perfora.net", "Host-By.DMIT.com", "hostedby.privatelayer.com",
+    "astravps.co", "ddos-guard.net", "server.keyubu.com", "dreambyte.hu",
+    "server.bhutra.net", "fl-s1.serverpanel.com", "ib.systems", "protected.bisquit.host",
+    "www734.sakura.ne.jp", "spk.laws.ms", "d30096.exe.regrucolo.ru", "dedicated.sollutium.com",
+    "cp-26.controlpanel.si",
+
+    # Game & Metaverse Brute-Force
+    "account.hoyoverse.com", "api-account-os.hoyoverse.com",
     "connect.ubisoft.com", "signin.ea.com", "auth.ea.com",
-    "login.steampowered.com", "help.steampowered.com", "auth.riotgames.com",
-    "account.riotgames.com", "auth.roblox.com", "login.battle.net",
+    "auth.riotgames.com", "account.riotgames.com",
+    "auth.roblox.com", "login.battle.net",
     "id.sonyentertainmentnetwork.com", "account-public-service-prod.ol.epicgames.com",
-    
+    "auth.dmarket.com",
+
     # Streaming Bản quyền
     "passport.twitch.tv", "auth.netflix.com", "accounts.spotify.com",
     "auth.disneyplus.com", "sso.crunchyroll.com", "login.hbo.com",
-    
-    # OpenAI / ChatGPT
-    "auth.openai.com", "auth0.openai.com",
-    
-    # Private Mobile APIs
-    "i.instagram.com", "api.tiktokv.com",
-    
-    # Apple & SSO Identity
-    "appleid.apple.com", "idmsa.apple.com", "auth0.com", "auth.atlassian.com",
-    
+
     # Ticketing & Scalping (Chống bot gom vé)
     "auth.ticketmaster.com", "identity.ticketmaster.com", "identity.axs.com",
     "auth.stubhub.com", "auth.livenation.com", "auth.seatgeek.com",
-    
+
     # Crypto, Banking & Ví điện tử
     "accounts.binance.com", "login.coinbase.com", "auth.revolut.com",
     "auth.kraken.com", "auth.kucoin.com", "login.blockchain.com",
-    "auth.paypal.com", "identity.paypal.com", "identity.uber.com", "auth.doordash.com",
-    
-    # Ngân hàng Quốc tế Lớn (Chống Carding & Fraud)
+    "auth.paypal.com", "identity.paypal.com", "auth.doordash.com",
     "secure.chase.com", "secure.bankofamerica.com", "connect.secure.wellsfargo.com",
     "online.citi.com", "verified.capitalone.com",
-    
-    # Cổng chính phủ & Thuế nhạy cảm
+
+    # Cổng chính phủ & Thuế
     "tenders.etimad.sa", "login.gov", "secure.login.gov", "sa.www4.irs.gov"
 }
 
-# BẢN ĐỒ BOOTSTRAP MATRIX CHUẨN XÁC TỪNG DOMAIN CỦA PAWNS & IPROYAL
 BOOTSTRAP_FALLBACK = {
     "pawns.app": "185.110.216.178",
     "api.pawns.app": "185.110.216.178",
-    "resi-api.pawns.app": "93.189.62.83",      # Máy chủ WebSocket điều khiển cày tiền
-    "api.iproyal.com": "194.49.53.119",       # IP gốc chuẩn xác của IPRoyal
+    "resi-api.pawns.app": "93.189.62.83",
+    "api.iproyal.com": "194.49.53.119",
     "iproyal.com": "194.49.53.119"
 }
 
@@ -158,7 +157,7 @@ def recv_exact(sock, n):
 def pipe_stream(src, dst):
     try:
         while True:
-            data = src.recv(65536) # 64KB Buffer truyền tải dữ liệu cực nhanh
+            data = src.recv(65536)
             if not data: break
             dst.sendall(data)
     except Exception:
@@ -219,9 +218,13 @@ def handle_client(client_sock):
         if up_method_resp[1] == 2:
             auth_ver = recv_exact(client_sock, 1)
             if not auth_ver: return
-            ulen = recv_exact(client_sock, 1)[0]
+            ulen_raw = recv_exact(client_sock, 1)
+            if not ulen_raw: return
+            ulen = ulen_raw[0]
             uname = recv_exact(client_sock, ulen)
-            plen = recv_exact(client_sock, 1)[0]
+            plen_raw = recv_exact(client_sock, 1)
+            if not plen_raw: return
+            plen = plen_raw[0]
             passwd = recv_exact(client_sock, plen)
 
             upstream_sock.sendall(auth_ver + bytes([ulen]) + uname + bytes([plen]) + passwd)
@@ -236,18 +239,24 @@ def handle_client(client_sock):
 
         target_domain = ""
         if atyp == 3:
-            dlen = recv_exact(client_sock, 1)[0]
-            target_domain = recv_exact(client_sock, dlen).decode("latin1").lower()
+            dlen_raw = recv_exact(client_sock, 1)
+            if not dlen_raw: return
+            dlen = dlen_raw[0]
+            target_domain_raw = recv_exact(client_sock, dlen)
+            if not target_domain_raw: return
+            target_domain = target_domain_raw.decode("latin1").lower()
             target_port_bytes = recv_exact(client_sock, 2)
+            if not target_port_bytes: return
             dest_port = struct.unpack("!H", target_port_bytes)[0]
         elif atyp == 1:
             raw_ip = recv_exact(client_sock, 4)
+            if not raw_ip: return
             target_port_bytes = recv_exact(client_sock, 2)
+            if not target_port_bytes: return
             dest_port = struct.unpack("!H", target_port_bytes)[0]
         else:
             return
 
-        # ==================== BỘ LỌC CHỐNG SUSPEND WEBSHARE/DECODO ====================
         # 1. Chặn cổng độc hại (Cổng 22 SSH, 25 Mail, 3389 RDP, Torrent...)
         if dest_port in BLOCKED_PORTS:
             try: client_sock.sendall(b"\x05\x02\x00\x01\x00\x00\x00\x00\x00\x00")
@@ -255,7 +264,7 @@ def handle_client(client_sock):
             client_sock.close()
             return
 
-        # 2. Chặn domain Auth nhạy cảm (IMVU, OpenAI, Ngân hàng...)
+        # 2. Chặn domain Auth nhạy cảm (Đã lọc sạch các domain xương sống)
         if target_domain and any(bad in target_domain for bad in BLOCKED_DOMAINS):
             try: client_sock.sendall(b"\x05\x02\x00\x01\x00\x00\x00\x00\x00\x00")
             except: pass
@@ -278,18 +287,19 @@ def handle_client(client_sock):
         b_atyp = resp_header[3]
         if b_atyp == 1: rest = recv_exact(upstream_sock, 6)
         elif b_atyp == 3:
-            dlen_resp = recv_exact(upstream_sock, 1)[0]
-            rest = bytes([dlen_resp]) + recv_exact(upstream_sock, dlen_resp + 2)
+            dlen_resp_raw = recv_exact(upstream_sock, 1)
+            if not dlen_resp_raw: return
+            dlen_resp = dlen_resp_raw[0]
+            rest = bytes([dlen_resp]) + (recv_exact(upstream_sock, dlen_resp + 2) or b"")
         elif b_atyp == 4: rest = recv_exact(upstream_sock, 18)
         else: rest = b""
 
-        client_sock.sendall(resp_header + rest)
+        if rest: client_sock.sendall(resp_header + rest)
         if resp_header[1] != 0: return
 
         upstream_sock.settimeout(None)
         client_sock.settimeout(None)
         
-        # Luồng cha chạy chiều xuôi, 1 thread phụ chiều ngược (Cắt đứt rò rỉ RAM)
         t = threading.Thread(target=pipe_stream, args=(upstream_sock, client_sock), daemon=True)
         t.start()
         pipe_stream(client_sock, upstream_sock)
@@ -316,9 +326,9 @@ def setup_universal_iptables():
     subprocess.run("iptables -t nat -A PAWNS_SHIELD -p tcp --dport 80 -j RETURN", shell=True)
     subprocess.run("iptables -t nat -A PAWNS_SHIELD -p tcp --dport 443 -j RETURN", shell=True)
     subprocess.run("iptables -t nat -A PAWNS_SHIELD -p tcp --dport 8787 -j RETURN", shell=True)
-    subprocess.run("iptables -t nat -A PAWNS_SHIELD -p tcp --dport 3100 -j RETURN", shell=True) # Bảo vệ Wipter Web UI
+    subprocess.run("iptables -t nat -A PAWNS_SHIELD -p tcp --dport 3100 -j RETURN", shell=True)
 
-    # Bảo vệ mạng nội bộ & Docker (Tuyệt đối không chạm vào 243/355 container Docker)
+    # Bảo vệ mạng nội bộ & Docker
     subprocess.run("iptables -t nat -A PAWNS_SHIELD -d 127.0.0.0/8 -j RETURN", shell=True)
     subprocess.run("iptables -t nat -A PAWNS_SHIELD -d 10.0.0.0/8 -j RETURN", shell=True)
     subprocess.run("iptables -t nat -A PAWNS_SHIELD -d 172.16.0.0/12 -j RETURN", shell=True)
@@ -326,7 +336,7 @@ def setup_universal_iptables():
 
     subprocess.run(f"iptables -t nat -A PAWNS_SHIELD -p tcp -j REDIRECT --to-ports {SHIELD_PORT}", shell=True)
 
-    # Khóa rò rỉ IPv6 (Ép 100% chạy IPv4 qua Proxy)
+    # Khóa rò rỉ IPv6
     subprocess.run("ip6tables -F OUTPUT 2>/dev/null || true", shell=True)
     subprocess.run("ip6tables -A OUTPUT -o lo -j ACCEPT 2>/dev/null || true", shell=True)
     subprocess.run("ip6tables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || true", shell=True)
@@ -365,7 +375,7 @@ python3 -m py_compile "$SHIELD_PY"
 echo "[*] 3/4. Đang cấu hình dịch vụ Systemd..."
 cat << 'EOF' > "$SHIELD_SVC"
 [Unit]
-Description=Pawns Shield Traffic Sanitizer (V3.2 Final Master Edition)
+Description=Pawns Shield Traffic Sanitizer (V3.3 Final Master Edition)
 After=network.target network-online.target
 Wants=network-online.target
 
@@ -387,6 +397,6 @@ systemctl enable --now pawns-shield
 systemctl restart pawns-shield
 
 echo "=================================================================="
-echo "   CÀI ĐẶT THÀNH CÔNG! BẢN NÂNG CẤP V3.2 ĐÃ CHÍNH THỨC CHẠY!     "
+echo "   CÀI ĐẶT THÀNH CÔNG! BẢN NÂNG CẤP V3.3 ĐÃ CHÍNH THỨC CHẠY!     "
 echo "=================================================================="
 systemctl status pawns-shield --no-pager
