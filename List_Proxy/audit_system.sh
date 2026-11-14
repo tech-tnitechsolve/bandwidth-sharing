@@ -140,7 +140,7 @@ echo -e "  ${C_Y}[5. ĐỐI SOÁT TOÀN DIỆN DOMAIN WEBSHARE BẮT LỖI TRÊN
 if [[ -f "$HOSTS_PATH" ]]; then
   check_d "api.imvu.com" && D_IMVU="${C_G}0.0.0.0${C_0}" || D_IMVU="${C_R}THIẾU${C_0}"
   check_d "passport.twitch.tv" && D_TWITCH="${C_G}0.0.0.0${C_0}" || D_TWITCH="${C_R}THIẾU${C_0}"
-  check_d "accounts.google.com" && D_GOOGLE="${C_G}0.0.0.0${C_0}" || D_GOOGLE="${C_R}THIẾU${C_0}"
+  check_d "accounts.binance.com" && D_BINANCE="${C_G}0.0.0.0${C_0}" || D_BINANCE="${C_R}THIẾU${C_0}"
   check_d "auth.uber.com" && D_UBER="${C_G}0.0.0.0${C_0}" || D_UBER="${C_R}THIẾU${C_0}"
   check_d "iforgot.apple.com" && D_APPLE="${C_G}0.0.0.0${C_0}" || D_APPLE="${C_R}THIẾU${C_0}"
   check_d "authentication-prod.ar.indazn.com" && D_DAZN="${C_G}0.0.0.0${C_0}" || D_DAZN="${C_R}THIẾU${C_0}"
