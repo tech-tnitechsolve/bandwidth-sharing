@@ -11,6 +11,12 @@ sudo /usr/local/bin/audit_system.sh
 ```
 sudo bash -c 'RAW_URL="https://raw.githubusercontent.com/tech-tnitechsolve/bandwidth-sharing/main/List_Proxy/audit_system.sh?v=$(date +%s)"; AUDIT_BIN="/usr/local/bin/audit_system.sh"; curl -4 -sSL -H "Cache-Control: no-cache, no-store" -H "Pragma: no-cache" "$RAW_URL" -o "$AUDIT_BIN" && chmod +x "$AUDIT_BIN" && "$AUDIT_BIN"'
 ```
+
+# Xóa Tool Shield khi không cần nữa
+```
+
+```
+
 <img width="1108" height="421" alt="image" src="https://github.com/user-attachments/assets/1dfb17ef-a52f-4bbc-b62b-f64130a7424d" />
 
 --------------------------------------------------------------------------
