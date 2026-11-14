@@ -15,35 +15,50 @@ renice -n 19 $$ >/dev/null 2>&1 || true
 C_G='\033[1;32m'; C_Y='\033[1;33m'; C_R='\033[1;31m'; C_B='\033[1;34m'; C_C='\033[1;36m'; C_0='\033[0m'
 
 AUTH_TARGETS=(
-  "auth.uber.com" "cn-geo1.uber.com" "api.imvu.com" "imvu.com"
-  "authentication-prod.ar.indazn.com" "iforgot.apple.com" "api.minecraftservices.com"
-  "api.sendgrid.com" "api.steampowered.com" "account.live.com" "login.live.com"
+  # === MỤC TIÊU BỊ WEBSHARE CẢNH BÁO ĐÍCH DANH ===
+  "auth.uber.com" "cn-geo1.uber.com" "identity.uber.com"
+  "api.imvu.com" "imvu.com"
+  "authentication-prod.ar.indazn.com"
+  "iforgot.apple.com" "appleid.apple.com" "idmsa.apple.com"
+  "api.minecraftservices.com"
+  "api.sendgrid.com"
+  "api.steampowered.com" "login.steampowered.com" "help.steampowered.com"
   "clienthosting.eu" "perfora.net" "Host-By.DMIT.com" "hostedby.privatelayer.com"
   "astravps.co" "ddos-guard.net" "server.keyubu.com" "dreambyte.hu"
   "server.bhutra.net" "fl-s1.serverpanel.com" "ib.systems" "protected.bisquit.host"
   "www734.sakura.ne.jp" "spk.laws.ms" "d30096.exe.regrucolo.ru" "dedicated.sollutium.com"
-  "cp-26.controlpanel.si" "accounts.google.com" "oauth2.googleapis.com"
-  "login.microsoftonline.com" "login.yahoo.com" "account.hoyoverse.com"
-  "api-account-os.hoyoverse.com" "connect.ubisoft.com" "signin.ea.com" "auth.ea.com"
-  "login.steampowered.com" "help.steampowered.com" "auth.riotgames.com"
-  "account.riotgames.com" "auth.roblox.com" "login.battle.net"
-  "id.sonyentertainmentnetwork.com" "account-public-service-prod.ol.epicgames.com"
-  "auth.dmarket.com" "passport.twitch.tv" "auth.netflix.com" "accounts.spotify.com"
-  "auth.disneyplus.com" "sso.crunchyroll.com" "login.hbo.com" "auth.openai.com"
-  "auth0.openai.com" "i.instagram.com" "api.tiktokv.com" "appleid.apple.com"
-  "idmsa.apple.com" "auth0.com" "auth.atlassian.com" "auth.ticketmaster.com"
-  "identity.ticketmaster.com" "identity.axs.com" "auth.stubhub.com"
-  "auth.livenation.com" "auth.seatgeek.com" "accounts.binance.com" "login.coinbase.com"
-  "auth.revolut.com" "auth.kraken.com" "auth.kucoin.com" "login.blockchain.com"
-  "auth.paypal.com" "identity.paypal.com" "identity.uber.com" "auth.doordash.com"
-  "secure.chase.com" "secure.bankofamerica.com" "connect.secure.wellsfargo.com"
-  "online.citi.com" "verified.capitalone.com" "tenders.etimad.sa" "login.gov"
-  "secure.login.gov" "sa.www4.irs.gov"
-)
+  "cp-26.controlpanel.si"
 
+  # === GAME & METAVERSE BRUTE-FORCE ===
+  "account.hoyoverse.com" "api-account-os.hoyoverse.com"
+  "connect.ubisoft.com" "signin.ea.com" "auth.ea.com"
+  "auth.riotgames.com" "account.riotgames.com"
+  "auth.roblox.com" "login.battle.net"
+  "id.sonyentertainmentnetwork.com" "account-public-service-prod.ol.epicgames.com"
+  "auth.dmarket.com"
+
+  # === STREAMING BẢN QUYỀN ===
+  "passport.twitch.tv" "auth.netflix.com" "accounts.spotify.com"
+  "auth.disneyplus.com" "sso.crunchyroll.com" "login.hbo.com"
+
+  # === BOT GOM VÉ (TICKET SCALPING) ===
+  "auth.ticketmaster.com" "identity.ticketmaster.com" "identity.axs.com"
+  "auth.stubhub.com" "auth.livenation.com" "auth.seatgeek.com"
+
+  # === CRYPTO, BANKING & PHISHING ===
+  "accounts.binance.com" "login.coinbase.com" "auth.revolut.com"
+  "auth.kraken.com" "auth.kucoin.com" "login.blockchain.com"
+  "auth.paypal.com" "identity.paypal.com" "auth.doordash.com"
+  "secure.chase.com" "secure.bankofamerica.com" "connect.secure.wellsfargo.com"
+  "online.citi.com" "verified.capitalone.com"
+
+  # === CỔNG CHÍNH PHỦ ===
+  "tenders.etimad.sa" "login.gov" "secure.login.gov" "sa.www4.irs.gov"
+)
 BAD_PORTS="22,23,25,135,137,138,139,445,465,587,1433,2222,3306,3389,5060,5061,5432,5900,6379,6969,27017,51413"
 BAD_RANGES="6881:6889"
-MARKER="# --- WEBSHARE COMPLIANCE FILTER ---"
+# ĐỔI ĐUÔI V5.4 ĐỂ SCRIPT TỰ ĐỘNG GỠ BỎ LIST CŨ, NẠP LIST MỚI CHO CONTAINER
+MARKER="# --- WEBSHARE COMPLIANCE FILTER V5.4 ---"
 
 MODE="RUN"
 TARGET_SINGLE=""
