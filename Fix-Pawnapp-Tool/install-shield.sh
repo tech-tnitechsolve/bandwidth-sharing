@@ -1,28 +1,28 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Pawns Shield - SOCKS5 Domain Sanitizer & IPv6 Leak Blocker (All-in-One Edition)
-# Tác dụng: Xóa sạch chữ "pawns.app" chống suspend proxy, khóa IPv6, bảo vệ cổng 1337
+# Pawns Shield - SOCKS5 Domain Sanitizer & IPv6 Leak Blocker (Optimized Edition)
+# Bọc chuẩn chống Webshare suspend, giữ nguyên khóa IPv6, an toàn cho tool thứ 3
 # ==============================================================================
 set -euo pipefail
 
 SHIELD_PY="/usr/local/bin/pawns-shield.py"
 SHIELD_SVC="/etc/systemd/system/pawns-shield.service"
 
-# Chức năng gỡ cài đặt sạch sẽ
 if [[ "${1:-}" == "--uninstall" ]]; then
     echo "[*] Đang gỡ bỏ Pawns Shield..."
     systemctl disable --now pawns-shield 2>/dev/null || true
     iptables -t nat -D OUTPUT -j PAWNS_SHIELD 2>/dev/null || true
     iptables -t nat -F PAWNS_SHIELD 2>/dev/null || true
     iptables -t nat -X PAWNS_SHIELD 2>/dev/null || true
-    ip6tables -F OUTPUT 2>/dev/null || true
+    ip6tables -D OUTPUT -j PAWNS_SHIELD_V6 2>/dev/null || true
+    ip6tables -F PAWNS_SHIELD_V6 2>/dev/null || true
+    ip6tables -X PAWNS_SHIELD_V6 2>/dev/null || true
     rm -f "$SHIELD_PY" "$SHIELD_SVC"
     systemctl daemon-reload
     echo "[+] Đã gỡ bỏ sạch sẽ Pawns Shield khỏi VPS!"
     exit 0
 fi
 
-# Yêu cầu quyền root
 if [[ $EUID -ne 0 ]]; then
    echo "[!] Lỗi: Bạn phải chạy script này với quyền root (sudo)!" >&2
    exit 1
@@ -51,7 +51,6 @@ SO_ORIGINAL_DST = 80
 SO_MARK = 36
 SHIELD_MARK = 0x1088
 
-# Phân giải động Cloudflare DoH (Không gán cứng IP chết)
 DNS_CACHE = {}
 
 def get_live_pawn_ip(domain="pawns.app"):
@@ -72,13 +71,27 @@ def get_live_pawn_ip(domain="pawns.app"):
                     return ip
     except Exception:
         pass
+    try:
+        ip = socket.gethostbyname(domain)
+        DNS_CACHE[domain] = {"ip": ip, "time": now}
+        return ip
+    except Exception:
+        pass
     return "185.110.216.178"
+
+def is_pawns_domain(domain):
+    d = domain.lower().strip(".")
+    return (
+        d == "pawns.app" or d.endswith(".pawns.app") or
+        d == "iproyal.com" or d.endswith(".iproyal.com")
+    )
 
 def recv_exact(sock, n):
     buf = bytearray()
     while len(buf) < n:
         chunk = sock.recv(n - len(buf))
-        if not chunk: return None
+        if not chunk:
+            return None
         buf.extend(chunk)
     return bytes(buf)
 
@@ -86,7 +99,8 @@ def pipe_stream(src, dst):
     try:
         while True:
             data = src.recv(65536)
-            if not data: break
+            if not data:
+                break
             dst.sendall(data)
     except Exception:
         pass
@@ -96,10 +110,22 @@ def pipe_stream(src, dst):
         try: src.close()
         except: pass
 
+def relay_bidirectional(client_sock, upstream_sock):
+    upstream_sock.settimeout(None)
+    client_sock.settimeout(None)
+    t1 = threading.Thread(target=pipe_stream, args=(client_sock, upstream_sock), daemon=True)
+    t2 = threading.Thread(target=pipe_stream, args=(upstream_sock, client_sock), daemon=True)
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+
 def handle_client(client_sock):
     upstream_sock = None
     try:
         client_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        client_sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        client_sock.settimeout(8)
 
         orig_dst = client_sock.getsockopt(socket.SOL_IP, SO_ORIGINAL_DST, 16)
         orig_port, orig_ip_bytes = struct.unpack("!2xH4s8x", orig_dst)
@@ -114,8 +140,9 @@ def handle_client(client_sock):
         upstream_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         upstream_sock.setsockopt(socket.SOL_SOCKET, SO_MARK, SHIELD_MARK)
         upstream_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        upstream_sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
         upstream_sock.settimeout(12)
-        
+
         try:
             upstream_sock.connect((real_ip, real_port))
         except Exception:
@@ -125,32 +152,38 @@ def handle_client(client_sock):
             return
 
         header = recv_exact(client_sock, 2)
-        if not header: return
+        if not header:
+            return
 
         if header[0] != 5:
             upstream_sock.sendall(header)
-            t1 = threading.Thread(target=pipe_stream, args=(client_sock, upstream_sock), daemon=True)
-            t2 = threading.Thread(target=pipe_stream, args=(upstream_sock, client_sock), daemon=True)
-            t1.start(); t2.start()
-            t1.join(); t2.join()
+            relay_bidirectional(client_sock, upstream_sock)
             return
 
         nmethods = header[1]
         methods = recv_exact(client_sock, nmethods)
-        if not methods: return
+        if not methods:
+            return
 
         upstream_sock.sendall(header + methods)
         up_method_resp = recv_exact(upstream_sock, 2)
-        if not up_method_resp: return
+        if not up_method_resp:
+            return
         client_sock.sendall(up_method_resp)
 
         if up_method_resp[1] == 2:
             auth_ver = recv_exact(client_sock, 1)
             if not auth_ver: return
-            ulen = recv_exact(client_sock, 1)[0]
+            ulen_b = recv_exact(client_sock, 1)
+            if not ulen_b: return
+            ulen = ulen_b[0]
             uname = recv_exact(client_sock, ulen)
-            plen = recv_exact(client_sock, 1)[0]
+            if uname is None: return
+            plen_b = recv_exact(client_sock, 1)
+            if not plen_b: return
+            plen = plen_b[0]
             passwd = recv_exact(client_sock, plen)
+            if passwd is None: return
 
             upstream_sock.sendall(auth_ver + bytes([ulen]) + uname + bytes([plen]) + passwd)
             auth_resp = recv_exact(upstream_sock, 2)
@@ -159,48 +192,59 @@ def handle_client(client_sock):
             if auth_resp[1] != 0: return
 
         req_header = recv_exact(client_sock, 4)
-        if not req_header: return
+        if not req_header:
+            return
         cmd, atyp = req_header[1], req_header[3]
 
         if atyp == 3:
-            dlen = recv_exact(client_sock, 1)[0]
-            domain = recv_exact(client_sock, dlen).decode("latin1")
+            dlen_b = recv_exact(client_sock, 1)
+            if not dlen_b: return
+            dlen = dlen_b[0]
+            domain_b = recv_exact(client_sock, dlen)
             target_port_bytes = recv_exact(client_sock, 2)
+            if not domain_b or not target_port_bytes: return
+            domain = domain_b.decode("latin1")
 
-            # TẨY TRẮNG TÊN MIỀN PAWNS
-            if "pawns" in domain.lower():
+            # TẨY TRẮNG TÊN MIỀN PAWNS -> IPv4 ĐỘNG
+            if is_pawns_domain(domain):
                 dest_ip = get_live_pawn_ip(domain)
                 new_req = struct.pack("!BBBB", 5, cmd, 0, 1) + socket.inet_aton(dest_ip) + target_port_bytes
             else:
-                new_req = req_header + bytes([dlen]) + domain.encode("latin1") + target_port_bytes
+                new_req = req_header + bytes([dlen]) + domain_b + target_port_bytes
         elif atyp == 1:
-            new_req = req_header + recv_exact(client_sock, 4) + recv_exact(client_sock, 2)
+            addr_b = recv_exact(client_sock, 6)
+            if not addr_b: return
+            new_req = req_header + addr_b
+        elif atyp == 4:
+            addr_b = recv_exact(client_sock, 18)
+            if not addr_b: return
+            new_req = req_header + addr_b
         else:
             return
 
         upstream_sock.sendall(new_req)
         resp_header = recv_exact(upstream_sock, 4)
-        if not resp_header: return
+        if not resp_header:
+            return
         b_atyp = resp_header[3]
-        if b_atyp == 1: rest = recv_exact(upstream_sock, 6)
+        if b_atyp == 1:
+            rest = recv_exact(upstream_sock, 6)
         elif b_atyp == 3:
-            dlen_resp = recv_exact(upstream_sock, 1)[0]
-            rest = bytes([dlen_resp]) + recv_exact(upstream_sock, dlen_resp + 2)
-        elif b_atyp == 4: rest = recv_exact(upstream_sock, 18)
-        else: rest = b""
+            dlen_r = recv_exact(upstream_sock, 1)
+            if not dlen_r: return
+            rest = dlen_r + recv_exact(upstream_sock, dlen_r[0] + 2)
+        elif b_atyp == 4:
+            rest = recv_exact(upstream_sock, 18)
+        else:
+            rest = b""
+        if rest is None:
+            return
 
         client_sock.sendall(resp_header + rest)
-        if resp_header[1] != 0: return
+        if resp_header[1] != 0:
+            return
 
-        # 2 LUỒNG SONG SONG ĐỘC LẬP (ĐÃ KIỂM CHỨNG CỰC KỲ MƯỢT)
-        upstream_sock.settimeout(None)
-        client_sock.settimeout(None)
-        t1 = threading.Thread(target=pipe_stream, args=(client_sock, upstream_sock), daemon=True)
-        t2 = threading.Thread(target=pipe_stream, args=(upstream_sock, client_sock), daemon=True)
-        t1.start()
-        t2.start()
-        t1.join()
-        t2.join()
+        relay_bidirectional(client_sock, upstream_sock)
 
     except Exception:
         pass
@@ -212,44 +256,36 @@ def handle_client(client_sock):
             except: pass
 
 def setup_universal_iptables():
-    # 1. Cấu hình bảng NAT IPv4 bảo vệ Proxy
+    # 1. Custom Chain IPv4 NAT bọc SOCKS5 (giữ nguyên danh sách cổng né chuẩn gốc)
     subprocess.run("iptables -t nat -N PAWNS_SHIELD 2>/dev/null || iptables -t nat -F PAWNS_SHIELD", shell=True)
     subprocess.run("iptables -t nat -D OUTPUT -j PAWNS_SHIELD 2>/dev/null || true", shell=True)
     subprocess.run("iptables -t nat -I OUTPUT 1 -j PAWNS_SHIELD", shell=True)
 
-    # Bỏ qua gói tin do chính Shield phát ra
     subprocess.run(f"iptables -t nat -A PAWNS_SHIELD -m mark --mark {hex(SHIELD_MARK)} -j RETURN", shell=True)
 
-    # BẢO VỆ CỤM CỔNG 1337 DÀN CŨ (TUYỆT ĐỐI KHÔNG CHẠM VÀO)
-    subprocess.run("iptables -t nat -A PAWNS_SHIELD -p tcp --dport 1337 -j RETURN", shell=True)
+    for p in (1337, 22, 53, 80, 443, 8787):
+        subprocess.run(f"iptables -t nat -A PAWNS_SHIELD -p tcp --dport {p} -j RETURN", shell=True)
 
-    # Bỏ qua các cổng hệ thống và web trực tiếp
-    subprocess.run("iptables -t nat -A PAWNS_SHIELD -p tcp --dport 22 -j RETURN", shell=True)
-    subprocess.run("iptables -t nat -A PAWNS_SHIELD -p tcp --dport 53 -j RETURN", shell=True)
-    subprocess.run("iptables -t nat -A PAWNS_SHIELD -p tcp --dport 80 -j RETURN", shell=True)
-    subprocess.run("iptables -t nat -A PAWNS_SHIELD -p tcp --dport 443 -j RETURN", shell=True)
-    subprocess.run("iptables -t nat -A PAWNS_SHIELD -p tcp --dport 8787 -j RETURN", shell=True)
+    for net in ("127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"):
+        subprocess.run(f"iptables -t nat -A PAWNS_SHIELD -d {net} -j RETURN", shell=True)
 
-    # BẢO VỆ MẠNG LOCAL & DOCKER (RFC 1918)
-    subprocess.run("iptables -t nat -A PAWNS_SHIELD -d 127.0.0.0/8 -j RETURN", shell=True)
-    subprocess.run("iptables -t nat -A PAWNS_SHIELD -d 10.0.0.0/8 -j RETURN", shell=True)
-    subprocess.run("iptables -t nat -A PAWNS_SHIELD -d 172.16.0.0/12 -j RETURN", shell=True)
-    subprocess.run("iptables -t nat -A PAWNS_SHIELD -d 192.168.0.0/16 -j RETURN", shell=True)
-
-    # CHỐT CHẶN VẠN NĂNG: Chỉ bắt các kết nối TCP ra Public IP (Proxy Webshare/Decodo)
     subprocess.run(f"iptables -t nat -A PAWNS_SHIELD -p tcp -j REDIRECT --to-ports {SHIELD_PORT}", shell=True)
 
-    # 2. KHÓA CHẶT RÒ RỈ IPV6 (ÉP 100% LƯU LƯỢNG CHẠY QUA IPV4 ĐÃ BẢO VỆ)
-    subprocess.run("ip6tables -F OUTPUT 2>/dev/null || true", shell=True)
-    subprocess.run("ip6tables -A OUTPUT -o lo -j ACCEPT 2>/dev/null || true", shell=True)
-    subprocess.run("ip6tables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || true", shell=True)
-    subprocess.run("ip6tables -A OUTPUT -p tcp -j REJECT --reject-with icmp6-adm-prohibited 2>/dev/null || true", shell=True)
+    # 2. Custom Chain IPv6 chống rò IPv6 (không flush làm mất rule IPv6 khác nếu có)
+    subprocess.run("ip6tables -N PAWNS_SHIELD_V6 2>/dev/null || ip6tables -F PAWNS_SHIELD_V6", shell=True)
+    subprocess.run("ip6tables -D OUTPUT -j PAWNS_SHIELD_V6 2>/dev/null || true", shell=True)
+    subprocess.run("ip6tables -I OUTPUT 1 -j PAWNS_SHIELD_V6", shell=True)
+    subprocess.run("ip6tables -A PAWNS_SHIELD_V6 -o lo -j RETURN 2>/dev/null || true", shell=True)
+    subprocess.run("ip6tables -A PAWNS_SHIELD_V6 -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN 2>/dev/null || true", shell=True)
+    subprocess.run("ip6tables -A PAWNS_SHIELD_V6 -p tcp -j REJECT --reject-with icmp6-adm-prohibited 2>/dev/null || true", shell=True)
 
 def cleanup_iptables(*args):
     subprocess.run("iptables -t nat -D OUTPUT -j PAWNS_SHIELD 2>/dev/null || true", shell=True)
     subprocess.run("iptables -t nat -F PAWNS_SHIELD 2>/dev/null || true", shell=True)
     subprocess.run("iptables -t nat -X PAWNS_SHIELD 2>/dev/null || true", shell=True)
-    subprocess.run("ip6tables -F OUTPUT 2>/dev/null || true", shell=True)
+    subprocess.run("ip6tables -D OUTPUT -j PAWNS_SHIELD_V6 2>/dev/null || true", shell=True)
+    subprocess.run("ip6tables -F PAWNS_SHIELD_V6 2>/dev/null || true", shell=True)
+    subprocess.run("ip6tables -X PAWNS_SHIELD_V6 2>/dev/null || true", shell=True)
     sys.exit(0)
 
 def main():
@@ -300,6 +336,6 @@ systemctl enable --now pawns-shield
 systemctl restart pawns-shield
 
 echo "=================================================================="
-echo "   CÀI ĐẶT THÀNH CÔNG! BẢN CHUẨN ĐÃ CHÍNH THỨC HOẠT ĐỘNG!       "
+echo "   CÀI ĐẶT THÀNH CÔNG! BẢN TỐI ƯU ĐÃ CHÍNH THỨC HOẠT ĐỘNG!      "
 echo "=================================================================="
 systemctl status pawns-shield --no-pager
