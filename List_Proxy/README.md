@@ -33,23 +33,19 @@ sudo bash -c 'RAW_URL="https://raw.githubusercontent.com/tech-tnitechsolve/bandw
 
 # Xóa Tool Shield khi không cần nữa
 ```
-sudo bash -c '
-SHIELD_KEY="webshare""_shield.sh"
-AUDIT_KEY="audit""_system.sh"
+cd / && sudo bash -c '
+K_WS="webshare""_shield.sh"; K_AU="audit""_system.sh"
 
-# 1. Dừng và xóa systemd watcher + chỉ xóa dòng cron của shield (giữ nguyên cron setup_vps)
+# 1. Xóa sạch webshare_shield (service, cron, process, iptables container, hosts)
 systemctl stop webshare-watcher.service 2>/dev/null || true
 systemctl disable webshare-watcher.service 2>/dev/null || true
 rm -f /etc/systemd/system/webshare-watcher.service
-systemctl daemon-reload 2>/dev/null || true
-sed -i "/${SHIELD_KEY}/d" /etc/cron.d/internetincome 2>/dev/null || true
+sed -i "/${K_WS}/d" /etc/cron.d/internetincome 2>/dev/null || true
 
-# 2. Diệt tiến trình shield còn chạy ngầm (không tự kill bash -c)
-for p in $(pgrep -f "$SHIELD_KEY" 2>/dev/null || true); do
+for p in $(pgrep -f "$K_WS" 2>/dev/null || true); do
   [[ "$p" != "$$" && "$p" != "$PPID" ]] && kill -9 "$p" 2>/dev/null || true
 done
 
-# 3. Gỡ sạch chain WEBSHARE_SHIELD trong mọi container đang chạy (giữ nguyên disable_ipv6 của internetIncome)
 for pid in $(docker inspect --format "{{.State.Pid}}" $(docker ps -q 2>/dev/null) 2>/dev/null | sort -u); do
   if (( pid > 0 )); then
     while nsenter -t "$pid" -n iptables -D OUTPUT -j WEBSHARE_SHIELD 2>/dev/null; do :; done
@@ -58,7 +54,6 @@ for pid in $(docker inspect --format "{{.State.Pid}}" $(docker ps -q 2>/dev/null
   fi
 done
 
-# 4. Dọn sạch block domain trong file hosts của MỌI container (cả đang chạy & đã dừng)
 for h in $(docker inspect --format "{{.HostsPath}}" $(docker ps -aq 2>/dev/null) 2>/dev/null); do
   if [[ -f "$h" ]] && grep -q "WEBSHARE COMPLIANCE FILTER" "$h" 2>/dev/null; then
     tmp_h=$(mktemp)
@@ -67,10 +62,23 @@ for h in $(docker inspect --format "{{.HostsPath}}" $(docker ps -aq 2>/dev/null)
   fi
 done
 
-# 5. Xóa file script webshare_shield & audit_system
-rm -f "/usr/local/bin/${SHIELD_KEY}" "/usr/local/bin/${AUDIT_KEY}"
+# 2. Xóa sạch luôn pawns-shield trên host (nếu từng lỡ cài trên VPS Docker thuần)
+systemctl disable --now pawns-shield 2>/dev/null || true
+iptables -t nat -D OUTPUT -j PAWNS_SHIELD 2>/dev/null || true
+iptables -t nat -F PAWNS_SHIELD 2>/dev/null || true
+iptables -t nat -X PAWNS_SHIELD 2>/dev/null || true
+ip6tables -D OUTPUT -j PAWNS_SHIELD_V6 2>/dev/null || true
+ip6tables -F PAWNS_SHIELD_V6 2>/dev/null || true
+ip6tables -X PAWNS_SHIELD_V6 2>/dev/null || true
+ip6tables -D OUTPUT -p tcp -j REJECT --reject-with icmp6-adm-prohibited 2>/dev/null || true
+ip6tables -D OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || true
+ip6tables -D OUTPUT -o lo -j ACCEPT 2>/dev/null || true
 
-echo -e "\n\033[1;32m[HOÀN TẤT] ĐÃ XÓA SẠCH CÁC SHIELD & GIỮ NGUYÊN CẤU HÌNH SETUP_VPS!\033[0m\n"
+# 3. Xóa toàn bộ file script shield & reload systemd
+rm -f "/usr/local/bin/${K_WS}" "/usr/local/bin/${K_AU}" /usr/local/bin/pawns-shield.py /etc/systemd/system/pawns-shield.service
+systemctl daemon-reload 2>/dev/null || true
+
+echo -e "\n\033[1;32m[HOÀN TẤT] ĐÃ XÓA SẠCH 100% SHIELD — QUAY VỀ NGUYÊN BẢN DOCKER + SETUP_VPS!\033[0m\n"
 '
 ```
 # Check xem đã xóa sạch chưa
