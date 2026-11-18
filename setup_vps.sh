@@ -364,7 +364,7 @@ EOF_APT
 
 iptables -P INPUT ACCEPT 2>/dev/null || true
 iptables -P FORWARD ACCEPT 2>/dev/null || true
-iptables -F FORWARD 2>/dev/null || true
+# iptables -F FORWARD 2>/dev/null || true
 if command -v netfilter-persistent >/dev/null 2>&1; then
   netfilter-persistent save 2>/dev/null || true
 fi
