@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Pawns Shield - SOCKS5 Domain Sanitizer & IPv6 Leak Blocker (AsyncIO Epoll)
-# Chống Webshare suspend (tẩy trắng tên miền Pawns & khóa IPv6), không nghẽn mạng
-# Cách cài : sudo bash install-shield.sh
-# Cách gỡ  : sudo bash install-shield.sh --uninstall
+# Tương thích 100% với: curl -fsSL <url> | sudo bash
+# Gỡ cài đặt        : curl -fsSL <url> | sudo bash -s -- --uninstall
 # ==============================================================================
 set -euo pipefail
 
 SHIELD_PY="/usr/local/bin/pawns-shield.py"
 SHIELD_SVC="/etc/systemd/system/pawns-shield.service"
 
-# Chức năng gỡ cài đặt sạch sẽ
+# Chức năng gỡ cài đặt sạch sẽ (chống treo 90s nếu gỡ từ bản cũ)
 if [[ "${1:-}" == "--uninstall" ]]; then
     echo "[*] Đang gỡ bỏ Pawns Shield..."
-    systemctl disable --now pawns-shield 2>/dev/null || true
+    systemctl disable pawns-shield 2>/dev/null || true
+    timeout 3 systemctl stop pawns-shield 2>/dev/null || systemctl kill -s KILL pawns-shield 2>/dev/null || true
     iptables -t nat -D OUTPUT -j PAWNS_SHIELD 2>/dev/null || true
     iptables -t nat -F PAWNS_SHIELD 2>/dev/null || true
     iptables -t nat -X PAWNS_SHIELD 2>/dev/null || true
@@ -144,7 +144,6 @@ async def handle_client(c_reader, c_writer):
         real_ip = socket.inet_ntoa(orig_ip_bytes)
         real_port = orig_port
 
-        # Chống vòng lặp tự trỏ
         if real_port == SHIELD_PORT or real_ip in ("127.0.0.1", "0.0.0.0"):
             return
 
@@ -210,7 +209,6 @@ async def handle_client(c_reader, c_writer):
             port_b = await asyncio.wait_for(c_reader.readexactly(2), timeout=8)
             domain = domain_b.decode("latin1")
 
-            # TẨY TRẮNG TÊN MIỀN PAWNS -> IPv4 ĐỘNG
             if should_sanitize(domain):
                 dest_ip = await loop.run_in_executor(None, resolve_domain_sync, domain)
                 if dest_ip:
@@ -270,26 +268,21 @@ async def handle_client(c_reader, c_writer):
                 pass
 
 def setup_universal_iptables():
-    # 1. Cấu hình bảng NAT IPv4 bảo vệ Proxy
     subprocess.run("iptables -t nat -N PAWNS_SHIELD 2>/dev/null || iptables -t nat -F PAWNS_SHIELD", shell=True)
     subprocess.run("iptables -t nat -D OUTPUT -j PAWNS_SHIELD 2>/dev/null || true", shell=True)
     subprocess.run("iptables -t nat -I OUTPUT 1 -j PAWNS_SHIELD", shell=True)
 
-    # Bỏ qua gói tin do chính Shield phát ra
     subprocess.run(f"iptables -t nat -A PAWNS_SHIELD -m mark --mark {hex(SHIELD_MARK)} -j RETURN", shell=True)
-
-    # Bỏ qua cổng 1337, hệ thống, web trực tiếp và Pawns Manager (8787)
     for p in (1337, 22, 53, 80, 443, 8787):
         subprocess.run(f"iptables -t nat -A PAWNS_SHIELD -p tcp --dport {p} -j RETURN", shell=True)
-
-    # Bỏ qua mạng Local & Docker (RFC 1918)
     for net in ("127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"):
         subprocess.run(f"iptables -t nat -A PAWNS_SHIELD -d {net} -j RETURN", shell=True)
-
-    # Bắt các kết nối TCP ra Public IP (Proxy Webshare/Decodo)
     subprocess.run(f"iptables -t nat -A PAWNS_SHIELD -p tcp -j REDIRECT --to-ports {SHIELD_PORT}", shell=True)
 
-    # 2. Khóa rò rỉ IPv6 qua custom chain riêng PAWNS_SHIELD_V6
+    subprocess.run("ip6tables -D OUTPUT -p tcp -j REJECT --reject-with icmp6-adm-prohibited 2>/dev/null || true", shell=True)
+    subprocess.run("ip6tables -D OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || true", shell=True)
+    subprocess.run("ip6tables -D OUTPUT -o lo -j ACCEPT 2>/dev/null || true", shell=True)
+
     subprocess.run("ip6tables -N PAWNS_SHIELD_V6 2>/dev/null || ip6tables -F PAWNS_SHIELD_V6", shell=True)
     subprocess.run("ip6tables -D OUTPUT -j PAWNS_SHIELD_V6 2>/dev/null || true", shell=True)
     subprocess.run("ip6tables -I OUTPUT 1 -j PAWNS_SHIELD_V6", shell=True)
@@ -354,10 +347,13 @@ LimitNOFILE=1048576
 WantedBy=multi-user.target
 EOF
 
-echo "[*] 4/4. Đang kích hoạt dịch vụ..."
+echo "[*] 4/4. Đang kích hoạt dịch vụ (chuyển giao tức thì)..."
 systemctl daemon-reload
-systemctl enable --now pawns-shield
-systemctl restart pawns-shield
+systemctl enable pawns-shield >/dev/null 2>&1 || true
+if systemctl is-active --quiet pawns-shield 2>/dev/null; then
+    systemctl kill -s KILL pawns-shield 2>/dev/null || true
+fi
+systemctl start pawns-shield
 sleep 1
 
 echo "=================================================================="
