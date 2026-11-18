@@ -80,15 +80,15 @@ G="\033[1;32m"; Y="\033[1;33m"; R="\033[1;31m"; C="\033[1;36m"; B="\033[1;34m"; 
 ERR=0; WARN=0
 
 echo -e "\n${B}================================================================================${N}"
-echo -e "${B}  [DEEP CHECK] KIỂM TOÁN XÓA SHIELD & ĐỘ ỔN ĐỊNH HỆ THỐNG (${HOSTNAME})${N}"
+echo -e "${B}  [DEEP CHECK V2] KIỂM TOÁN XÓA SHIELD & ĐỘ ỔN ĐỊNH HỆ THỐNG (${HOSTNAME})${N}"
 echo -e "${B}================================================================================${N}"
 
-# --- PHẦN 1: XÁC MINH ĐÃ XÓA SẠCH SHIELD ---
-K_WS="webshare""_shield"; K_PS="pawns""-shield"; K_AU="audit""_system"
-P_HIT=$(pgrep -af "${K_WS}|${K_PS}" 2>/dev/null | grep -vE "^($$|$PPID) " || true)
-SVC_WS=$(systemctl is-active webshare-watcher.service 2>/dev/null || echo "none")
-SVC_WS_F=$([[ -f /etc/systemd/system/webshare-watcher.service ]] && echo "CÒN FILE" || echo "SẠCH")
-SVC_PS=$(systemctl is-active pawns-shield.service 2>/dev/null || echo "none")
+# --- PHẦN 1: XÁC MINH ĐÃ XÓA SẠCH SHIELD (KHÔNG TỰ KHỚP CHÍNH MÌNH) ---
+K_WS="webshare""_shield"; K_PS="pawns""-shield"; K_AU="audit""_system"; K_WW="webshare""-watcher"
+P_HIT=$(pgrep -af "${K_WS}|${K_PS}" 2>/dev/null || true)
+SVC_WS=$(systemctl is-active "${K_WW}.service" 2>/dev/null || echo "none")
+SVC_WS_F=$([[ -f "/etc/systemd/system/${K_WW}.service" ]] && echo "CÒN FILE" || echo "SẠCH")
+SVC_PS=$(systemctl is-active "${K_PS}.service" 2>/dev/null || echo "none")
 CRON_WS=$(grep "$K_WS" /etc/cron.d/internetincome 2>/dev/null | wc -l)
 CRON_SVPS=$(grep -E "ii-autosync|ii-flapguard|ii-repocket-watchdog" /etc/cron.d/internetincome 2>/dev/null | wc -l)
 
@@ -137,13 +137,9 @@ else
   ERR=$((ERR + 1))
   echo -e "  * Toàn vẹn /etc/hosts: ${R}LỖI${N} (${HOSTS_BROKEN} container mất dòng localhost!)"
 fi
-if (( CRON_SVPS > 0 )); then
-  echo -e "  * Cron setup_vps.sh : ${G}ĐANG HOẠT ĐỘNG (${CRON_SVPS} tác vụ)${N}"
-else
-  echo -e "  * Cron setup_vps.sh : ${Y}Không thấy hoặc chạy với --no-cron${N}"
-fi
+echo -e "  * Cron setup_vps.sh : $( (( CRON_SVPS > 0 )) && echo -e "${G}ĐANG HOẠT ĐỘNG (${CRON_SVPS} tác vụ)${N}" || echo -e "${Y}Không thấy${N}" )"
 
-# --- PHẦN 2: SỨC KHỎE PHẦN CỨNG & KERNEL ---
+# --- PHẦN 2: PHẦN CỨNG & KERNEL ---
 read -r L1 L5 L15 _ < /proc/loadavg
 CORES=$(nproc 2>/dev/null || echo 1)
 read -r _ RAM_T RAM_U _ _ _ RAM_A < <(free -m | grep "^Mem:")
@@ -151,7 +147,7 @@ read -r _ SWAP_T SWAP_U _ < <(free -m | grep "^Swap:")
 read -r FD_U _ FD_M < /proc/sys/fs/file-nr
 ZRAM_SZ=$(swapon --show 2>/dev/null | grep "/dev/zram0" | tr -s " " | cut -d" " -f3 || true)
 DISK_PCT=$(df -h / | tail -n1 | tr -s " " | cut -d" " -f5)
-RO_CHK=$(grep " / " /proc/mounts | grep -oE "\bro\b" | head -n1 || echo "rw")
+grep " / " /proc/mounts | grep -qE "[ ,]ro([ ,]|$)" && RO_CHK="RO" || RO_CHK="RW"
 PID1_CPU=$(ps -p 1 -o %cpu= 2>/dev/null | tr -d " " || echo "0.0")
 
 echo -e "\n${C}[2. TÀI NGUYÊN HỆ THỐNG & KERNEL]${N}"
@@ -163,10 +159,10 @@ else
   WARN=$((WARN + 1))
   echo -e "  * ZRAM              : ${Y}KHÔNG BẬT${N}"
 fi
-echo -e "  * Disk / FD         : Ổ đĩa ${DISK_PCT} (${RO_CHK^^}) | FD: ${FD_U}/${FD_M}"
-[[ "$RO_CHK" == "ro" ]] && ERR=$((ERR + 1))
+echo -e "  * Disk / FD         : Ổ đĩa ${DISK_PCT} (${RO_CHK}) | FD: ${FD_U}/${FD_M}"
+[[ "$RO_CHK" == "RO" ]] && ERR=$((ERR + 1))
 
-# --- PHẦN 3: SỨC KHỎE DOCKER & DÀN CONTAINER ---
+# --- PHẦN 3: DOCKER & CONTAINER ---
 DOCKER_ST=$(systemctl is-active docker 2>/dev/null || echo "inactive")
 DOCKER_FWD=$(iptables -S FORWARD 2>/dev/null | grep "DOCKER" | wc -l)
 EXIT_C=$(docker ps -aq -f status=exited 2>/dev/null | wc -l)
@@ -194,7 +190,7 @@ if (( DOCKER_FWD > 0 )); then
   FWD_TXT="${G}CÓ (${DOCKER_FWD})${N}"
 else
   WARN=$((WARN + 1))
-  FWD_TXT="${Y}THIẾU (Nếu container mất mạng, hãy restart docker)${N}"
+  FWD_TXT="${Y}THIẾU (Do setup_vps chạy iptables -F FORWARD)${N}"
 fi
 echo -e "  * Docker / FORWARD  : Daemon ${G}${DOCKER_ST^^}${N} | Docker FORWARD rules: ${FWD_TXT}"
 echo -e "  * Container         : Chạy ${G}${RUN_C}/${ALL_C}${N} | Exited: ${EXIT_C} | Restarting: ${REST_C} | Dead: ${DEAD_C}"
@@ -204,29 +200,34 @@ if [[ -n "$TUN_NAME" ]]; then
     echo -e "  * Chống rò IPv6 TUN : ${G}ĐANG KHÓA CHUẨN (disable_ipv6=1 tại ${TUN_NAME})${N}"
   else
     WARN=$((WARN + 1))
-    echo -e "  * Chống rò IPv6 TUN : ${Y}CẢNH BÁO (disable_ipv6=${TUN_V6} tại ${TUN_NAME})${N}"
+    echo -e "  * Chống rò IPv6 TUN : ${Y}CẢNH BÁO (disable_ipv6=${TUN_V6})${N}"
   fi
 fi
 if (( EXIT_C > 0 )); then
   WARN=$((WARN + 1))
-  echo -e "  * Node đang Exited  : ${Y}$(docker ps -a -f status=exited --format "{{.Names}}" | head -n 8 | tr "\n" " ")${N}"
+  echo -e "  * Node đang Exited  : ${Y}$(docker ps -a -f status=exited --format "{{.Names}}" | head -n 10 | tr "\n" " ")${N}"
 fi
 [[ "$DOCKER_ST" != "active" ]] && ERR=$((ERR + 1))
 (( REST_C > 0 || DEAD_C > 0 || TOT_OOM > 0 )) && ERR=$((ERR + 1))
 (( FLAP_C > 0 )) && WARN=$((WARN + 1))
 
-# --- PHẦN 4: MẠNG & LƯU LƯỢNG KIẾM TIỀN THỰC TẾ (2 GIÂY) ---
+# --- PHẦN 4: SOCKET TRONG TUN & LƯU LƯỢNG THỰC TẾ ---
 CONN_C=$(cat /proc/sys/net/netfilter/nf_conntrack_count 2>/dev/null || echo 0)
 CONN_M=$(cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null || echo 524288)
-EST_ALL=$(ss -tan state established 2>/dev/null | tail -n +2 | wc -l)
-EST_INC=$(ss -tan state established "( dport = :80 or dport = :443 or sport = :80 or sport = :443 )" 2>/dev/null | tail -n +2 | wc -l)
-SYN_C=$(ss -tan state syn-sent 2>/dev/null | tail -n +2 | wc -l)
-CW_C=$(ss -tan state close-wait 2>/dev/null | tail -n +2 | wc -l)
+TUN_SOCK=0; TUN_SAMP=0
+for tn in $(docker ps --format "{{.Names}}" 2>/dev/null | grep -E "^(tun|gluetun|hev)" | shuf -n 5 2>/dev/null); do
+  tp=$(docker inspect -f "{{.State.Pid}}" "$tn" 2>/dev/null || echo 0)
+  if (( tp > 0 )); then
+    TUN_SAMP=$((TUN_SAMP + 1))
+    c_s=$(nsenter -t "$tp" -n ss -tan state established 2>/dev/null | tail -n +2 | wc -l)
+    TUN_SOCK=$((TUN_SOCK + c_s))
+  fi
+done
 
-echo -e "\n${C}[4. LƯU LƯỢNG MẠNG & TỐC ĐỘ CẮN DATA (ZERO-PROBE)]${N}"
-echo -e "  * Sockets Income    : ${G}${EST_INC} active (80/443)${N} / Tổng ${EST_ALL} established | SYN_SENT: ${SYN_C} | CLOSE_WAIT: ${CW_C}"
-echo -e "  * Conntrack Kernel  : ${CONN_C} / ${CONN_M} ($(( CONN_C * 100 / CONN_M ))%)"
-(( EST_INC == 0 && RUN_C > 0 )) && WARN=$((WARN + 1))
+echo -e "\n${C}[4. LƯU LƯỢNG MẠNG TRONG TUN & TỐC ĐỘ CẮN DATA (2 GIÂY)]${N}"
+echo -e "  * Conntrack Kernel  : ${G}${CONN_C} / ${CONN_M}${N} ($(( CONN_C * 100 / CONN_M ))%)"
+echo -e "  * Sockets trong TUN : ${G}${TUN_SOCK} active established${N} (trên ${TUN_SAMP} TUN mẫu)"
+(( TUN_SAMP > 0 && TUN_SOCK == 0 )) && WARN=$((WARN + 1))
 
 SAMPLE_NODES=$(docker ps --format "{{.Names}}" 2>/dev/null | grep -E "^(traffmon|pawns|packet|earn|honey|repocket|bitping)" | shuf -n 3 2>/dev/null || true)
 [[ -z "$SAMPLE_NODES" ]] && SAMPLE_NODES=$(docker ps --format "{{.Names}}" 2>/dev/null | head -n 3 || true)
