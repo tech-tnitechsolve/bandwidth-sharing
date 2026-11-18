@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Pawns Shield - SOCKS5 Domain Sanitizer & IPv6 Leak Blocker (Optimized Edition)
-# Bọc chuẩn chống Webshare suspend, giữ nguyên khóa IPv6, an toàn cho tool thứ 3
+# Pawns Shield - SOCKS5 Domain Sanitizer & IPv6 Leak Blocker (AsyncIO Epoll)
+# Chống Webshare suspend (tẩy trắng tên miền Pawns & khóa IPv6), không nghẽn mạng
+# Cách cài : sudo bash install-shield.sh
+# Cách gỡ  : sudo bash install-shield.sh --uninstall
 # ==============================================================================
 set -euo pipefail
 
 SHIELD_PY="/usr/local/bin/pawns-shield.py"
 SHIELD_SVC="/etc/systemd/system/pawns-shield.service"
 
+# Chức năng gỡ cài đặt sạch sẽ
 if [[ "${1:-}" == "--uninstall" ]]; then
     echo "[*] Đang gỡ bỏ Pawns Shield..."
     systemctl disable --now pawns-shield 2>/dev/null || true
@@ -17,12 +20,16 @@ if [[ "${1:-}" == "--uninstall" ]]; then
     ip6tables -D OUTPUT -j PAWNS_SHIELD_V6 2>/dev/null || true
     ip6tables -F PAWNS_SHIELD_V6 2>/dev/null || true
     ip6tables -X PAWNS_SHIELD_V6 2>/dev/null || true
+    ip6tables -D OUTPUT -p tcp -j REJECT --reject-with icmp6-adm-prohibited 2>/dev/null || true
+    ip6tables -D OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || true
+    ip6tables -D OUTPUT -o lo -j ACCEPT 2>/dev/null || true
     rm -f "$SHIELD_PY" "$SHIELD_SVC"
     systemctl daemon-reload
     echo "[+] Đã gỡ bỏ sạch sẽ Pawns Shield khỏi VPS!"
     exit 0
 fi
 
+# Yêu cầu quyền root
 if [[ $EUID -ne 0 ]]; then
    echo "[!] Lỗi: Bạn phải chạy script này với quyền root (sudo)!" >&2
    exit 1
@@ -36,15 +43,14 @@ command -v ip6tables >/dev/null 2>&1 || (apt-get update -y && apt-get install -y
 echo "[*] 2/4. Đang cài đặt bộ lọc bảo vệ mạng (pawns-shield.py)..."
 cat << 'EOF' > "$SHIELD_PY"
 #!/usr/bin/env python3
-import socket
-import struct
-import threading
-import time
-import subprocess
-import urllib.request
+import asyncio
 import json
 import signal
-import sys
+import socket
+import struct
+import subprocess
+import time
+import urllib.request
 
 SHIELD_PORT = 10888
 SO_ORIGINAL_DST = 80
@@ -52,11 +58,13 @@ SO_MARK = 36
 SHIELD_MARK = 0x1088
 
 DNS_CACHE = {}
+ACTIVE_TASKS = set()
 
-def get_live_pawn_ip(domain="pawns.app"):
+def resolve_domain_sync(domain):
     now = time.time()
-    if domain in DNS_CACHE and (now - DNS_CACHE[domain]["time"] < 300):
-        return DNS_CACHE[domain]["ip"]
+    cached = DNS_CACHE.get(domain)
+    if cached and (now - cached["time"] < 300):
+        return cached["ip"]
     try:
         req = urllib.request.Request(
             f"https://1.1.1.1/dns-query?name={domain}&type=A",
@@ -77,201 +85,211 @@ def get_live_pawn_ip(domain="pawns.app"):
         return ip
     except Exception:
         pass
-    return "185.110.216.178"
-
-def is_pawns_domain(domain):
     d = domain.lower().strip(".")
-    return (
-        d == "pawns.app" or d.endswith(".pawns.app") or
-        d == "iproyal.com" or d.endswith(".iproyal.com")
-    )
+    if d == "pawns.app" or d.endswith(".pawns.app"):
+        return "185.110.216.178"
+    return None
 
-def recv_exact(sock, n):
-    buf = bytearray()
-    while len(buf) < n:
-        chunk = sock.recv(n - len(buf))
-        if not chunk:
-            return None
-        buf.extend(chunk)
-    return bytes(buf)
+def should_sanitize(domain):
+    d = domain.lower().strip(".")
+    return "pawns" in d or d == "iproyal.com" or d.endswith(".iproyal.com")
 
-def pipe_stream(src, dst):
+async def pipe_stream(reader, writer):
     try:
         while True:
-            data = src.recv(65536)
+            data = await reader.read(131072)
             if not data:
                 break
-            dst.sendall(data)
+            writer.write(data)
+            await writer.drain()
     except Exception:
         pass
     finally:
-        try: dst.shutdown(socket.SHUT_WR)
-        except: pass
-        try: src.close()
-        except: pass
+        try:
+            if writer.can_write_eof():
+                writer.write_eof()
+        except Exception:
+            pass
 
-def relay_bidirectional(client_sock, upstream_sock):
-    upstream_sock.settimeout(None)
-    client_sock.settimeout(None)
-    t1 = threading.Thread(target=pipe_stream, args=(client_sock, upstream_sock), daemon=True)
-    t2 = threading.Thread(target=pipe_stream, args=(upstream_sock, client_sock), daemon=True)
-    t1.start()
-    t2.start()
-    t1.join()
-    t2.join()
+async def relay_bidirectional(c_reader, c_writer, u_reader, u_writer):
+    t1 = asyncio.create_task(pipe_stream(c_reader, u_writer))
+    t2 = asyncio.create_task(pipe_stream(u_reader, c_writer))
+    ACTIVE_TASKS.add(t1)
+    ACTIVE_TASKS.add(t2)
+    try:
+        await asyncio.gather(t1, t2, return_exceptions=True)
+    finally:
+        if not t1.done():
+            t1.cancel()
+        if not t2.done():
+            t2.cancel()
+        ACTIVE_TASKS.discard(t1)
+        ACTIVE_TASKS.discard(t2)
 
-def handle_client(client_sock):
+async def handle_client(c_reader, c_writer):
+    task = asyncio.current_task()
+    if task is not None:
+        ACTIVE_TASKS.add(task)
+    u_writer = None
     upstream_sock = None
     try:
-        client_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        client_sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
-        client_sock.settimeout(8)
+        c_sock = c_writer.get_extra_info("socket")
+        if c_sock is None:
+            return
+        c_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        c_sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
 
-        orig_dst = client_sock.getsockopt(socket.SOL_IP, SO_ORIGINAL_DST, 16)
+        orig_dst = c_sock.getsockopt(socket.SOL_IP, SO_ORIGINAL_DST, 16)
         orig_port, orig_ip_bytes = struct.unpack("!2xH4s8x", orig_dst)
         real_ip = socket.inet_ntoa(orig_ip_bytes)
         real_port = orig_port
 
         # Chống vòng lặp tự trỏ
         if real_port == SHIELD_PORT or real_ip in ("127.0.0.1", "0.0.0.0"):
-            client_sock.close()
             return
 
+        loop = asyncio.get_running_loop()
         upstream_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         upstream_sock.setsockopt(socket.SOL_SOCKET, SO_MARK, SHIELD_MARK)
         upstream_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         upstream_sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
-        upstream_sock.settimeout(12)
+        upstream_sock.setblocking(False)
 
         try:
-            upstream_sock.connect((real_ip, real_port))
+            await asyncio.wait_for(loop.sock_connect(upstream_sock, (real_ip, real_port)), timeout=12)
         except Exception:
-            try: client_sock.sendall(b"\x05\x05\x00\x01\x00\x00\x00\x00\x00\x00")
-            except: pass
-            client_sock.close()
+            try:
+                c_writer.write(b"\x05\x05\x00\x01\x00\x00\x00\x00\x00\x00")
+                await c_writer.drain()
+            except Exception:
+                pass
             return
 
-        header = recv_exact(client_sock, 2)
-        if not header:
-            return
+        u_reader, u_writer = await asyncio.open_connection(sock=upstream_sock, limit=262144)
+        upstream_sock = None
 
+        header = await asyncio.wait_for(c_reader.readexactly(2), timeout=8)
         if header[0] != 5:
-            upstream_sock.sendall(header)
-            relay_bidirectional(client_sock, upstream_sock)
+            u_writer.write(header)
+            await u_writer.drain()
+            await relay_bidirectional(c_reader, c_writer, u_reader, u_writer)
             return
 
         nmethods = header[1]
-        methods = recv_exact(client_sock, nmethods)
-        if not methods:
-            return
+        methods = await asyncio.wait_for(c_reader.readexactly(nmethods), timeout=8)
 
-        upstream_sock.sendall(header + methods)
-        up_method_resp = recv_exact(upstream_sock, 2)
-        if not up_method_resp:
-            return
-        client_sock.sendall(up_method_resp)
+        u_writer.write(header + methods)
+        await u_writer.drain()
+
+        up_method_resp = await asyncio.wait_for(u_reader.readexactly(2), timeout=10)
+        c_writer.write(up_method_resp)
+        await c_writer.drain()
 
         if up_method_resp[1] == 2:
-            auth_ver = recv_exact(client_sock, 1)
-            if not auth_ver: return
-            ulen_b = recv_exact(client_sock, 1)
-            if not ulen_b: return
-            ulen = ulen_b[0]
-            uname = recv_exact(client_sock, ulen)
-            if uname is None: return
-            plen_b = recv_exact(client_sock, 1)
-            if not plen_b: return
-            plen = plen_b[0]
-            passwd = recv_exact(client_sock, plen)
-            if passwd is None: return
+            auth_ver = await asyncio.wait_for(c_reader.readexactly(1), timeout=8)
+            ulen_b = await asyncio.wait_for(c_reader.readexactly(1), timeout=8)
+            uname = await asyncio.wait_for(c_reader.readexactly(ulen_b[0]), timeout=8)
+            plen_b = await asyncio.wait_for(c_reader.readexactly(1), timeout=8)
+            passwd = await asyncio.wait_for(c_reader.readexactly(plen_b[0]), timeout=8)
 
-            upstream_sock.sendall(auth_ver + bytes([ulen]) + uname + bytes([plen]) + passwd)
-            auth_resp = recv_exact(upstream_sock, 2)
-            if not auth_resp: return
-            client_sock.sendall(auth_resp)
-            if auth_resp[1] != 0: return
+            u_writer.write(auth_ver + ulen_b + uname + plen_b + passwd)
+            await u_writer.drain()
 
-        req_header = recv_exact(client_sock, 4)
-        if not req_header:
-            return
+            auth_resp = await asyncio.wait_for(u_reader.readexactly(2), timeout=10)
+            c_writer.write(auth_resp)
+            await c_writer.drain()
+            if auth_resp[1] != 0:
+                return
+
+        req_header = await asyncio.wait_for(c_reader.readexactly(4), timeout=8)
         cmd, atyp = req_header[1], req_header[3]
 
         if atyp == 3:
-            dlen_b = recv_exact(client_sock, 1)
-            if not dlen_b: return
-            dlen = dlen_b[0]
-            domain_b = recv_exact(client_sock, dlen)
-            target_port_bytes = recv_exact(client_sock, 2)
-            if not domain_b or not target_port_bytes: return
+            dlen_b = await asyncio.wait_for(c_reader.readexactly(1), timeout=8)
+            domain_b = await asyncio.wait_for(c_reader.readexactly(dlen_b[0]), timeout=8)
+            port_b = await asyncio.wait_for(c_reader.readexactly(2), timeout=8)
             domain = domain_b.decode("latin1")
 
             # TẨY TRẮNG TÊN MIỀN PAWNS -> IPv4 ĐỘNG
-            if is_pawns_domain(domain):
-                dest_ip = get_live_pawn_ip(domain)
-                new_req = struct.pack("!BBBB", 5, cmd, 0, 1) + socket.inet_aton(dest_ip) + target_port_bytes
+            if should_sanitize(domain):
+                dest_ip = await loop.run_in_executor(None, resolve_domain_sync, domain)
+                if dest_ip:
+                    new_req = struct.pack("!BBBB", 5, cmd, 0, 1) + socket.inet_aton(dest_ip) + port_b
+                else:
+                    new_req = req_header + dlen_b + domain_b + port_b
             else:
-                new_req = req_header + bytes([dlen]) + domain_b + target_port_bytes
+                new_req = req_header + dlen_b + domain_b + port_b
         elif atyp == 1:
-            addr_b = recv_exact(client_sock, 6)
-            if not addr_b: return
+            addr_b = await asyncio.wait_for(c_reader.readexactly(6), timeout=8)
             new_req = req_header + addr_b
         elif atyp == 4:
-            addr_b = recv_exact(client_sock, 18)
-            if not addr_b: return
+            addr_b = await asyncio.wait_for(c_reader.readexactly(18), timeout=8)
             new_req = req_header + addr_b
         else:
             return
 
-        upstream_sock.sendall(new_req)
-        resp_header = recv_exact(upstream_sock, 4)
-        if not resp_header:
-            return
+        u_writer.write(new_req)
+        await u_writer.drain()
+
+        resp_header = await asyncio.wait_for(u_reader.readexactly(4), timeout=12)
         b_atyp = resp_header[3]
         if b_atyp == 1:
-            rest = recv_exact(upstream_sock, 6)
+            rest = await asyncio.wait_for(u_reader.readexactly(6), timeout=12)
         elif b_atyp == 3:
-            dlen_r = recv_exact(upstream_sock, 1)
-            if not dlen_r: return
-            rest = dlen_r + recv_exact(upstream_sock, dlen_r[0] + 2)
+            dlen_r = await asyncio.wait_for(u_reader.readexactly(1), timeout=12)
+            rest = dlen_r + await asyncio.wait_for(u_reader.readexactly(dlen_r[0] + 2), timeout=12)
         elif b_atyp == 4:
-            rest = recv_exact(upstream_sock, 18)
+            rest = await asyncio.wait_for(u_reader.readexactly(18), timeout=12)
         else:
             rest = b""
-        if rest is None:
-            return
 
-        client_sock.sendall(resp_header + rest)
+        c_writer.write(resp_header + rest)
+        await c_writer.drain()
         if resp_header[1] != 0:
             return
 
-        relay_bidirectional(client_sock, upstream_sock)
-
+        await relay_bidirectional(c_reader, c_writer, u_reader, u_writer)
     except Exception:
         pass
     finally:
-        try: client_sock.close()
-        except: pass
-        if upstream_sock:
-            try: upstream_sock.close()
-            except: pass
+        if task is not None:
+            ACTIVE_TASKS.discard(task)
+        try:
+            c_writer.close()
+        except Exception:
+            pass
+        if u_writer is not None:
+            try:
+                u_writer.close()
+            except Exception:
+                pass
+        elif upstream_sock is not None:
+            try:
+                upstream_sock.close()
+            except Exception:
+                pass
 
 def setup_universal_iptables():
-    # 1. Custom Chain IPv4 NAT bọc SOCKS5 (giữ nguyên danh sách cổng né chuẩn gốc)
+    # 1. Cấu hình bảng NAT IPv4 bảo vệ Proxy
     subprocess.run("iptables -t nat -N PAWNS_SHIELD 2>/dev/null || iptables -t nat -F PAWNS_SHIELD", shell=True)
     subprocess.run("iptables -t nat -D OUTPUT -j PAWNS_SHIELD 2>/dev/null || true", shell=True)
     subprocess.run("iptables -t nat -I OUTPUT 1 -j PAWNS_SHIELD", shell=True)
 
+    # Bỏ qua gói tin do chính Shield phát ra
     subprocess.run(f"iptables -t nat -A PAWNS_SHIELD -m mark --mark {hex(SHIELD_MARK)} -j RETURN", shell=True)
 
+    # Bỏ qua cổng 1337, hệ thống, web trực tiếp và Pawns Manager (8787)
     for p in (1337, 22, 53, 80, 443, 8787):
         subprocess.run(f"iptables -t nat -A PAWNS_SHIELD -p tcp --dport {p} -j RETURN", shell=True)
 
+    # Bỏ qua mạng Local & Docker (RFC 1918)
     for net in ("127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"):
         subprocess.run(f"iptables -t nat -A PAWNS_SHIELD -d {net} -j RETURN", shell=True)
 
+    # Bắt các kết nối TCP ra Public IP (Proxy Webshare/Decodo)
     subprocess.run(f"iptables -t nat -A PAWNS_SHIELD -p tcp -j REDIRECT --to-ports {SHIELD_PORT}", shell=True)
 
-    # 2. Custom Chain IPv6 chống rò IPv6 (không flush làm mất rule IPv6 khác nếu có)
+    # 2. Khóa rò rỉ IPv6 qua custom chain riêng PAWNS_SHIELD_V6
     subprocess.run("ip6tables -N PAWNS_SHIELD_V6 2>/dev/null || ip6tables -F PAWNS_SHIELD_V6", shell=True)
     subprocess.run("ip6tables -D OUTPUT -j PAWNS_SHIELD_V6 2>/dev/null || true", shell=True)
     subprocess.run("ip6tables -I OUTPUT 1 -j PAWNS_SHIELD_V6", shell=True)
@@ -286,26 +304,31 @@ def cleanup_iptables(*args):
     subprocess.run("ip6tables -D OUTPUT -j PAWNS_SHIELD_V6 2>/dev/null || true", shell=True)
     subprocess.run("ip6tables -F PAWNS_SHIELD_V6 2>/dev/null || true", shell=True)
     subprocess.run("ip6tables -X PAWNS_SHIELD_V6 2>/dev/null || true", shell=True)
-    sys.exit(0)
 
-def main():
+async def run_server():
     setup_universal_iptables()
-    signal.signal(signal.SIGTERM, cleanup_iptables)
-    signal.signal(signal.SIGINT, cleanup_iptables)
-
-    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    server.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-    server.bind(("127.0.0.1", SHIELD_PORT))
-    server.listen(4096)
-
-    while True:
-        client, _ = server.accept()
-        t = threading.Thread(target=handle_client, args=(client,), daemon=True)
-        t.start()
+    server = await asyncio.start_server(
+        handle_client, "127.0.0.1", SHIELD_PORT, backlog=4096, limit=262144
+    )
+    stop_event = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            loop.add_signal_handler(sig, stop_event.set)
+        except NotImplementedError:
+            pass
+    await stop_event.wait()
+    cleanup_iptables()
+    server.close()
+    for t in list(ACTIVE_TASKS):
+        t.cancel()
+    await asyncio.sleep(0.05)
 
 if __name__ == "__main__":
-    main()
+    try:
+        asyncio.run(run_server())
+    except KeyboardInterrupt:
+        cleanup_iptables()
 EOF
 
 chmod +x "$SHIELD_PY"
@@ -314,7 +337,7 @@ python3 -m py_compile "$SHIELD_PY"
 echo "[*] 3/4. Đang cấu hình dịch vụ Systemd..."
 cat << 'EOF' > "$SHIELD_SVC"
 [Unit]
-Description=Pawns Shield Traffic Sanitizer
+Description=Pawns Shield Traffic Sanitizer (AsyncIO Epoll)
 After=network.target network-online.target
 Wants=network-online.target
 
@@ -322,9 +345,10 @@ Wants=network-online.target
 Type=simple
 ExecStart=/usr/bin/python3 /usr/local/bin/pawns-shield.py
 Restart=always
-RestartSec=2
+RestartSec=1
+TimeoutStopSec=3
 User=root
-LimitNOFILE=65535
+LimitNOFILE=1048576
 
 [Install]
 WantedBy=multi-user.target
@@ -334,8 +358,11 @@ echo "[*] 4/4. Đang kích hoạt dịch vụ..."
 systemctl daemon-reload
 systemctl enable --now pawns-shield
 systemctl restart pawns-shield
+sleep 1
 
 echo "=================================================================="
-echo "   CÀI ĐẶT THÀNH CÔNG! BẢN TỐI ƯU ĐÃ CHÍNH THỨC HOẠT ĐỘNG!      "
+echo "   CÀI ĐẶT THÀNH CÔNG! BẢN CHUẨN EPOLL ĐÃ CHÍNH THỨC HOẠT ĐỘNG! "
 echo "=================================================================="
-systemctl status pawns-shield --no-pager
+systemctl status pawns-shield --no-pager -l | head -n 10
+ss -tlnp | grep 10888 || true
+iptables -t nat -L PAWNS_SHIELD -n --line-numbers
