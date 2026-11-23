@@ -8,7 +8,7 @@ sudo bash -c 'for c in $(docker ps --filter "name=traffmon" --format "{{.Names}}
 
 ```
 sudo bash <<'SMARTHEAL_PRO'
-set -uo pipefail
+set -o pipefail
 
 C_G='\033[1;32m'; C_R='\033[1;31m'; C_Y='\033[1;33m'; C_C='\033[1;36m'; C_0='\033[0m'
 
@@ -30,7 +30,6 @@ if [ "$(cat /proc/sys/net/ipv4/tcp_mtu_probing 2>/dev/null || echo 0)" != "1" ];
   fi
 fi
 
-# Nap map container -> folder tu containernames.txt
 declare -A KNOWN_DIR
 while IFS= read -r cfile; do
   d=$(dirname "$cfile")
