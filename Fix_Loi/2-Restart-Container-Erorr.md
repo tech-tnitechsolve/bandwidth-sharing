@@ -7,7 +7,7 @@ sudo bash -c 'for c in $(docker ps --filter "name=traffmon" --format "{{.Names}}
 # Restart lại các Container Lỗi (ko ảnh hưởng tới các container đang chạy)
 
 ```
-sudo bash <<'SMARTHEAL_LITE'
+sudo bash <<'SMARTHEAL_PRO'
 set -uo pipefail
 
 C_G='\033[1;32m'; C_R='\033[1;31m'; C_Y='\033[1;33m'; C_C='\033[1;36m'; C_0='\033[0m'
@@ -23,7 +23,6 @@ if ! flock -n 9; then
   exit 1
 fi
 
-# Toi uu chong nghen phan manh MTU qua TUN (0% gian doan)
 if [ "$(cat /proc/sys/net/ipv4/tcp_mtu_probing 2>/dev/null || echo 0)" != "1" ]; then
   sysctl -w net.ipv4.tcp_mtu_probing=1 >/dev/null 2>&1 || true
   if [ -f /etc/sysctl.d/99-internetincome.conf ] && ! grep -q "tcp_mtu_probing" /etc/sysctl.d/99-internetincome.conf; then
@@ -31,7 +30,7 @@ if [ "$(cat /proc/sys/net/ipv4/tcp_mtu_probing 2>/dev/null || echo 0)" != "1" ];
   fi
 fi
 
-# Nap danh sach container thuoc InternetIncome tu containernames.txt
+# Nap map container -> folder tu containernames.txt
 declare -A KNOWN_DIR
 while IFS= read -r cfile; do
   d=$(dirname "$cfile")
@@ -41,7 +40,7 @@ while IFS= read -r cfile; do
   done < "$cfile"
 done < <(find /root /home /opt /srv /mnt /data -maxdepth 6 -name "containernames.txt" -type f 2>/dev/null)
 
-echo -e "\n${C_C}================ [GIAI DOAN 1: QUET NHE NHANG & HOI PHUC AN TOAN] ================${C_0}"
+echo -e "\n${C_C}================ [GIAI DOAN 1: QUET KERNEL + CHECK AUTH PROXY TU DAU] ================${C_0}"
 
 mapfile -t ALL_CIDS < <(docker ps -aq 2>/dev/null)
 if (( ${#ALL_CIDS[@]} == 0 )); then
@@ -49,7 +48,7 @@ if (( ${#ALL_CIDS[@]} == 0 )); then
   exit 0
 fi
 
-declare -A C_ID C_PID C_ST C_NET C_IMG C_START C_RPOL TUN_APPS TUN_BY_ID APP_PARENT_TUN TUN_HOSTPORT
+declare -A C_ID C_PID C_ST C_NET C_IMG C_START C_RPOL TUN_APPS TUN_BY_ID APP_PARENT_TUN TUN_PROXY_RAW TUN_MASKED
 TUN_NAMES=()
 ALL_NON_TUN=()
 NOW_TS=$(date +%s)
@@ -121,7 +120,7 @@ count_tcp_estab() {
     "/proc/$pid/net/tcp" "/proc/$pid/net/tcp6" 2>/dev/null || echo 0
 }
 
-# Quet trang thai socket noi bo (chua check Proxy vội)
+# Loc node khoe vs node nghi van loi (CHUA check Proxy voi)
 HEALTHY_BEFORE=0
 SKIP_GUARD=0
 SKIP_NEW=0
@@ -167,7 +166,7 @@ for a in "${APP_NAMES[@]}"; do
   fi
 done
 
-# Double-check sau 3 giay cho cac node nghi van 0 ESTAB
+# Double-check sau 3 giay cho cac node dang running ma 0 ESTAB
 if (( ${#FIRST_PASS_ZERO[@]} > 0 )); then
   sleep 3
   for a in "${FIRST_PASS_ZERO[@]}"; do
@@ -183,34 +182,44 @@ if (( ${#FIRST_PASS_ZERO[@]} > 0 )); then
   done
 fi
 
-# CHI khi co container loi moi inspect & check Proxy tuan tu 1 luong (0 spawn thread)
-declare -A PROXY_ALIVE
+# CHI inspect va check xac thuc Proxy cho dung cac TUN bi loi (tuan tu 1 luong, 0 spawn thread)
+declare -A PROXY_STATUS PROXY_REASON
 if (( ${#NEED_TUN_INSPECT[@]} > 0 )); then
   ERR_TUNS=("${!NEED_TUN_INSPECT[@]}")
-  cur_tun=""; saw_pf=0; p_raw=""; s5_a=""; s5_p=""
-  flush_hp() {
-    local tn="$1" pr="$2" sa="$3" sp="$4"
+  cur_tun=""; saw_pf=0; p_raw=""; s5_a=""; s5_p=""; s5_u=""; s5_pw=""
+
+  flush_proxy_rec() {
+    local tn="$1" pr="$2" sa="$3" sp="$4" su="$5" spw="$6"
     [[ -z "$tn" ]] && return
     if [[ -z "$pr" && -n "$sa" && -n "$sp" ]]; then
-      TUN_HOSTPORT["$tn"]="${sa}:${sp}"
-      return
+      if [[ -n "$su" && -n "$spw" ]]; then
+        pr="socks5://${su}:${spw}@${sa}:${sp}"
+      else
+        pr="socks5://${sa}:${sp}"
+      fi
     fi
     if [[ "${C_IMG[$tn]:-}" == xjasonlyu/tun2socks* && "${C_ST[$tn]:-}" == "running" ]]; then
       local ep
       ep=$(docker exec "$tn" sh -c "grep -m1 -- '--proxy ' entrypoint.sh 2>/dev/null | sed 's/.*--proxy[[:space:]]*//;s/[[:space:]\\\\]*$//'" 2>/dev/null || true)
       [[ -n "$ep" ]] && pr="$ep"
     fi
+    TUN_PROXY_RAW["$tn"]="$pr"
     if [[ -n "$pr" ]]; then
-      local rest="${pr#*://}"
-      [[ "$rest" == *"@"* ]] && rest="${rest##*@}"
-      TUN_HOSTPORT["$tn"]="$rest"
+      local proto="" rest="$pr"
+      [[ "$pr" == *"://"* ]] && { proto="${pr%%://*}://"; rest="${pr#*://}"; }
+      if [[ "$rest" == *"@"* ]]; then
+        TUN_MASKED["$tn"]="${proto}${rest##*@}"
+      else
+        TUN_MASKED["$tn"]="${proto}${rest}"
+      fi
     fi
   }
+
   while IFS= read -r line; do
     if [[ "$line" == ===TUN===:* ]]; then
-      flush_hp "$cur_tun" "$p_raw" "$s5_a" "$s5_p"
+      flush_proxy_rec "$cur_tun" "$p_raw" "$s5_a" "$s5_p" "$s5_u" "$s5_pw"
       cur_tun="${line#===TUN===:}"; cur_tun="${cur_tun#/}"
-      saw_pf=0; p_raw=""; s5_a=""; s5_p=""
+      saw_pf=0; p_raw=""; s5_a=""; s5_p=""; s5_u=""; s5_pw=""
     elif [[ "$line" == ARG:* ]]; then
       v="${line#ARG:}"
       if (( saw_pf == 1 )); then p_raw="$v"; saw_pf=0
@@ -220,39 +229,50 @@ if (( ${#NEED_TUN_INSPECT[@]} > 0 )); then
     elif [[ "$line" == ENV:* ]]; then
       v="${line#ENV:}"
       case "$v" in
-        PROXY=*)       p_raw="${v#PROXY=}" ;;
-        SOCKS5_ADDR=*) s5_a="${v#SOCKS5_ADDR=}" ;;
-        SOCKS5_PORT=*) s5_p="${v#SOCKS5_PORT=}" ;;
+        PROXY=*)           p_raw="${v#PROXY=}" ;;
+        SOCKS5_ADDR=*)     s5_a="${v#SOCKS5_ADDR=}" ;;
+        SOCKS5_PORT=*)     s5_p="${v#SOCKS5_PORT=}" ;;
+        SOCKS5_USERNAME=*) s5_u="${v#SOCKS5_USERNAME=}" ;;
+        SOCKS5_PASSWORD=*) s5_pw="${v#SOCKS5_PASSWORD=}" ;;
       esac
     fi
   done < <(docker inspect --type container --format '===TUN===:{{.Name}}
 {{range .Args}}ARG:{{.}}
 {{end}}{{range .Config.Env}}ENV:{{.}}
 {{end}}' "${ERR_TUNS[@]}" 2>/dev/null)
-  flush_hp "$cur_tun" "$p_raw" "$s5_a" "$s5_p"
+  flush_proxy_rec "$cur_tun" "$p_raw" "$s5_a" "$s5_p" "$s5_u" "$s5_pw"
 
-  # Check Proxy tuan tu 1 luong duy nhat (khong tao nhieu thread, timeout 1s)
+  echo "  Dang kiem tra xac thuc Proxy cho ${#ERR_TUNS[@]} TUN nghi van (1 luong nhe nhang)..."
   for tn in "${ERR_TUNS[@]}"; do
-    hp="${TUN_HOSTPORT[$tn]:-}"
-    [[ -z "$hp" ]] && continue
-    [[ -n "${PROXY_ALIVE[$hp]+_}" ]] && continue
-    ph="${hp%:*}"; ph="${ph#[}"; ph="${ph%]}"
-    pp="${hp##*:}"
-    if [[ -n "$ph" && "$pp" =~ ^[0-9]+$ ]]; then
-      if timeout 1 bash -c "exec 3<>/dev/tcp/${ph}/${pp}" 2>/dev/null; then
-        exec 3<&- 3>&- 2>/dev/null || true
-        PROXY_ALIVE["$hp"]="1"
+    pr="${TUN_PROXY_RAW[$tn]:-}"
+    [[ -z "$pr" ]] && continue
+    [[ -n "${PROXY_STATUS[$pr]+_}" ]] && continue
+
+    if command -v curl >/dev/null 2>&1; then
+      http_code=$(curl -4 -s -o /dev/null -w "%{http_code}" -m 4 --proxy "$pr" "http://cp.cloudflare.com/generate_204" 2>/dev/null)
+      rc=$?
+      if (( rc == 0 )) && [[ "$http_code" =~ ^(200|204|301|302)$ ]]; then
+        PROXY_STATUS["$pr"]="1"
+        PROXY_REASON["$pr"]="OK"
       else
-        PROXY_ALIVE["$hp"]="0"
+        PROXY_STATUS["$pr"]="0"
+        case "$rc" in
+          97) PROXY_REASON["$pr"]="Tu choi Auth/Het Data (SOCKS5 rc=97)" ;;
+          56) PROXY_REASON["$pr"]="Loi Proxy HTTP/407 (rc=56)" ;;
+          28) PROXY_REASON["$pr"]="Timeout (Proxy khong phan hoi)" ;;
+          7)  PROXY_REASON["$pr"]="Khong ket noi duoc Proxy (rc=7)" ;;
+          *)  PROXY_REASON["$pr"]="Proxy loi (curl rc=${rc}, http=${http_code})" ;;
+        esac
       fi
     else
-      PROXY_ALIVE["$hp"]="1"
+      PROXY_STATUS["$pr"]="1"
+      PROXY_REASON["$pr"]="NO_CURL"
     fi
   done
 fi
 
-DEAD_PROXY_LOGS=()
-declare -A TUNS_RESTART_SET APPS_AFTER_TUN_SET APPS_ONLY_SET
+declare -A DEAD_FOLDER_CNT DEAD_FOLDER_REASON TUNS_RESTART_SET APPS_AFTER_TUN_SET APPS_ONLY_SET
+DEAD_PROXY_COUNT=0
 TUNS_TO_RESTART=()
 APPS_AFTER_TUN=()
 APPS_ONLY=()
@@ -261,10 +281,12 @@ RECOVERED_TARGETS=()
 for a in "${CANDIDATE_APPS[@]}"; do
   pt="${APP_PARENT_TUN[$a]:-}"
   if [[ -n "$pt" ]]; then
-    hp="${TUN_HOSTPORT[$pt]:-}"
-    if [[ -n "$hp" && "${PROXY_ALIVE[$hp]:-1}" == "0" ]]; then
+    pr="${TUN_PROXY_RAW[$pt]:-}"
+    if [[ -n "$pr" && "${PROXY_STATUS[$pr]:-1}" == "0" ]]; then
+      DEAD_PROXY_COUNT=$((DEAD_PROXY_COUNT + 1))
       fdir="${KNOWN_DIR[$pt]:-${KNOWN_DIR[$a]:-unknown}}"
-      DEAD_PROXY_LOGS+=("${fdir} | ${pt} | ${hp}")
+      DEAD_FOLDER_CNT["$fdir"]=$(( ${DEAD_FOLDER_CNT["$fdir"]:-0} + 1 ))
+      DEAD_FOLDER_REASON["$fdir"]="${PROXY_REASON[$pr]:-Proxy_Dead}"
       continue
     fi
     if ! tun_has_interface "$pt"; then
@@ -298,23 +320,23 @@ for a in "${CANDIDATE_APPS[@]}"; do
   fi
 done
 
-echo -e " ${C_G}✔ Node dang chay tot (Giu nguyen 100%)      :${C_0} ${HEALTHY_BEFORE}"
-echo -e " ${C_Y}⏸ Bo qua (FlapGuard / Restart=no / <90s)    :${C_0} $((SKIP_GUARD + SKIP_NEW)) (Ngoai luong: ${SKIP_UNRELATED})"
-echo -e " ${C_R}✖ Node Proxy DIE (Khong restart tranh lag) :${C_0} ${#DEAD_PROXY_LOGS[@]}"
-echo -e " ${C_C}↻ Node Proxy LIVE bi dut socket (Se cuu)    :${C_0} ${#RECOVERED_TARGETS[@]} App (Kem ${#TUNS_TO_RESTART[@]} TUN loi)"
+echo -e " ${C_G}✔ Node dang chay tot (Giu nguyen 100%)          :${C_0} ${HEALTHY_BEFORE}"
+echo -e " ${C_Y}⏸ Bo qua (FlapGuard / Restart=no / <90s)        :${C_0} $((SKIP_GUARD + SKIP_NEW)) (Ngoai luong: ${SKIP_UNRELATED})"
+echo -e " ${C_R}✖ Node Proxy LOI/HET DATA (BO QUA KHONG RESTART):${C_0} ${DEAD_PROXY_COUNT}"
+echo -e " ${C_C}↻ Node Proxy SONG that su bi dut socket (Se cuu):${C_0} ${#RECOVERED_TARGETS[@]} App (Kem ${#TUNS_TO_RESTART[@]} TUN loi)"
 
-if (( ${#DEAD_PROXY_LOGS[@]} > 0 )); then
-  echo -e "\n${C_R}--- Danh sach Proxy DIE (khong dong cham) ---${C_0}"
-  printf '  - %s\n' "${DEAD_PROXY_LOGS[@]:0:15}"
-  (( ${#DEAD_PROXY_LOGS[@]} > 15 )) && echo "  ... (con $(( ${#DEAD_PROXY_LOGS[@]} - 15 )) node nua)"
+if (( DEAD_PROXY_COUNT > 0 )); then
+  echo -e "\n${C_R}--- Cac Folder bi loi Proxy ngay tu buoc kiem tra (KHONG DONG CHAM) ---${C_0}"
+  for fd in "${!DEAD_FOLDER_CNT[@]}"; do
+    echo -e "  ${C_R}[!]${C_0} ${fd} (${DEAD_FOLDER_CNT[$fd]} node) -> ${Y}${DEAD_FOLDER_REASON[$fd]}${C_0}"
+  done
 fi
 
 if (( ${#RECOVERED_TARGETS[@]} == 0 && ${#TUNS_TO_RESTART[@]} == 0 )); then
-  echo -e "\n${C_G}=== KHONG CO NODE PROXY LIVE NAO CAN RESTART - HE THONG NHE NHANG 100%! ===${C_0}\n"
+  echo -e "\n${C_G}=== HOAN TAT! KHONG CO NODE PROXY LIVE NAO CAN RESTART! ===${C_0}\n"
   exit 0
 fi
 
-# Khoi dong lai nhe nhang theo lo 3 container (nghi 2s) de CPU khong tang tai
 BATCH=3
 if (( ${#TUNS_TO_RESTART[@]} > 0 )); then
   echo -e "\n${C_Y}[1/3] Dang bat lai ${#TUNS_TO_RESTART[@]} TUN loi (lo ${BATCH}/luot)...${C_0}"
@@ -344,9 +366,6 @@ if (( ${#APPS_ONLY[@]} > 0 )); then
   done
 fi
 
-#============================================================================
-# GIAI DOAN 2: CHO 18 GIAY -> QUET KIEM CHUNG LAI (READ-ONLY & GOM THEO FOLDER)
-#============================================================================
 echo -e "\n${C_C}================ [GIAI DOAN 2: CHO 18 GIAY & QUET KIEM CHUNG LAI] ================${C_0}"
 sleep 18
 
@@ -389,12 +408,12 @@ echo -e " ${C_G}✔ Node da hoi phuc thanh cong    :${C_0} ${rec_ok} / ${#RECOVE
 echo -e " $([ $rec_fail -eq 0 ] && echo -e "${C_G}" || echo -e "${C_R}")✖ Node van 0 ESTAB sau 18s     :${C_0} ${rec_fail}"
 
 if (( rec_fail > 0 )); then
-  echo -e "\n${C_Y}--- Tong hop theo Folder bi loi Auth / Het Data / Loi Token ---${C_0}"
+  echo -e "\n${C_Y}--- Cac Folder co node van 0 ESTAB sau 18s (nghi van Token/Server app) ---${C_0}"
   for fd in "${!FAIL_BY_DIR[@]}"; do
-    echo -e "  ${C_R}[!]${C_0} ${fd}  (${FAIL_BY_DIR[$fd]} node van 0 ESTAB)"
+    echo -e "  ${C_R}[!]${C_0} ${fd} (${FAIL_BY_DIR[$fd]} node)"
   done
 else
   echo -e "\n${C_G}=== HOAN HAO! 100% NODE PROXY LIVE DA KET NOI & CHAY ON DINH! ===${C_0}\n"
 fi
-SMARTHEAL_LITE
+SMARTHEAL_PRO
 ```
