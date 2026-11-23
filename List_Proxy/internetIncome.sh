@@ -112,7 +112,7 @@ ALPINE_VERSION="3.24"
 DNSCRYPT_VERSION="2.1.18"
 GLUETUN_VERSION="v3.37.0"
 HEVSOCKS_VERSION="2.18.0"
-TUN2PROXY_VERSION="v0.8.4"
+TUN2PROXY_VERSION="v0.8.6"
 TUN2SOCKS_VERSION="v2.7.0"
 
 # Use banner if exists
@@ -642,14 +642,16 @@ execute_docker_command() {
   # Check if the container started successfully
   if [[ $docker_rc -eq 0 && -n "$CONTAINER_ID" ]]; then
     if [[ "$app_name" == "Proxy" || "$app_name" == "VPN" ]]; then
-      local wait_i=0 c_state=""
+      sleep 1
+      local wait_i=0 c_state="" c_rc=0
       while (( wait_i < 10 )); do
-        c_state=$(sudo docker inspect -f '{{.State.Status}}' "$container_name" 2>/dev/null || echo "")
-        [[ "$c_state" == "running" ]] && break
+        read -r c_state c_rc < <(sudo docker inspect -f '{{.State.Status}} {{.RestartCount}}' "$container_name" 2>/dev/null || echo "unknown 0")
+        [[ "$c_state" == "running" && "${c_rc:-0}" == "0" ]] && break
+        [[ "$c_state" == "restarting" || "$c_state" == "exited" || "$c_state" == "dead" ]] && break
         sleep 0.5
         wait_i=$((wait_i + 1))
       done
-      if [[ "$c_state" != "running" ]]; then
+      if [[ "$c_state" != "running" || "${c_rc:-0}" != "0" ]]; then
         echo -e "${RED}Container $container_name failed to stay running (state: ${c_state:-unknown}). Check proxy/VPN..Exiting..${NOCOLOUR}"
         exit 1
       fi
