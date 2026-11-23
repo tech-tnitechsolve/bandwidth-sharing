@@ -33,25 +33,21 @@ fi
 # Remove special character ^M from properties file
 sed -i 's/\r//g' $properties_file
 
-# Read the properties file and export variables to the current shell
-while IFS= read -r line; do
-  # Ignore lines that start with #
-  if [[ $line != '#'* ]]; then
-      # Split the line at the first occurrence of =
-      key="${line%%=*}"
-      value="${line#*=}"
-      # Trim leading and trailing whitespace from key and value
-      key="${key%"${key##*[![:space:]]}"}"
-      value="${value%"${value##*[![:space:]]}"}"
-      # Ignore lines without a value after =
-      if [[ -n $value ]]; then
-          # Replace variables with their values
-          value=$(eval "echo $value")
-          # Export the key-value pairs as variables
-          export "$key"="$value"
-      fi
+# Read the properties file and export variables safely (NO EVAL)
+while IFS= read -r line || [[ -n "$line" ]]; do
+  line=$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+  [[ -z "$line" || "$line" == \#* || "$line" != *"="* ]] && continue
+  key="${line%%=*}"
+  value="${line#*=}"
+  key=$(echo "$key" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+  value=$(echo "$value" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+  if [[ "$value" =~ ^[\'\"](.*)[\'\"]$ ]]; then
+    value="${BASH_REMATCH[1]}"
   fi
-done < $properties_file
+  if [[ -n "$key" ]]; then
+    export "$key"="$value"
+  fi
+done < "$properties_file"
 
 # Remove special characters ^M from proxies file
 sed -i 's/\r//g' $proxies_file

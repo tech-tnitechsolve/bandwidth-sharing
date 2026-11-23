@@ -32,6 +32,7 @@ custom_firefox_data_folder="custom-firefox-data"
 earnapp_data_folder="earnappdata"
 firefox_data_folder="firefoxdata"
 firefox_profile_data="firefoxprofiledata"
+idlepay_data_folder="idlepay-data"
 mysterium_data_folder="mysterium-data"
 titan_data_folder="titan-data"
 traffmonetizer_data_folder="traffmonetizerdata"
@@ -60,6 +61,7 @@ firefox_profile_zipfile="firefoxprofiledata.zip"
 generate_device_ids_file="generateDeviceIds.sh"
 hickory_dns_apk_file="hickory-dns.apk"
 hickory_dns_config_file="hickory-dns-config.toml"
+idlepay_proxies_file="idlepay_proxies.txt"
 iptables_apk_file="iptables.apk"
 libgcc_apk_file="libgcc.apk"
 libmnl_apk_file="libmnl.apk"
@@ -80,15 +82,17 @@ vpns_file="vpns.txt"
 
 # Arrays
 required_files=($properties_file)
-files_to_be_removed=($adnade_containers_file $adnade_file $chrome_containers_file $connection_state_file $container_names_file $custom_chrome_file $custom_firefox_file $dns_resolver_file $dnscrypt_config_file $earn_fm_config_file $ebesucher_file $firefox_containers_file $hickory_dns_config_file $mysterium_file $networks_file $process_id_file $subnets_file $uprock_file $ur_data_proxies_file $ur_proxies_file)
+files_to_be_removed=($adnade_containers_file $adnade_file $chrome_containers_file $connection_state_file $container_names_file $custom_chrome_file $custom_firefox_file $dns_resolver_file $dnscrypt_config_file $earn_fm_config_file $ebesucher_file $firefox_containers_file $hickory_dns_config_file $idlepay_proxies_file $mysterium_file $networks_file $process_id_file $subnets_file $uprock_file $ur_data_proxies_file $ur_proxies_file)
 folders_to_be_removed=($adnade_data_folder $chrome_data_folder $chrome_profile_data $earnapp_data_folder $firefox_data_folder $firefox_profile_data)
-back_up_folders=($bitping_data_folder $custom_chrome_data_folder $custom_firefox_data_folder $mysterium_data_folder $titan_data_folder $traffmonetizer_data_folder $urnetwork_data_folder)
+back_up_folders=($bitping_data_folder $custom_chrome_data_folder $custom_firefox_data_folder $idlepay_data_folder $mysterium_data_folder $titan_data_folder $traffmonetizer_data_folder $urnetwork_data_folder)
 back_up_files=($antgain_file $earnapp_file $proxyrack_file)
 restricted_ports=(1 7 9 11 13 15 17 19 20 21 22 23 25 37 42 43 53 69 77 79 87 95 101 102 103 104 109 110 111 113 115 117 119 123 135 137 139 143 161 179 389 427 465 512 513 514 515 526 530 531 532 540 548 554 556 563 587 601 636 993 995 1719 1720 1723 2049 3659 4045 5060 5061 6000 6566 6665 6666 6667 6668 6669 6697 10080)
 
 # Flags
 container_pulled=false
 docker_in_docker_detected=false
+idlepay_proxy_started=false
+running_direct_mode=false
 
 # Mysterium and ebesucher first port
 mysterium_first_port=2000
@@ -107,8 +111,8 @@ third_octet=32
 ALPINE_VERSION="3.24"
 DNSCRYPT_VERSION="2.1.18"
 GLUETUN_VERSION="v3.37.0"
-HEVSOCKS_VERSION="2.17.1"
-TUN2PROXY_VERSION="v0.8.3"
+HEVSOCKS_VERSION="2.18.0"
+TUN2PROXY_VERSION="v0.8.4"
 TUN2SOCKS_VERSION="v2.7.0"
 
 # Use banner if exists
@@ -570,11 +574,11 @@ download_hickory_dns() {
     *) echo -e "${RED}Unsupported architecture: $CPU_ARCH${NOCOLOUR}"; exit 1 ;;
   esac
 
-  curl -4 -sSL -A "Mozilla/5.0" -o "$libgcc_apk_file" "https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/main/${HICKORY_ARCH}/libgcc-15.2.0-r5.apk" || \
-  curl -4 -sSL -A "Mozilla/5.0" -o "$libgcc_apk_file" "https://mirrors.aliyun.com/alpine/v${ALPINE_VERSION}/main/${HICKORY_ARCH}/libgcc-15.2.0-r5.apk"
+  curl -4 -fsSL -A "Mozilla/5.0" -o "$libgcc_apk_file" "https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/main/${HICKORY_ARCH}/libgcc-15.2.0-r5.apk" || \
+  curl -4 -fsSL -A "Mozilla/5.0" -o "$libgcc_apk_file" "https://mirrors.aliyun.com/alpine/v${ALPINE_VERSION}/main/${HICKORY_ARCH}/libgcc-15.2.0-r5.apk"
 
-  curl -4 -sSL -A "Mozilla/5.0" -o "$hickory_dns_apk_file" "https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/community/${HICKORY_ARCH}/hickory-dns-0.26.1-r0.apk" || \
-  curl -4 -sSL -A "Mozilla/5.0" -o "$hickory_dns_apk_file" "https://mirrors.aliyun.com/alpine/v${ALPINE_VERSION}/community/${HICKORY_ARCH}/hickory-dns-0.26.1-r0.apk"
+  curl -4 -fsSL -A "Mozilla/5.0" -o "$hickory_dns_apk_file" "https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/community/${HICKORY_ARCH}/hickory-dns-0.26.1-r0.apk" || \
+  curl -4 -fsSL -A "Mozilla/5.0" -o "$hickory_dns_apk_file" "https://mirrors.aliyun.com/alpine/v${ALPINE_VERSION}/community/${HICKORY_ARCH}/hickory-dns-0.26.1-r0.apk"
 }
 
 # Download IPtables file (Vá lỗi mirror & auto fallback)
@@ -587,14 +591,14 @@ download_iptables() {
     *) echo -e "${RED}Unsupported architecture: $CPU_ARCH${NOCOLOUR}"; exit 1 ;;
   esac
 
-  curl -4 -sSL -A "Mozilla/5.0" -o "$libmnl_apk_file" "https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/main/${IPTABLES_ARCH}/libmnl-1.0.5-r2.apk" || \
-  curl -4 -sSL -A "Mozilla/5.0" -o "$libmnl_apk_file" "https://mirrors.aliyun.com/alpine/v${ALPINE_VERSION}/main/${IPTABLES_ARCH}/libmnl-1.0.5-r2.apk"
+  curl -4 -fsSL -A "Mozilla/5.0" -o "$libmnl_apk_file" "https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/main/${IPTABLES_ARCH}/libmnl-1.0.5-r2.apk" || \
+  curl -4 -fsSL -A "Mozilla/5.0" -o "$libmnl_apk_file" "https://mirrors.aliyun.com/alpine/v${ALPINE_VERSION}/main/${IPTABLES_ARCH}/libmnl-1.0.5-r2.apk"
 
-  curl -4 -sSL -A "Mozilla/5.0" -o "$libnftnl_apk_file" "https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/main/${IPTABLES_ARCH}/libnftnl-1.3.1-r0.apk" || \
-  curl -4 -sSL -A "Mozilla/5.0" -o "$libnftnl_apk_file" "https://mirrors.aliyun.com/alpine/v${ALPINE_VERSION}/main/${IPTABLES_ARCH}/libnftnl-1.3.1-r0.apk"
+  curl -4 -fsSL -A "Mozilla/5.0" -o "$libnftnl_apk_file" "https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/main/${IPTABLES_ARCH}/libnftnl-1.3.1-r0.apk" || \
+  curl -4 -fsSL -A "Mozilla/5.0" -o "$libnftnl_apk_file" "https://mirrors.aliyun.com/alpine/v${ALPINE_VERSION}/main/${IPTABLES_ARCH}/libnftnl-1.3.1-r0.apk"
 
-  curl -4 -sSL -A "Mozilla/5.0" -o "$iptables_apk_file" "https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/main/${IPTABLES_ARCH}/iptables-1.8.13-r0.apk" || \
-  curl -4 -sSL -A "Mozilla/5.0" -o "$iptables_apk_file" "https://mirrors.aliyun.com/alpine/v${ALPINE_VERSION}/main/${IPTABLES_ARCH}/iptables-1.8.13-r0.apk"
+  curl -4 -fsSL -A "Mozilla/5.0" -o "$iptables_apk_file" "https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/main/${IPTABLES_ARCH}/iptables-1.8.13-r0.apk" || \
+  curl -4 -fsSL -A "Mozilla/5.0" -o "$iptables_apk_file" "https://mirrors.aliyun.com/alpine/v${ALPINE_VERSION}/main/${IPTABLES_ARCH}/iptables-1.8.13-r0.apk"
 }
 
 # Execute docker command
@@ -626,17 +630,34 @@ execute_docker_command() {
     echo "$container_name" | tee -a "$container_names_file"
   fi
 
+  local docker_rc=0
   if [[ "$app_name" == "VPN" ]]; then
     CONTAINER_ID=$(eval "sudo docker run $DOCKER_INIT -d --name $container_name --restart=always ${container_parameters[@]:2}")
+    docker_rc=$?
   else
     CONTAINER_ID=$(sudo docker run $DOCKER_INIT -d $WATCH_TOWER_LABEL --name $container_name --restart=always "${container_parameters[@]:2}")
+    docker_rc=$?
   fi
 
   # Check if the container started successfully
-  if [[ -n "$CONTAINER_ID" ]]; then
+  if [[ $docker_rc -eq 0 && -n "$CONTAINER_ID" ]]; then
+    if [[ "$app_name" == "Proxy" || "$app_name" == "VPN" ]]; then
+      local wait_i=0 c_state=""
+      while (( wait_i < 10 )); do
+        c_state=$(sudo docker inspect -f '{{.State.Status}}' "$container_name" 2>/dev/null || echo "")
+        [[ "$c_state" == "running" ]] && break
+        sleep 0.5
+        wait_i=$((wait_i + 1))
+      done
+      if [[ "$c_state" != "running" ]]; then
+        echo -e "${RED}Container $container_name failed to stay running (state: ${c_state:-unknown}). Check proxy/VPN..Exiting..${NOCOLOUR}"
+        exit 1
+      fi
+    fi
     echo -e "${GREEN}Container $container_name started successfully.${NOCOLOUR}"
   else
     echo -e "${RED}Failed to start container for $app_name..Exiting..${NOCOLOUR}"
+    sudo docker rm -f "$container_name" >/dev/null 2>&1 || true
     exit 1
   fi
 
@@ -644,6 +665,28 @@ execute_docker_command() {
   if [[ $DELAY_BETWEEN_CONTAINER =~ ^[0-9]+$ ]]; then
     sleep $DELAY_BETWEEN_CONTAINER
   fi
+}
+
+# Check if any per-connection app requires TUN/network isolation
+has_per_connection_apps() {
+  [[ "${MYSTERIUM:-}" = true || "${UPROCK:-}" = true || "${CUSTOM_FIREFOX:-}" = true || "${CUSTOM_CHROME:-}" = true || \
+     -n "${EBESUCHER_USERNAME:-}" || -n "${ADNADE_USERNAME:-}" || \
+     ( -n "${BITPING_EMAIL:-}" && -n "${BITPING_PASSWORD:-}" ) || \
+     ( -n "${REPOCKET_EMAIL:-}" && -n "${REPOCKET_API:-}" ) || \
+     -n "${TRAFFMONETIZER_TOKEN:-}" || \
+     ( -n "${UR_AUTH_TOKEN:-}" && "${UR_NETWORK_PROXY_MODE:-}" != true ) || \
+     ( -n "${PACKETSHARE_EMAIL:-}" && -n "${PACKETSHARE_PASSWORD:-}" ) || \
+     ( -n "${GRASS_EMAIL:-}" && -n "${GRASS_PASSWORD:-}" ) || \
+     ( -n "${GRADIENT_EMAIL:-}" && -n "${GRADIENT_PASSWORD:-}" ) || \
+     ( -n "${EARN_FM_API:-}" && "${USE_EARN_FM_FLEETSHARE:-}" != true ) || \
+     -n "${PACKET_SDK_APP_KEY:-}" || -n "${PROXYRACK_API:-}" || -n "${PROXYBASE_ACCOUNT_ID:-}" || \
+     ( -n "${IPROYALS_EMAIL:-}" && -n "${IPROYALS_PASSWORD:-}" ) || \
+     ( -n "${WIPTER_EMAIL:-}" && -n "${WIPTER_PASSWORD:-}" ) || \
+     ( -n "${HONEYGAIN_EMAIL:-}" && -n "${HONEYGAIN_PASSWORD:-}" ) || \
+     -n "${TITAN_HASH:-}" || -n "${ANTGAIN_API_KEY:-}" || -n "${PEER2PROFIT_EMAIL:-}" || \
+     -n "${WIZARD_GAIN_EMAIL:-}" || -n "${NP_COOKIE:-}" || -n "${CASTAR_SDK_KEY:-}" || \
+     -n "${PACKETSTREAM_CID:-}" || -n "${PROXYLITE_USER_ID:-}" || "${EARNAPP:-}" = true || \
+     ( -n "${IDLEPAY_KEY:-}" && "${IDLEPAY_PROXY_MODE:-}" != true ) ]]
 }
 
 # Start all containers
@@ -837,7 +880,7 @@ start_containers() {
           exit 1
         fi
       fi
-      docker_parameters=($HOST_NAME $LOGS_PARAM $MAX_MEMORY_PARAM $MEMORY_RESERVATION_PARAM $MEMORY_SWAP_PARAM $CPU_PARAM $CUSTOM_NETWORK --sysctl net.ipv6.conf.all.disable_ipv6=1 --sysctl net.ipv6.conf.default.disable_ipv6=1 --device /dev/net/tun --cap-add=NET_ADMIN $combined_ports -d ghcr.io/tun2proxy/tun2proxy:$TUN2PROXY_VERSION $dns_option --proxy $proxy --verbosity $TUN_LOG_PARAM)
+      docker_parameters=($HOST_NAME $LOGS_PARAM $MAX_MEMORY_PARAM $MEMORY_RESERVATION_PARAM $MEMORY_SWAP_PARAM $CPU_PARAM $CUSTOM_NETWORK --sysctl net.ipv6.conf.all.disable_ipv6=1 --sysctl net.ipv6.conf.default.disable_ipv6=1 --mount type=bind,source=/dev/net/tun,target=/dev/net/tun --cap-add=NET_ADMIN $combined_ports ghcr.io/tun2proxy/tun2proxy:$TUN2PROXY_VERSION $dns_option --proxy $proxy --verbosity $TUN_LOG_PARAM)
       execute_docker_command "Proxy" "tun$UNIQUE_ID$i" "${docker_parameters[@]}"
     else
       # Starting tun2socks containers
@@ -931,7 +974,7 @@ start_containers() {
           TUN_LOG_PARAM="trace"
         fi
         dns_option="--dns virtual"
-        docker_parameters=($HOST_NAME $LOGS_PARAM $MAX_MEMORY_PARAM $MEMORY_RESERVATION_PARAM $MEMORY_SWAP_PARAM $CPU_PARAM $CUSTOM_NETWORK --sysctl net.ipv6.conf.all.disable_ipv6=1 --sysctl net.ipv6.conf.default.disable_ipv6=1 --device /dev/net/tun --cap-add=NET_ADMIN $combined_ports -d ghcr.io/tun2proxy/tun2proxy:$TUN2PROXY_VERSION $dns_option --proxy $proxy --verbosity $TUN_LOG_PARAM)
+        docker_parameters=($HOST_NAME $LOGS_PARAM $MAX_MEMORY_PARAM $MEMORY_RESERVATION_PARAM $MEMORY_SWAP_PARAM $CPU_PARAM $CUSTOM_NETWORK --sysctl net.ipv6.conf.all.disable_ipv6=1 --sysctl net.ipv6.conf.default.disable_ipv6=1 --mount type=bind,source=/dev/net/tun,target=/dev/net/tun --cap-add=NET_ADMIN $combined_ports ghcr.io/tun2proxy/tun2proxy:$TUN2PROXY_VERSION $dns_option --proxy $proxy --verbosity $TUN_LOG_PARAM)
         execute_docker_command "Proxy" "tun$UNIQUE_ID$i" "${docker_parameters[@]}"
       elif [[ "$USE_DNS_OVER_HTTPS" == "true" && "$proxy" == socks5://* ]]; then
         SOCKS_PROXY=$proxy
@@ -1973,6 +2016,57 @@ start_containers() {
     fi
   fi
 
+  # Starting IdlePay container
+  if [[ -n "${IDLEPAY_KEY:-}" ]]; then
+    if [[ "${IDLEPAY_PROXY_MODE:-}" == true && "${USE_PROXIES:-}" == true ]]; then
+      if [[ "${running_direct_mode:-}" != true && "${idlepay_proxy_started:-}" == false ]]; then
+        if [ ! -f "$proxies_file" ] || ! grep -qE '^[^#[:space:]]' "$proxies_file" 2>/dev/null; then
+          echo -e "${RED}Proxies file $proxies_file does not exist or has no proxies. Exiting..${NOCOLOUR}"
+          exit 1
+        fi
+        : > "$idlepay_proxies_file"
+        while IFS= read -r proxy_line || [ -n "$proxy_line" ]; do
+          [[ -z "$proxy_line" || "$proxy_line" == \#* ]] && continue
+          echo "${proxy_line#*://}" >> "$idlepay_proxies_file"
+        done < "$proxies_file"
+        if [ ! -s "$idlepay_proxies_file" ]; then
+          echo -e "${RED}Proxies file $proxies_file does not have any valid proxies for IdlePay. Exiting..${NOCOLOUR}"
+          exit 1
+        fi
+        sudo docker pull ghcr.io/idlepay/idlepay:latest
+        mkdir -p "$PWD/$idlepay_data_folder/data"
+        sudo chmod -R 777 "$PWD/$idlepay_data_folder/data"
+        local idlepay_direct_opt="${IDLEPAY_DIRECT:-}"
+        if [[ -z "$idlepay_direct_opt" ]]; then
+          if [[ "${USE_DIRECT_CONNECTION:-}" == true ]]; then
+            idlepay_direct_opt="on"
+          else
+            idlepay_direct_opt="off"
+          fi
+        fi
+        docker_parameters=($LOGS_PARAM $DNS_VOLUME $MAX_MEMORY_PARAM $MEMORY_RESERVATION_PARAM $MEMORY_SWAP_PARAM $CPU_PARAM --hostname "$DEVICE_NAME" -e IDLEPAY_KEY="$IDLEPAY_KEY" -e IDLEPAY_DIRECT="$idlepay_direct_opt" --mount type=bind,source="$PWD/$idlepay_data_folder/data",target=/etc/idlepay --mount type=bind,source="$PWD/$idlepay_proxies_file",target=/proxies.txt,readonly ghcr.io/idlepay/idlepay:latest)
+        execute_docker_command "IdlePay" "idlepay$UNIQUE_ID$i" "${docker_parameters[@]}"
+        idlepay_proxy_started=true
+      fi
+    else
+      if [ "$container_pulled" = false ]; then
+        sudo docker pull ghcr.io/idlepay/idlepay:latest
+      fi
+      mkdir -p "$PWD/$idlepay_data_folder/data$i"
+      sudo chmod -R 777 "$PWD/$idlepay_data_folder/data$i"
+      local IDLEPAY_HOST_NAME=""
+      if [[ "$NETWORK_TUN" == --network=multi* || -z "$NETWORK_TUN" ]]; then
+        IDLEPAY_HOST_NAME="--hostname $DEVICE_NAME$i"
+      fi
+      docker_parameters=($IDLEPAY_HOST_NAME $LOGS_PARAM $DNS_VOLUME $MAX_MEMORY_PARAM $MEMORY_RESERVATION_PARAM $MEMORY_SWAP_PARAM $CPU_PARAM $NETWORK_TUN -e IDLEPAY_KEY="$IDLEPAY_KEY" --mount type=bind,source="$PWD/$idlepay_data_folder/data$i",target=/etc/idlepay ghcr.io/idlepay/idlepay:latest)
+      execute_docker_command "IdlePay" "idlepay$UNIQUE_ID$i" "${docker_parameters[@]}"
+    fi
+  else
+    if [[ "$container_pulled" == false && "$ENABLE_LOGS" == true ]]; then
+      echo -e "${RED}IdlePay Key is not configured. Ignoring IdlePay..${NOCOLOUR}"
+    fi
+  fi
+
   if [ "$AUTO_UPDATE_CONTAINERS" = true ]; then
     if [ "$container_pulled" = false ]; then
       # Check if watch tower container exists
@@ -2210,7 +2304,9 @@ if [[ "$1" == "--start" ]]; then
      echo "DIRECT_CONNECTION_ENABLED" >> $connection_state_file
      STATUS=1
      echo -e "${GREEN}USE_DIRECT_CONNECTION is enabled, using direct internet connection..${NOCOLOUR}"
+     running_direct_mode=true
      start_containers
+     running_direct_mode=false
   fi
 
   # Use Vpns
@@ -2273,7 +2369,8 @@ if [[ "$1" == "--start" ]]; then
       exit 1
     fi
 
-    # Remove special character ^M and trim space from proxies file
+    # Remove UTF-8 BOM, special character ^M and trim space from proxies file
+    LC_ALL=C sed -i '1s/^\xEF\xBB\xBF//' $proxies_file
     sed -i 's/\r//g' $proxies_file
     sed -i 's/^[ \t]*//;s/[ \t]*$//' $proxies_file
     if [[ "$VALIDATE_PROXIES" == true ]]; then
@@ -2282,12 +2379,19 @@ if [[ "$1" == "--start" ]]; then
     if [ -z "${i}" ]; then
       i=0;
     fi
-    while IFS= read -r line || [ -n "$line" ]; do
-      if [[ "$line" =~ ^[^#].* ]]; then
+    if has_per_connection_apps; then
+      while IFS= read -r line || [ -n "$line" ]; do
+        if [[ "$line" =~ ^[^#].* ]]; then
+          i=`expr $i + 1`
+          start_containers "$i" "$line"
+        fi
+      done < $proxies_file
+    else
+      if grep -qE '^[^#[:space:]]' "$proxies_file" 2>/dev/null; then
         i=`expr $i + 1`
-        start_containers "$i" "$line"
+        start_containers "$i" ""
       fi
-    done < $proxies_file
+    fi
   fi
 
   if [[ $STATUS == 1 ]]; then
