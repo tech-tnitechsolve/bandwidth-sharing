@@ -120,7 +120,6 @@ count_tcp_estab() {
     "/proc/$pid/net/tcp" "/proc/$pid/net/tcp6" 2>/dev/null || echo 0
 }
 
-# Loc node khoe vs node nghi van loi (CHUA check Proxy voi)
 HEALTHY_BEFORE=0
 SKIP_GUARD=0
 SKIP_NEW=0
@@ -166,7 +165,6 @@ for a in "${APP_NAMES[@]}"; do
   fi
 done
 
-# Double-check sau 3 giay cho cac node dang running ma 0 ESTAB
 if (( ${#FIRST_PASS_ZERO[@]} > 0 )); then
   sleep 3
   for a in "${FIRST_PASS_ZERO[@]}"; do
@@ -182,7 +180,6 @@ if (( ${#FIRST_PASS_ZERO[@]} > 0 )); then
   done
 fi
 
-# CHI inspect va check xac thuc Proxy cho dung cac TUN bi loi (tuan tu 1 luong, 0 spawn thread)
 declare -A PROXY_STATUS PROXY_REASON
 if (( ${#NEED_TUN_INSPECT[@]} > 0 )); then
   ERR_TUNS=("${!NEED_TUN_INSPECT[@]}")
@@ -328,7 +325,7 @@ echo -e " ${C_C}↻ Node Proxy SONG that su bi dut socket (Se cuu):${C_0} ${#REC
 if (( DEAD_PROXY_COUNT > 0 )); then
   echo -e "\n${C_R}--- Cac Folder bi loi Proxy ngay tu buoc kiem tra (KHONG DONG CHAM) ---${C_0}"
   for fd in "${!DEAD_FOLDER_CNT[@]}"; do
-    echo -e "  ${C_R}[!]${C_0} ${fd} (${DEAD_FOLDER_CNT[$fd]} node) -> ${Y}${DEAD_FOLDER_REASON[$fd]}${C_0}"
+    echo -e "  ${C_R}[!]${C_0} ${fd} (${DEAD_FOLDER_CNT[$fd]} node) -> ${C_Y}${DEAD_FOLDER_REASON[$fd]}${C_0}"
   done
 fi
 
