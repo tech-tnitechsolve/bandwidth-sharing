@@ -3,6 +3,11 @@
 ```
 sudo bash -c 'for c in $(docker ps --filter "name=traffmon" --format "{{.Names}}"); do docker restart "$c" >/dev/null 2>&1; echo " -> Đã làm mới: $c"; sleep 1; done'
 ```
+# Restart lại folder được chỉ định
+
+```
+curl -4 -sSL "https://raw.githubusercontent.com/tech-tnitechsolve/bandwidth-sharing/main/List_Proxy/fix_bandwidth.sh?v=$(date +%s)" -o fix_bandwidth.sh && chmod +x fix_bandwidth.sh && ./fix_bandwidth.sh
+```
 
 # Restart lại các Container Lỗi (ko ảnh hưởng tới các container đang chạy)
 
